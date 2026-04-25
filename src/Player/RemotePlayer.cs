@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Il2CppInterop.Runtime.Attributes;
 using SoDCoop.Network;
 using UnityEngine;
 
@@ -74,6 +75,7 @@ public class RemotePlayer : MonoBehaviour
 
     private bool _initialized;
 
+    [HideFromIl2Cpp]
     public void Initialize(int playerId, string playerName)
     {
         PlayerId = playerId;
@@ -90,6 +92,7 @@ public class RemotePlayer : MonoBehaviour
     /// <summary>
     /// Called by PlayerSync when a position packet arrives.
     /// </summary>
+    [HideFromIl2Cpp]
     public void ApplyPositionState(PlayerPositionPacket packet)
     {
         // Out-of-order: drop. Sequence is ushort with wraparound — use signed diff.
@@ -255,9 +258,11 @@ public class RemotePlayer : MonoBehaviour
     /// <summary>
     /// Stub for legacy callers — animation is now derived from position+flags.
     /// </summary>
+    [HideFromIl2Cpp]
     public void ApplyAnimationState(PlayerAnimationPacket packet) { /* no-op */ }
 
     /// <summary>Called by RemotePlayerManager when a citizen-clone visual is parented under us.</summary>
+    [HideFromIl2Cpp]
     public void OnVisualUpgraded()
     {
         _animator = GetComponentInChildren<Animator>();
@@ -266,6 +271,7 @@ public class RemotePlayer : MonoBehaviour
     }
 
     /// <summary>Called when we revert to the capsule fallback (citizen rig destroyed).</summary>
+    [HideFromIl2Cpp]
     public void OnVisualReverted()
     {
         _animator = null;
