@@ -168,6 +168,7 @@ public class RemotePlayer : MonoBehaviour
     /// <summary>
     /// Find two snapshots in the buffer such that older.ArrivalTime &lt;= renderTime &lt; newer.ArrivalTime.
     /// </summary>
+    [HideFromIl2Cpp]
     private bool TryFindStraddlingPair(float renderTime, out Snapshot older, out Snapshot newer)
     {
         for (int i = _buffer.Count - 1; i >= 1; i--)
@@ -188,6 +189,7 @@ public class RemotePlayer : MonoBehaviour
     /// and use whatever exists. Wrapped in try/catch because IL2CPP-injected Animator access
     /// can throw on weird rigs.
     /// </summary>
+    [HideFromIl2Cpp]
     private void DriveAnimator()
     {
         try
@@ -232,6 +234,7 @@ public class RemotePlayer : MonoBehaviour
         }
     }
 
+    [HideFromIl2Cpp]
     private void ScanAnimatorParams()
     {
         try
@@ -279,6 +282,7 @@ public class RemotePlayer : MonoBehaviour
         _animSpeedHash = _animIsRunningHash = _animIsCrouchingHash = -1;
     }
 
+    [HideFromIl2Cpp]
     private void SetupNameTag()
     {
         // Name tag rendered screen-space via NameTagOverlay.

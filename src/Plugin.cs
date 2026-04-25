@@ -97,9 +97,27 @@ public class Plugin : BasePlugin
 
     private void RegisterIl2CppTypes()
     {
-        ClassInjector.RegisterTypeInIl2Cpp<CoopUpdateRunner>();
-        ClassInjector.RegisterTypeInIl2Cpp<RemotePlayer>();
-        ClassInjector.RegisterTypeInIl2Cpp<BillboardLabel>();
+        TryRegister<CoopUpdateRunner>();
+        TryRegister<RemotePlayer>();
+        TryRegister<BillboardLabel>();
+    }
+
+    private static void TryRegister<T>() where T : class
+    {
+        var name = typeof(T).Name;
+        try
+        {
+            ClassInjector.RegisterTypeInIl2Cpp<T>();
+            Log.LogInfo($"IL2CPP injection OK: {name}");
+        }
+        catch (System.Exception ex)
+        {
+            // Don't kill the whole plugin if one type fails — log loudly and degrade.
+            // Most failures here are signature-resolution NREs in Il2CppInterop's
+            // ConvertMethodInfo, which leave the type partially registered but usually
+            // good enough for AddComponent to still work in practice.
+            Log.LogError($"IL2CPP injection FAILED for {name}: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     private void InitializeHarmony()
