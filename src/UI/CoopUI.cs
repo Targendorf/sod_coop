@@ -1,4 +1,6 @@
 using SoDCoop.Network;
+using LiteNetLib;
+using LiteNetLib.Utils;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -21,6 +23,7 @@ public static class CoopUI
     private static string _chatInput = "";
     private static readonly List<ChatMessage> _chatMessages = new();
     private static Vector2 _chatScrollPosition;
+    private static readonly NetDataWriter _chatWriter = new();
     
     #endregion
     
@@ -85,10 +88,11 @@ public static class CoopUI
     
     public static void OnGUI()
     {
-        // Always show name tags + chat when connected.
+        // Always show name tags + player HUD + chat when connected.
         if (NetworkManager.IsConnected)
         {
             NameTagOverlay.Draw();
+            DrawPlayerListHUD();
             DrawChatWindow();
         }
         
@@ -279,6 +283,35 @@ public static class CoopUI
         DrawLobbyScreen(); // Same as lobby for now
     }
     
+    /// <summary>
+    /// Persistent top-right player list shown whenever connected — independent of F9.
+    /// Does not steal mouse input (uses GUI.Label + a non-interactive Box).
+    /// </summary>
+    private static void DrawPlayerListHUD()
+    {
+        var players = NetworkManager.Players;
+        if (players == null) return;
+
+        const float w = 220f, lineH = 18f, pad = 6f;
+        float h = pad * 2 + lineH * (players.Count + 1);
+        var rect = new Rect(Screen.width - w - 10f, 10f, w, h);
+
+        GUI.Box(rect, "");
+        GUI.Label(new Rect(rect.x + pad, rect.y + pad, rect.width - pad * 2, lineH),
+            $"Players online: {players.Count}");
+
+        int i = 1;
+        foreach (var p in players.Values)
+        {
+            string prefix = p.IsHost ? "[H] " : "    ";
+            string suffix = p.PlayerId == NetworkManager.LocalPlayerId ? "  (you)" : "";
+            GUI.Label(
+                new Rect(rect.x + pad, rect.y + pad + lineH * i, rect.width - pad * 2, lineH),
+                $"{prefix}{p.PlayerName}{suffix}");
+            i++;
+        }
+    }
+
     private static void DrawChatWindow()
     {
         _chatWindowRect = GUILayout.Window(
@@ -324,14 +357,56 @@ public static class CoopUI
     private static void SendChatMessage()
     {
         if (string.IsNullOrWhiteSpace(_chatInput)) return;
-        
-        // Add locally
+        if (!NetworkManager.IsConnected) { _chatInput = ""; return; }
+
+        // Show locally first.
         AddChatMessage(NetworkManager.LocalPlayerId, _playerName, _chatInput);
-        
-        // Send to network
-        // TODO: Implement network send
-        
+
+        // Build and send.
+        var packet = new ChatMessagePacket
+        {
+            PlayerId = NetworkManager.LocalPlayerId,
+            PlayerName = _playerName,
+            Message = _chatInput,
+            Timestamp = Time.unscaledTime,
+        };
+        _chatWriter.Reset();
+        packet.Serialize(_chatWriter);
+        NetworkManager.SendToAll(PacketType.ChatMessage, _chatWriter, DeliveryMethod.ReliableOrdered);
+
         _chatInput = "";
+    }
+
+    /// <summary>Called by SyncManager on incoming PacketType.ChatMessage.</summary>
+    public static void OnChatPacketReceived(NetPacketReader reader, int senderId)
+    {
+        try
+        {
+            var packet = new ChatMessagePacket();
+            packet.Deserialize(reader);
+
+            // Don't double-display our own messages (we add them locally on send).
+            if (packet.PlayerId == NetworkManager.LocalPlayerId) return;
+
+            AddChatMessage(packet.PlayerId, packet.PlayerName, packet.Message);
+
+            // Host: rebroadcast to all OTHER clients so 3+ player chats fan out.
+            if (NetworkManager.IsHost)
+            {
+                var fwd = new NetDataWriter();
+                packet.Serialize(fwd);
+                foreach (var client in NetworkManager.Clients)
+                {
+                    // Skip the original sender (we don't have its peer here cheaply, so just send to all;
+                    // sender will filter via PlayerId == LocalPlayerId on its end).
+                    NetworkManager.SendTo(client, PacketType.ChatMessage, fwd, DeliveryMethod.ReliableOrdered);
+                }
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"OnChatPacketReceived: {ex.Message}");
+        }
     }
     
     public static void AddChatMessage(int playerId, string playerName, string text)

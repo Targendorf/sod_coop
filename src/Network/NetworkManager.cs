@@ -99,7 +99,12 @@ public static class NetworkManager
     private static EventBasedNetListener _listener;
     private static readonly List<NetPeer> _clients = new();
     private static readonly Dictionary<int, PlayerNetInfo> _players = new();
+    /// <summary>Used by handlers to BUILD payloads (handshake/joined/left).</summary>
     private static readonly NetDataWriter _writer = new();
+    /// <summary>Used inside SendTo/SendToAll/SendToHost to WRAP payload with type-prefix.
+    /// Must be distinct from <see cref="_writer"/> so callers can pass _writer as data
+    /// without aliasing.</summary>
+    private static readonly NetDataWriter _sendWrapper = new();
     private static int _nextPlayerId = 1;
     
     #endregion
@@ -269,48 +274,48 @@ public static class NetworkManager
     public static void SendToAll(PacketType type, NetDataWriter data, DeliveryMethod delivery = DeliveryMethod.ReliableOrdered)
     {
         if (!IsConnected) return;
-        
-        _writer.Reset();
-        _writer.Put((byte)type);
-        _writer.Put(data.Data, 0, data.Length);
-        
+
+        _sendWrapper.Reset();
+        _sendWrapper.Put((byte)type);
+        _sendWrapper.Put(data.Data, 0, data.Length);
+
         if (IsHost)
         {
             foreach (var client in _clients)
             {
-                client.Send(_writer, delivery);
+                client.Send(_sendWrapper, delivery);
             }
         }
         else
         {
-            HostPeer?.Send(_writer, delivery);
+            HostPeer?.Send(_sendWrapper, delivery);
         }
     }
-    
+
     /// <summary>
     /// Send a packet to a specific peer.
     /// </summary>
     public static void SendTo(NetPeer peer, PacketType type, NetDataWriter data, DeliveryMethod delivery = DeliveryMethod.ReliableOrdered)
     {
         if (peer == null) return;
-        
-        _writer.Reset();
-        _writer.Put((byte)type);
-        _writer.Put(data.Data, 0, data.Length);
-        peer.Send(_writer, delivery);
+
+        _sendWrapper.Reset();
+        _sendWrapper.Put((byte)type);
+        _sendWrapper.Put(data.Data, 0, data.Length);
+        peer.Send(_sendWrapper, delivery);
     }
-    
+
     /// <summary>
     /// Send a packet to the host (client only).
     /// </summary>
     public static void SendToHost(PacketType type, NetDataWriter data, DeliveryMethod delivery = DeliveryMethod.ReliableOrdered)
     {
         if (IsHost || HostPeer == null) return;
-        
-        _writer.Reset();
-        _writer.Put((byte)type);
-        _writer.Put(data.Data, 0, data.Length);
-        HostPeer.Send(_writer, delivery);
+
+        _sendWrapper.Reset();
+        _sendWrapper.Put((byte)type);
+        _sendWrapper.Put(data.Data, 0, data.Length);
+        HostPeer.Send(_sendWrapper, delivery);
     }
     
     #endregion
@@ -344,8 +349,10 @@ public static class NetworkManager
         // Read player name from connection data
         var reader = request.Data;
         var playerName = reader.TryGetString(out var name) ? name : "Unknown";
-        
+
         var peer = request.Accept();
+        // Stash the name on the peer so OnPeerConnected can recover it.
+        peer.Tag = playerName;
         Plugin.Log.LogInfo($"Player '{playerName}' connecting from {peer.Address}:{peer.Port}");
     }
     
@@ -357,7 +364,8 @@ public static class NetworkManager
             _clients.Add(peer);
             
             int playerId = _nextPlayerId++;
-            var playerName = $"Player {playerId}"; // TODO: get from handshake
+            // Pull the real name stashed in OnConnectionRequest. Falls back if missing.
+            string playerName = (peer.Tag as string) ?? $"Player {playerId}";
             
             _players[playerId] = new PlayerNetInfo
             {

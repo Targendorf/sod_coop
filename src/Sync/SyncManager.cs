@@ -1,4 +1,5 @@
 using SoDCoop.Network;
+using SoDCoop.UI;
 using LiteNetLib;
 using LiteNetLib.Utils;
 using UnityEngine;
@@ -123,6 +124,12 @@ public static class SyncManager
             if (type == PacketType.TimeSync)
             {
                 TimeSync?.OnPacketReceived(type, reader, senderId);
+            }
+
+            // Chat / UI packets (80-99)
+            if (type == PacketType.ChatMessage)
+            {
+                CoopUI.OnChatPacketReceived(reader, senderId);
             }
         }
         catch (System.Exception ex)
