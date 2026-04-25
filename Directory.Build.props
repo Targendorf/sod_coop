@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <!-- Set this to your Shadow of Doubt installation path -->
+    <GamePath>D:\Game\Steam\steamapps\common\Shadows of Doubt</GamePath>
+  </PropertyGroup>
+</Project>
+

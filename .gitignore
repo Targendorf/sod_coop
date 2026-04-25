@@ -1,0 +1,28 @@
+# Build artifacts
+bin/
+obj/
+*.user
+*.suo
+*.userprefs
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
+
+# NuGet
+packages/
+*.nupkg
+.nuget/
+
+# Logs
+*.log
+
+# Local overrides
+Directory.Build.user.props
+appsettings.Development.json
