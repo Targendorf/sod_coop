@@ -2,452 +2,443 @@ using SoDCoop.Network;
 using LiteNetLib;
 using LiteNetLib.Utils;
 using UnityEngine;
+using UnityEngine.AI;
 using System.Collections.Generic;
 
 namespace SoDCoop.Sync;
 
 /// <summary>
-/// Handles synchronization of world state including NPCs, objects, and world events.
-/// Uses delta compression and priority-based updates.
+/// Megabonk-style NPC sync.
+///
+/// Host:
+///   - Every WORLD_SYNC_RATE seconds scan citizens within NPC_SYNC_RANGE of any player.
+///   - Delta-filter: only include citizens that moved/rotated/changed isDead, or are stale.
+///   - Pack ≤ MAX_NPCS_PER_BATCH per packet, send via PacketType.CitizenStateBatch (Sequenced).
+///
+/// Client:
+///   - First time we receive state for a citizen, we DISABLE its NavMeshAgent so SoD's AI
+///     stops driving its position locally. (Equivalent of megabonk-together prefix-blocking
+///     EnemyMovementRb.MyFixedUpdate; we use component disable since SoD's AI class names
+///     are not known without source.)
+///   - Then we apply the host position via snapshot interpolation: keep last + current target,
+///     lerp transform between them across the WORLD_SYNC_RATE window.
+///   - When the world unloads (return to menu), all client-side state is dropped.
+///
+/// Host-side citizens are NEVER touched — host runs its normal authoritative simulation.
 /// </summary>
 public class WorldSync
 {
-    #region Constants
-    
-    /// <summary>
-    /// How often to send world state updates.
-    /// </summary>
-    private const float WORLD_SYNC_RATE = 0.1f; // 10 Hz
-    
-    /// <summary>
-    /// How often to send full world checksum for validation.
-    /// </summary>
-    private const float CHECKSUM_RATE = 1.0f;
-    
-    /// <summary>
-    /// Maximum NPCs to sync per update to avoid packet size issues.
-    /// </summary>
-    private const int MAX_NPCS_PER_UPDATE = 20;
-    
-    /// <summary>
-    /// Range around players within which NPCs are synced.
-    /// </summary>
-    private const float NPC_SYNC_RANGE = 50f;
-    
+    #region Tuning
+
+    private const float WORLD_SYNC_RATE       = 0.5f;   // s between batches (2 Hz)
+    private const float FORCE_RESYNC_INTERVAL = 3f;     // s — re-send a citizen even if static
+    private const int   MAX_NPCS_PER_BATCH    = 20;
+    private const float NPC_SYNC_RANGE        = 50f;    // m around any player
+
+    private const float MIN_MOVE_DELTA  = 0.5f;
+    private const float MIN_ANGLE_DELTA = 10f;
+
+    private const float TELEPORT_DIST   = 8f;   // m — snap rather than lerp above this
+
     #endregion
-    
-    #region Properties
-    
-    /// <summary>
-    /// The world seed used for generation (synced from host).
-    /// </summary>
+
     public int SyncedSeed { get; private set; }
-    
-    #endregion
-    
-    #region Private Fields
-    
-    private float _lastWorldSyncTime;
-    private float _lastChecksumTime;
+
+    private float _lastBroadcastTime;
     private readonly NetDataWriter _writer = new();
-    private readonly Dictionary<int, CitizenSyncState> _citizenStates = new();
-    
-    #endregion
-    
+
+    /// <summary>Per-citizen last sent state (host).</summary>
+    private readonly Dictionary<int, HostSentState> _hostSent = new();
+
+    /// <summary>Per-citizen client-side interp state. Populated only on client.</summary>
+    private readonly Dictionary<int, ClientCitizenState> _clientStates = new();
+
+    /// <summary>Citizens whose NavMeshAgent we've already disabled on this client.</summary>
+    private readonly HashSet<int> _aiDisabled = new();
+
+    private struct HostSentState
+    {
+        public Vector3    Position;
+        public Quaternion Rotation;
+        public bool       IsDead;
+        public float      SentAt;
+    }
+
+    private struct ClientCitizenState
+    {
+        public Vector3    PrevPosition;
+        public Quaternion PrevRotation;
+        public Vector3    TargetPosition;
+        public Quaternion TargetRotation;
+        public float      AppliedAt;          // local time when we received the latest packet
+        public bool       IsDead;
+    }
+
+    // -------------------------------------------------------------------------
+    //  Update
+    // -------------------------------------------------------------------------
+
     public void Update()
     {
-        // MVP: world/NPC sync disabled. Each client runs its own simulation.
-        // Re-enable once Citizen IL2CPP wrappers are verified at runtime.
-        return;
+        if (!NetworkManager.IsConnected) return;
+        if (!WorldReadyGate.IsWorldReady) return;
+
+        if (NetworkManager.IsHost)
+            HostTick();
+        else
+            ClientTick();
     }
-    
-    /// <summary>
-    /// Sync the world generation seed to all clients.
-    /// Called by host when game starts.
-    /// </summary>
-    public void SyncWorldSeed()
+
+    // -------------------------------------------------------------------------
+    //  Host: scan, delta-filter, broadcast
+    // -------------------------------------------------------------------------
+
+    private void HostTick()
     {
-        if (!NetworkManager.IsHost) return;
-        
-        // Get the current city's seed
-        // This will need to be adapted to the actual game's city generation system
-        int seed = GetCurrentWorldSeed();
-        string cityName = GetCurrentCityName();
-        int citySize = GetCurrentCitySize();
-        
-        SyncedSeed = seed;
-        
-        var packet = new WorldSeedPacket
+        float now = Time.unscaledTime;
+        if (now - _lastBroadcastTime < WORLD_SYNC_RATE) return;
+        _lastBroadcastTime = now;
+
+        var anchors = GetAnchorPositions();
+        if (anchors.Count == 0) return;
+
+        var batch = new List<CitizenStatePacket>(MAX_NPCS_PER_BATCH);
+
+        try
         {
-            Seed = seed,
-            CityName = cityName,
-            CitySize = citySize
-        };
-        
-        _writer.Reset();
-        packet.Serialize(_writer);
-        
-        NetworkManager.SendToAll(PacketType.WorldSeed, _writer, DeliveryMethod.ReliableOrdered);
-        
-        Plugin.Log.LogInfo($"World seed synced: {seed}, City: {cityName}");
-    }
-    
-    private void SyncNearbyNPCs()
-    {
-        // Get all player positions (local + remote)
-        var playerPositions = GetAllPlayerPositions();
-        if (playerPositions.Count == 0) return;
-        
-        // Find NPCs near any player
-        var nearbyNPCs = FindNPCsNearPlayers(playerPositions, NPC_SYNC_RANGE);
-        
-        // Limit to prevent packet bloat
-        int count = Mathf.Min(nearbyNPCs.Count, MAX_NPCS_PER_UPDATE);
-        
-        if (count == 0) return;
-        
-        // Build batch packet
-        _writer.Reset();
-        _writer.Put(count);
-        
-        for (int i = 0; i < count; i++)
-        {
-            var npc = nearbyNPCs[i];
-            WriteCitizenState(_writer, npc);
+            var dict = CityData.Instance?.citizenDictionary;
+            if (dict == null) return;
+
+            foreach (var kv in dict)
+            {
+                if (batch.Count >= MAX_NPCS_PER_BATCH) break;
+
+                var human = kv.Value;
+                if (human == null || human.gameObject == null) continue;
+
+                // Don't sync the host's local player (it's already a Human in some games).
+                if (IsLocalPlayerHuman(human)) continue;
+
+                var pos = human.transform.position;
+                if (!IsAnchorReachable(pos, anchors)) continue;
+
+                int  id     = kv.Key;
+                bool isDead = SafeIsDead(human);
+
+                bool send;
+                if (_hostSent.TryGetValue(id, out var prev))
+                {
+                    bool moved        = Vector3.Distance(pos, prev.Position) > MIN_MOVE_DELTA;
+                    bool rotated      = Quaternion.Angle(human.transform.rotation, prev.Rotation) > MIN_ANGLE_DELTA;
+                    bool stateChanged = prev.IsDead != isDead;
+                    bool stale        = now - prev.SentAt > FORCE_RESYNC_INTERVAL;
+                    send = moved || rotated || stateChanged || stale;
+                }
+                else
+                {
+                    send = true; // first contact
+                }
+
+                if (!send) continue;
+
+                batch.Add(new CitizenStatePacket
+                {
+                    CitizenId         = id,
+                    Position          = pos,
+                    Rotation          = human.transform.rotation,
+                    CurrentAction     = 0,
+                    CurrentLocationId = 0,  // InstanceID is per-process — useless across machines
+                    IsDead            = isDead,
+                    IsUnconscious     = false,
+                });
+
+                _hostSent[id] = new HostSentState
+                {
+                    Position = pos,
+                    Rotation = human.transform.rotation,
+                    IsDead   = isDead,
+                    SentAt   = now,
+                };
+            }
         }
-        
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"WorldSync.HostTick: {ex.Message}");
+            return;
+        }
+
+        if (batch.Count == 0) return;
+
+        _writer.Reset();
+        _writer.Put(batch.Count);
+        foreach (var p in batch)
+        {
+            p.Serialize(_writer);
+        }
         NetworkManager.SendToAll(PacketType.CitizenStateBatch, _writer, DeliveryMethod.Sequenced);
     }
-    
-    private void SendWorldChecksum()
+
+    // -------------------------------------------------------------------------
+    //  Client: per-frame interpolation toward host targets
+    // -------------------------------------------------------------------------
+
+    private void ClientTick()
     {
-        // Calculate a simple checksum of world state for validation
-        uint checksum = CalculateWorldChecksum();
-        
-        _writer.Reset();
-        _writer.Put(checksum);
-        _writer.Put(Time.time);
-        
-        NetworkManager.SendToAll(PacketType.WorldChecksum, _writer, DeliveryMethod.ReliableOrdered);
+        if (_clientStates.Count == 0) return;
+
+        float now = Time.unscaledTime;
+
+        foreach (var kv in _clientStates)
+        {
+            var human = NetworkIdResolver.GetHuman(kv.Key);
+            if (human == null || human.gameObject == null) continue;
+
+            var s = kv.Value;
+            if (s.IsDead) continue; // dead citizens — don't move them
+
+            // Lerp factor: how far through the WORLD_SYNC_RATE window we are.
+            float t = Mathf.Clamp01((now - s.AppliedAt) / WORLD_SYNC_RATE);
+            human.transform.position = Vector3.Lerp(s.PrevPosition, s.TargetPosition, t);
+            human.transform.rotation = Quaternion.Slerp(s.PrevRotation, s.TargetRotation, t);
+        }
     }
-    
+
+    // -------------------------------------------------------------------------
+    //  Receive
+    // -------------------------------------------------------------------------
+
     public void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
     {
-        // Client-side: handle world state updates from host
-        if (NetworkManager.IsHost) return;
-        
-        if (type == PacketType.WorldSeed)
+        switch (type)
         {
-            var packet = new WorldSeedPacket();
-            packet.Deserialize(reader);
-            OnWorldSeedReceived(packet);
-        }
-        else if (type == PacketType.CitizenStateBatch)
-        {
-            OnCitizenStateBatch(reader);
-        }
-        else if (type == PacketType.CitizenDeath || type == PacketType.CrimeCommitted)
-        {
-            // Handle critical events
-            // Assuming simple structure for now: [byte type][int id][float time]
-            // Actually WorldSync.SendCriticalEvent sends: [byte eventType][int targetId][float time]
-            // But PacketType was consumed.
-            // Wait, SendCriticalEvent uses writer.Put((byte)eventType) INSIDE the data?
-            // "NetworkManager.SendToAll(packetType, _writer..."
-            // PacketType is the header. The payload starts with eventType byte?
-            // Re-checking SendCriticalEvent in WorldSync.cs:
-            /*
-            _writer.Put((byte)eventType);
-            _writer.Put(targetId);
-            */
-            // Yes.
-            
-            try 
-            {
-                var eventType = (CriticalEventType)reader.GetByte();
-                var targetId = reader.GetInt();
-                // Apply event...
-                Plugin.Log.LogInfo($"Received critical event: {eventType} on {targetId}");
-                
-                // If it's a death, find the human and kill them
-                if (eventType == CriticalEventType.CitizenDeath)
+            case PacketType.WorldSeed:
                 {
-                    var human = NetworkIdResolver.GetHuman(targetId);
-                    if (human != null && !human.isDead)
-                    {
-                        human.SetHealth(0);
-                    }
+                    var p = new WorldSeedPacket();
+                    p.Deserialize(reader);
+                    SyncedSeed = p.Seed;
+                    Plugin.Log.LogInfo($"World seed synced: {p.Seed}, City: {p.CityName}");
+                    break;
                 }
-            }
-            catch {}
+            case PacketType.CitizenStateBatch:
+                OnCitizenBatch(reader);
+                break;
+            case PacketType.CitizenDeath:
+                OnCitizenDeath(reader);
+                break;
         }
     }
-    
-    public void OnWorldSeedReceived(WorldSeedPacket packet)
+
+    private void OnCitizenBatch(NetPacketReader reader)
     {
-        SyncedSeed = packet.Seed;
-        Plugin.Log.LogInfo($"Received world seed: {packet.Seed}, City: {packet.CityName}");
-        
-        // TODO: If world generation hasn't happened yet, use this seed
-        // Otherwise, validate that seeds match
-    }
-    
-    public void OnCitizenStateBatch(NetPacketReader reader)
-    {
-        int count = reader.GetInt();
-        
-        for (int i = 0; i < count; i++)
+        if (NetworkManager.IsHost) return; // host doesn't apply its own broadcast
+
+        try
         {
-            var state = ReadCitizenState(reader);
-            ApplyCitizenState(state);
+            int count = reader.GetInt();
+            float now = Time.unscaledTime;
+
+            for (int i = 0; i < count; i++)
+            {
+                var p = new CitizenStatePacket();
+                p.Deserialize(reader);
+                ApplyCitizenState(p, now);
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"OnCitizenBatch: {ex.Message}");
         }
     }
-    
-    #region Helpers
-    
-    private int GetCurrentWorldSeed()
+
+    private void OnCitizenDeath(NetPacketReader reader)
     {
         try
         {
-            if (CityData.Instance != null)
+            int id = reader.GetInt();
+            // No SetHealth call — SoD API not confirmed. Just drop the citizen from sync state
+            // so we stop driving its transform; the host-driven death animation will play locally
+            // when the actual death state arrives in the next batch.
+            if (_clientStates.TryGetValue(id, out var s))
             {
-                // CityData.seed is a string (deterministic hash input); derive a stable int.
-                var s = CityData.Instance.seed;
-                return string.IsNullOrEmpty(s) ? 0 : s.GetHashCode();
+                s.IsDead = true;
+                _clientStates[id] = s;
             }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"OnCitizenDeath: {ex.Message}");
+        }
+    }
+
+    private void ApplyCitizenState(CitizenStatePacket packet, float now)
+    {
+        var human = NetworkIdResolver.GetHuman(packet.CitizenId);
+        if (human == null || human.gameObject == null) return;
+
+        // First contact: kill the AI driver so it doesn't fight our transform writes.
+        // This is the megabonk-together equivalent of prefix-blocking EnemyMovementRb.
+        if (!_aiDisabled.Contains(packet.CitizenId))
+        {
+            _aiDisabled.Add(packet.CitizenId);
+            DisableAI(human);
+        }
+
+        // Build / update interp record. On big jumps (room/floor change) snap directly.
+        Vector3 currentPos = human.transform.position;
+        bool teleport = !_clientStates.ContainsKey(packet.CitizenId)
+                     || Vector3.Distance(currentPos, packet.Position) > TELEPORT_DIST;
+
+        if (teleport)
+        {
+            human.transform.position = packet.Position;
+            human.transform.rotation = packet.Rotation;
+            _clientStates[packet.CitizenId] = new ClientCitizenState
+            {
+                PrevPosition   = packet.Position,
+                PrevRotation   = packet.Rotation,
+                TargetPosition = packet.Position,
+                TargetRotation = packet.Rotation,
+                AppliedAt      = now,
+                IsDead         = packet.IsDead,
+            };
+            return;
+        }
+
+        var prev = _clientStates[packet.CitizenId];
+        _clientStates[packet.CitizenId] = new ClientCitizenState
+        {
+            // PrevPosition is "where we are visually right now", so the next lerp starts smoothly.
+            PrevPosition   = currentPos,
+            PrevRotation   = human.transform.rotation,
+            TargetPosition = packet.Position,
+            TargetRotation = packet.Rotation,
+            AppliedAt      = now,
+            IsDead         = packet.IsDead,
+        };
+    }
+
+    /// <summary>
+    /// Stop SoD's AI from driving this citizen on the client. Currently disables
+    /// NavMeshAgent — sufficient for citizens that move via path-following (most of them).
+    /// If we observe citizens that still move (custom controllers writing transform directly),
+    /// we'll add Harmony prefix-patches for those classes — by that point we'll know names.
+    /// </summary>
+    private static void DisableAI(Human human)
+    {
+        try
+        {
+            var agent = human.GetComponent<NavMeshAgent>();
+            if (agent != null && agent.enabled)
+            {
+                // Don't outright disable — some SoD code may null-check the agent. Stop it instead.
+                agent.isStopped = true;
+                try { agent.ResetPath(); } catch { }
+                agent.enabled = false;
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"DisableAI({human.humanID}): {ex.Message}");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    //  World seed (host)
+    // -------------------------------------------------------------------------
+
+    public void SyncWorldSeed()
+    {
+        if (!NetworkManager.IsHost) return;
+
+        var packet = new WorldSeedPacket
+        {
+            Seed     = GetCurrentWorldSeed(),
+            CityName = GetCurrentCityName(),
+            CitySize = GetCurrentCitySize(),
+        };
+        _writer.Reset();
+        packet.Serialize(_writer);
+        NetworkManager.SendToAll(PacketType.WorldSeed, _writer, DeliveryMethod.ReliableOrdered);
+        Plugin.Log.LogInfo($"World seed synced: {packet.Seed}, City: {packet.CityName}");
+    }
+
+    // -------------------------------------------------------------------------
+    //  Helpers
+    // -------------------------------------------------------------------------
+
+    /// <summary>All player positions (local + remote) — citizen sync radius is measured against any of these.</summary>
+    private static List<Vector3> GetAnchorPositions()
+    {
+        var list = new List<Vector3>(4);
+        try
+        {
+            var local = global::Player.Instance;
+            if (local != null) list.Add(local.transform.position);
+        }
+        catch { }
+
+        foreach (var rp in Player.RemotePlayerManager.GetAllPlayers())
+        {
+            if (rp == null || rp.gameObject == null) continue;
+            list.Add(rp.transform.position);
+        }
+        return list;
+    }
+
+    private static bool IsAnchorReachable(Vector3 pos, List<Vector3> anchors)
+    {
+        for (int i = 0; i < anchors.Count; i++)
+            if (Vector3.Distance(pos, anchors[i]) <= NPC_SYNC_RANGE) return true;
+        return false;
+    }
+
+    private static bool IsLocalPlayerHuman(Human human)
+    {
+        try
+        {
+            var p = global::Player.Instance;
+            return p != null && p.gameObject == human.gameObject;
+        }
+        catch { return false; }
+    }
+
+    private static bool SafeIsDead(Human human)
+    {
+        try { return human.isDead; } catch { return false; }
+    }
+
+    private static int GetCurrentWorldSeed()
+    {
+        try
+        {
+            var city = CityData.Instance;
+            if (city != null && !string.IsNullOrEmpty(city.seed))
+                return city.seed.GetHashCode();
         }
         catch { }
         return 0;
     }
-    
-    private string GetCurrentCityName()
+
+    private static string GetCurrentCityName()
+    {
+        try { return CityData.Instance?.cityName ?? "Unknown"; }
+        catch { return "Unknown"; }
+    }
+
+    private static int GetCurrentCitySize()
     {
         try
         {
-            if (CityData.Instance != null)
-            {
-                return CityData.Instance.cityName ?? "Unknown City";
-            }
+            var v = CityData.Instance?.citySize ?? Vector2.zero;
+            return ((int)v.x << 16) | ((int)v.y & 0xFFFF);
         }
-        catch { }
-        return "Unknown City";
+        catch { return 0; }
     }
-    
-    private int GetCurrentCitySize()
+
+    public void ClearClientState()
     {
-        try
-        {
-            if (CityData.Instance != null)
-            {
-                // CityData.citySize is a Vector2 (grid W x H); pack into a single int.
-                var v = CityData.Instance.citySize;
-                return ((int)v.x << 16) | ((int)v.y & 0xFFFF);
-            }
-        }
-        catch { }
-        return 1;
+        _clientStates.Clear();
+        _aiDisabled.Clear();
+        _hostSent.Clear();
     }
-    
-    private List<Vector3> GetAllPlayerPositions()
-    {
-        var positions = new List<Vector3>();
-        
-        // Local player using Player.Instance
-        try
-        {
-            var localPlayer = global::Player.Instance;
-            if (localPlayer != null)
-            {
-                positions.Add(localPlayer.transform.position);
-            }
-        }
-        catch { }
-        
-        // Remote players
-        foreach (var remote in Player.RemotePlayerManager.GetAllPlayers())
-        {
-            if (remote != null)
-            {
-                positions.Add(remote.transform.position);
-            }
-        }
-        
-        return positions;
-    }
-    
-    private List<CitizenInfo> FindNPCsNearPlayers(List<Vector3> playerPositions, float range)
-    {
-        var result = new List<CitizenInfo>();
-        
-        try
-        {
-            if (CityData.Instance?.citizenDictionary == null) return result;
-
-            foreach (var kvp in CityData.Instance.citizenDictionary)
-            {
-                var human = kvp.Value;
-                if (human == null || human.gameObject == null) continue;
-
-                var humanPos = human.transform.position;
-
-                foreach (var playerPos in playerPositions)
-                {
-                    if (Vector3.Distance(humanPos, playerPos) <= range)
-                    {
-                        int stableId = kvp.Key;
-
-                        result.Add(new CitizenInfo
-                        {
-                            Id = stableId,
-                            Position = humanPos,
-                            Rotation = human.transform.rotation,
-                            CurrentAction = 0,
-                            CurrentLocationId = human.currentRoom != null ? human.currentRoom.GetInstanceID() : 0,
-                            IsDead = human.isDead,
-                            IsUnconscious = human.isStunned
-                        });
-                        break;
-                    }
-                }
-
-                if (result.Count >= MAX_NPCS_PER_UPDATE) break;
-            }
-        }
-        catch (System.Exception ex)
-        {
-            Plugin.Log.LogError($"Error finding NPCs: {ex.Message}");
-        }
-        
-        return result;
-    }
-    
-    private void WriteCitizenState(NetDataWriter writer, CitizenInfo citizen)
-    {
-        var packet = new CitizenStatePacket
-        {
-            CitizenId = citizen.Id,
-            Position = citizen.Position,
-            Rotation = citizen.Rotation,
-            CurrentAction = citizen.CurrentAction,
-            CurrentLocationId = citizen.CurrentLocationId,
-            IsDead = citizen.IsDead,
-            IsUnconscious = citizen.IsUnconscious
-        };
-        
-        packet.Serialize(writer);
-    }
-    
-    private CitizenStatePacket ReadCitizenState(NetPacketReader reader)
-    {
-        var packet = new CitizenStatePacket();
-        packet.Deserialize(reader);
-        return packet;
-    }
-    
-    private void ApplyCitizenState(CitizenStatePacket state)
-    {
-        try
-        {
-            var human = NetworkIdResolver.GetHuman(state.CitizenId);
-            if (human != null)
-            {
-                // Smooth interpolation could be added here, but for now just snap
-                // Only snap if distance is significant to avoid jitter
-                float dist = Vector3.Distance(human.transform.position, state.Position);
-                if (dist > 0.1f)
-                {
-                    human.transform.position = state.Position;
-                }
-                
-                // Always sync rotation
-                if (Quaternion.Angle(human.transform.rotation, state.Rotation) > 5f)
-                {
-                    human.transform.rotation = state.Rotation;
-                }
-
-                // Sync basic states
-                if (human.isDead != state.IsDead) human.SetHealth(state.IsDead ? 0 : 100); // Rough approximation
-                if (human.isStunned != state.IsUnconscious) human.isStunned = state.IsUnconscious;
-                
-                // Sync animation/action if needed (requires more complex AI sync)
-                // human.ai.currentAction = (AIAction)state.CurrentAction;
-            }
-        }
-        catch (System.Exception ex)
-        {
-            Plugin.Log.LogError($"Error applying citizen state: {ex.Message}");
-        }
-    }
-    
-    private uint CalculateWorldChecksum()
-    {
-        // Simple checksum based on key world state
-        // Used to detect desync
-        uint checksum = 0;
-        
-        // Hash important world state elements
-        // This is a placeholder - actual implementation depends on game
-        
-        return checksum;
-    }
-    
-    /// <summary>
-    /// Send a critical world event that must be immediately synced.
-    /// </summary>
-    public void SendCriticalEvent(CriticalEventType eventType, int targetId)
-    {
-        if (!NetworkManager.IsHost) return;
-        
-        _writer.Reset();
-        _writer.Put((byte)eventType);
-        _writer.Put(targetId);
-        _writer.Put(Time.time);
-        
-        var packetType = eventType switch
-        {
-            CriticalEventType.CitizenDeath => PacketType.CitizenDeath,
-            CriticalEventType.CrimeCommitted => PacketType.CrimeCommitted,
-            _ => PacketType.CitizenDeath
-        };
-        
-        NetworkManager.SendToAll(packetType, _writer, DeliveryMethod.ReliableOrdered);
-    }
-    
-    #endregion
-}
-
-/// <summary>
-/// Critical event types that require immediate sync.
-/// </summary>
-public enum CriticalEventType
-{
-    CitizenDeath,
-    CrimeCommitted,
-    ArrestMade,
-    CaseSolved
-}
-
-/// <summary>
-/// Cached citizen state for delta detection.
-/// </summary>
-public struct CitizenSyncState
-{
-    public Vector3 LastPosition;
-    public Quaternion LastRotation;
-    public int LastAction;
-    public float LastSyncTime;
-}
-
-/// <summary>
-/// Wrapper for citizen/NPC data.
-/// </summary>
-public struct CitizenInfo
-{
-    public int Id;
-    public Vector3 Position;
-    public Quaternion Rotation;
-    public int CurrentAction;
-    public int CurrentLocationId;
-    public bool IsDead;
-    public bool IsUnconscious;
 }
