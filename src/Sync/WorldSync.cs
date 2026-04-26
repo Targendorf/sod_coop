@@ -4,6 +4,7 @@ using LiteNetLib.Utils;
 using UnityEngine;
 using UnityEngine.AI;
 using System.Collections.Generic;
+using Il2CppInterop.Runtime;
 
 namespace SoDCoop.Sync;
 
@@ -318,27 +319,58 @@ public class WorldSync
     }
 
     /// <summary>
-    /// Stop SoD's AI from driving this citizen on the client. Currently disables
-    /// NavMeshAgent — sufficient for citizens that move via path-following (most of them).
-    /// If we observe citizens that still move (custom controllers writing transform directly),
-    /// we'll add Harmony prefix-patches for those classes — by that point we'll know names.
+    /// Stop SoD's AI from driving this citizen on the client.
+    ///
+    /// 1. NavMeshAgent: stop + clear path + disable.
+    ///    Use string-based GetComponent to bypass IL2CPP generic method store
+    ///    initialization failure for GetComponent&lt;NavMeshAgent&gt;().
+    ///
+    /// 2. Animator root motion: set applyRootMotion=false so the animation
+    ///    clip no longer writes delta-position/rotation to the transform.
+    ///    Without this, the idle/walk animation's root motion fights our
+    ///    per-frame transform writes and makes citizens "walk backwards".
     /// </summary>
     private static void DisableAI(Human human)
     {
+        // ── NavMeshAgent ───────────────────────────────────────────────────
         try
         {
-            var agent = human.GetComponent<NavMeshAgent>();
-            if (agent != null && agent.enabled)
+            var agentComp = human.gameObject.GetComponent("NavMeshAgent");
+            if (agentComp != null)
             {
-                // Don't outright disable — some SoD code may null-check the agent. Stop it instead.
-                agent.isStopped = true;
-                try { agent.ResetPath(); } catch { }
-                agent.enabled = false;
+                var agent = agentComp.TryCast<NavMeshAgent>();
+                if (agent != null && agent.enabled)
+                {
+                    agent.isStopped = true;
+                    try { agent.ResetPath(); } catch { }
+                    agent.enabled = false;
+                }
             }
         }
         catch (System.Exception ex)
         {
-            Plugin.Log.LogWarning($"DisableAI({human.humanID}): {ex.Message}");
+            Plugin.Log.LogWarning($"DisableAI NavMeshAgent({human.humanID}): {ex.Message}");
+        }
+
+        // ── Animator root motion ───────────────────────────────────────────
+        // Animator is a standard UnityEngine type; generic GetComponent works.
+        try
+        {
+            // Search citizen's whole hierarchy — SoD may keep the Animator on a child.
+            var animators = human.GetComponentsInChildren<Animator>(true);
+            if (animators != null)
+            {
+                for (int i = 0; i < animators.Count; i++)
+                {
+                    var anim = animators[i];
+                    if (anim != null)
+                        anim.applyRootMotion = false;
+                }
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"DisableAI Animator({human.humanID}): {ex.Message}");
         }
     }
 

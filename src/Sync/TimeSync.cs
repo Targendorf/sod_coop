@@ -7,186 +7,160 @@ namespace SoDCoop.Sync;
 
 /// <summary>
 /// Synchronizes game time between host and clients.
+///
+/// Host: every TIME_SYNC_RATE seconds reads SessionData.gameTime (minutes)
+///       and broadcasts via PacketType.TimeSync (ReliableOrdered).
+///
+/// Client: receives the packet and immediately applies the host's time.
+///         Small drifts (< SNAP_THRESHOLD) are smoothed over SMOOTH_RATE
+///         seconds; larger drifts are snapped instantly to avoid clocks
+///         running visually ahead/behind.
 /// </summary>
 public class TimeSync
 {
     #region Constants
-    
-    /// <summary>
-    /// How often to sync time.
-    /// </summary>
-    private const float TIME_SYNC_RATE = 1.0f;
-    
-    /// <summary>
-    /// Maximum allowed time difference before forcing correction.
-    /// </summary>
-    private const float MAX_TIME_DRIFT = 5f; // seconds of game time
-    
+
+    private const float TIME_SYNC_RATE  = 1.0f;   // s between host broadcasts
+    private const float SNAP_THRESHOLD  = 2.0f;   // game-minutes — snap directly above this
+    private const float SMOOTH_RATE     = 0.1f;   // fraction per second for small corrections
+
     #endregion
-    
+
     #region Properties
-    
-    /// <summary>
-    /// Current synced game time.
-    /// </summary>
+
     public float SyncedGameTime { get; private set; }
-    
-    /// <summary>
-    /// Current synced day.
-    /// </summary>
-    public int SyncedDay { get; private set; }
-    
-    /// <summary>
-    /// Current synced hour.
-    /// </summary>
-    public int SyncedHour { get; private set; }
-    
-    /// <summary>
-    /// Current synced minute.
-    /// </summary>
-    public int SyncedMinute { get; private set; }
-    
-    /// <summary>
-    /// Whether game is paused.
-    /// </summary>
-    public bool IsPaused { get; private set; }
-    
+    public int   SyncedDay      { get; private set; }
+    public int   SyncedHour     { get; private set; }
+    public int   SyncedMinute   { get; private set; }
+    public bool  IsPaused       { get; private set; }
+
     #endregion
-    
-    #region Private Fields
-    
+
     private float _lastSyncTime;
     private readonly NetDataWriter _writer = new();
-    
-    #endregion
-    
+
+    // -------------------------------------------------------------------------
+
     public void Update()
     {
-        // MVP: time sync disabled — each client runs its own clock.
-        return;
+        if (!NetworkManager.IsConnected) return;
+        if (!WorldReadyGate.IsWorldReady) return;
+
+        if (NetworkManager.IsHost)
+        {
+            float now = Time.unscaledTime;
+            if (now - _lastSyncTime >= TIME_SYNC_RATE)
+            {
+                _lastSyncTime = now;
+                SyncTime();
+            }
+        }
     }
-    
+
+    // -------------------------------------------------------------------------
+
     private void SyncTime()
     {
-        // Get current game time from game's time system
-        // This needs to be adapted to match the actual game's time controller
-        var gameTime = GetCurrentGameTime();
-        
+        var info = GetCurrentGameTime();
+
         var packet = new TimeSyncPacket
         {
-            GameTime = gameTime.TotalSeconds,
-            Day = gameTime.Day,
-            Hour = gameTime.Hour,
-            Minute = gameTime.Minute,
-            IsPaused = IsGamePaused()
+            GameTime = info.GameMinutes,
+            Day      = info.Day,
+            Hour     = info.Hour,
+            Minute   = info.Minute,
+            IsPaused = IsGamePaused(),
         };
-        
+
         _writer.Reset();
         packet.Serialize(_writer);
-        
         NetworkManager.SendToAll(PacketType.TimeSync, _writer, DeliveryMethod.ReliableOrdered);
     }
-    
+
+    // -------------------------------------------------------------------------
+
     public void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
     {
-        // Client-side: receive time sync from host
         if (NetworkManager.IsHost) return;
-        
-        if (type == PacketType.TimeSync)
-        {
-            var packet = new TimeSyncPacket();
-            packet.Deserialize(reader);
-            OnTimeSyncReceived(packet);
-        }
+        if (type != PacketType.TimeSync) return;
+
+        var packet = new TimeSyncPacket();
+        packet.Deserialize(reader);
+        ApplyTimePacket(packet);
     }
-    
-    public void OnTimeSyncReceived(TimeSyncPacket packet)
+
+    private void ApplyTimePacket(TimeSyncPacket packet)
     {
-        if (NetworkManager.IsHost) return;
-        
         SyncedGameTime = packet.GameTime;
-        SyncedDay = packet.Day;
-        SyncedHour = packet.Hour;
-        SyncedMinute = packet.Minute;
-        IsPaused = packet.IsPaused;
-        
-        // Check for significant drift and correct if needed
-        var currentTime = GetCurrentGameTime();
-        float drift = Mathf.Abs(currentTime.TotalSeconds - packet.GameTime);
-        
-        if (drift > MAX_TIME_DRIFT)
+        SyncedDay      = packet.Day;
+        SyncedHour     = packet.Hour;
+        SyncedMinute   = packet.Minute;
+        IsPaused       = packet.IsPaused;
+
+        try
         {
-            Plugin.Log.LogWarning($"Time drift detected: {drift}s. Correcting...");
-            SetGameTime(packet);
+            var session = SessionData.Instance;
+            if (session == null) return;
+
+            float current = session.gameTime;         // minutes
+            float target  = packet.GameTime;          // minutes from host
+            float drift   = Mathf.Abs(target - current);
+
+            if (drift > SNAP_THRESHOLD)
+            {
+                // Large drift — snap immediately and log.
+                session.gameTime = target;
+                Plugin.Log.LogInfo(
+                    $"TimeSync: snapped clock {drift:F1} min → " +
+                    $"Day {packet.Day} {packet.Hour:D2}:{packet.Minute:D2}");
+            }
+            else if (drift > 0.05f)
+            {
+                // Small drift — nudge 10% toward target per call (called 1 Hz).
+                session.gameTime = Mathf.Lerp(current, target, SMOOTH_RATE);
+            }
+            // else within noise — do nothing
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"TimeSync.ApplyTimePacket: {ex.Message}");
         }
     }
-    
-    #region Game Time Helpers
-    
-    private GameTimeInfo GetCurrentGameTime()
+
+    // -------------------------------------------------------------------------
+
+    private static GameTimeInfo GetCurrentGameTime()
     {
         try
         {
             var session = SessionData.Instance;
             if (session != null)
             {
-                // session.gameTime is minutes since midnight (SessionData.FloatMinutes24H uses it that way)
-                float gt = session.gameTime;
-                int hour = ((int)(gt / 60f)) % 24;
-                int minute = ((int)gt) % 60;
+                float gt     = session.gameTime;   // minutes since midnight (float)
+                int   hour   = ((int)(gt / 60f)) % 24;
+                int   minute = ((int)gt) % 60;
                 return new GameTimeInfo
                 {
-                    TotalSeconds = gt,
-                    Day = (int)session.day,
-                    Hour = hour,
-                    Minute = minute
+                    GameMinutes = gt,
+                    Day         = (int)session.day,
+                    Hour        = hour,
+                    Minute      = minute,
                 };
             }
         }
         catch { }
-        
-        return new GameTimeInfo
-        {
-            TotalSeconds = Time.time,
-            Day = 1,
-            Hour = 12,
-            Minute = 0
-        };
+
+        return new GameTimeInfo { GameMinutes = 0f, Day = 1, Hour = 0, Minute = 0 };
     }
-    
-    private bool IsGamePaused()
-    {
-        return Time.timeScale == 0f;
-    }
-    
-    private void SetGameTime(TimeSyncPacket packet)
-    {
-        try
-        {
-            var session = SessionData.Instance;
-            if (session != null)
-            {
-                // Correct time drift by adjusting game time
-                session.gameTime = packet.GameTime;
-                Plugin.Log.LogInfo($"Time corrected to Day {packet.Day}, {packet.Hour}:{packet.Minute:D2}");
-            }
-        }
-        catch (System.Exception ex)
-        {
-            Plugin.Log.LogError($"Failed to set game time: {ex.Message}");
-        }
-    }
-    
-    #endregion
+
+    private static bool IsGamePaused() => Time.timeScale == 0f;
 }
 
-/// <summary>
-/// Helper struct for game time data.
-/// </summary>
+/// <summary>Helper struct for game time data.</summary>
 public struct GameTimeInfo
 {
-    public float TotalSeconds;
-    public int Day;
-    public int Hour;
-    public int Minute;
+    public float GameMinutes;   // session.gameTime (minutes since midnight, float)
+    public int   Day;
+    public int   Hour;
+    public int   Minute;
 }
