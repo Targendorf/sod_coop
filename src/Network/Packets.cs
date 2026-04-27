@@ -234,6 +234,22 @@ public enum PacketType : byte
     /// peers see the motion in real-time, like in single-player.
     /// </summary>
     CaseBoardMove = 68,
+
+    /// <summary>
+    /// Connect a coloured string between two pinned facts.
+    /// Replays Case.AddNewStringColour on the receiver.
+    /// </summary>
+    CaseBoardString = 69,
+
+    /// <summary>
+    /// Hide / show a fact card. Replays Case.SetHidden(fact, val) on the receiver.
+    /// </summary>
+    CaseBoardHide = 70,
+
+    /// <summary>
+    /// Case status change (active / solved / failed). Replays Case.SetStatus.
+    /// </summary>
+    CaseBoardStatus = 71,
     
     /// <summary>
     /// Suspect identified/arrested.

@@ -106,6 +106,94 @@ public static class CaseBoardSync
         }
     }
 
+    public static void BroadcastString(int caseId, string fromEvId, Il2CppList fromKeys,
+                                       string toEvId, Il2CppList toKeys, byte colour)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (IsApplyingRemote) return;
+        if (string.IsNullOrEmpty(fromEvId) || string.IsNullOrEmpty(toEvId)) return;
+
+        try
+        {
+            var packet = new CaseBoardStringPacket
+            {
+                CaseId   = caseId,
+                FromEvId = fromEvId,
+                FromKeys = ToByteArray(fromKeys),
+                ToEvId   = toEvId,
+                ToKeys   = ToByteArray(toKeys),
+                Colour   = colour,
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.CaseBoardString, _writer, DeliveryMethod.ReliableOrdered);
+            Plugin.Log.LogInfo($"[CaseBoard] string broadcast case={caseId} {fromEvId}→{toEvId} colour={colour}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"BroadcastString: {ex.Message}");
+        }
+    }
+
+    public static void BroadcastHide(int caseId, Fact fact, bool isHidden)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (IsApplyingRemote) return;
+        if (fact == null) return;
+
+        try
+        {
+            // Fact.fromEvidence / toEvidence are lists (multi-source / multi-target).
+            // For v1 we take the first element on each side — this covers all
+            // 1-to-1 facts which is the common case for player-pinned threads.
+            string fromEv = FirstEvId(fact.fromEvidence);
+            string toEv   = FirstEvId(fact.toEvidence);
+            if (string.IsNullOrEmpty(fromEv) || string.IsNullOrEmpty(toEv)) return;
+
+            var packet = new CaseBoardHidePacket
+            {
+                CaseId   = caseId,
+                FromEvId = fromEv,
+                FromKeys = ToByteArray(fact.fromDataKeys),
+                ToEvId   = toEv,
+                ToKeys   = ToByteArray(fact.toDataKeys),
+                IsHidden = isHidden,
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.CaseBoardHide, _writer, DeliveryMethod.ReliableOrdered);
+            Plugin.Log.LogInfo($"[CaseBoard] hide broadcast case={caseId} {fromEv}→{toEv} hidden={isHidden}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"BroadcastHide: {ex.Message}");
+        }
+    }
+
+    public static void BroadcastStatus(int caseId, byte status, bool cancelObjectives)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (IsApplyingRemote) return;
+
+        try
+        {
+            var packet = new CaseBoardStatusPacket
+            {
+                CaseId            = caseId,
+                Status            = status,
+                CancelObjectives  = cancelObjectives,
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.CaseBoardStatus, _writer, DeliveryMethod.ReliableOrdered);
+            Plugin.Log.LogInfo($"[CaseBoard] status broadcast case={caseId} status={status}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"BroadcastStatus: {ex.Message}");
+        }
+    }
+
     /// <summary>
     /// Broadcast a live-drag position. Throttled to 20 Hz per pin and uses
     /// Sequenced delivery (intermediate frames may drop without harm).
@@ -173,6 +261,24 @@ public static class CaseBoardSync
                 var p = new CaseBoardMovePacket();
                 p.Deserialize(reader);
                 ApplyMove(p);
+            }
+            else if (type == PacketType.CaseBoardString)
+            {
+                var p = new CaseBoardStringPacket();
+                p.Deserialize(reader);
+                ApplyString(p);
+            }
+            else if (type == PacketType.CaseBoardHide)
+            {
+                var p = new CaseBoardHidePacket();
+                p.Deserialize(reader);
+                ApplyHide(p);
+            }
+            else if (type == PacketType.CaseBoardStatus)
+            {
+                var p = new CaseBoardStatusPacket();
+                p.Deserialize(reader);
+                ApplyStatus(p);
             }
         }
         catch (System.Exception ex)
@@ -279,9 +385,127 @@ public static class CaseBoardSync
         }
     }
 
+    private static void ApplyString(CaseBoardStringPacket p)
+    {
+        var caseObj = FindCase(p.CaseId);
+        if (caseObj == null) return;
+
+        var link = FindFactLink(p.FromEvId, p.FromKeys, p.ToEvId, p.ToKeys);
+        if (link == null)
+        {
+            Plugin.Log.LogWarning($"[CaseBoard] ApplyString: link {p.FromEvId}→{p.ToEvId} not found");
+            return;
+        }
+
+        IsApplyingRemote = true;
+        try
+        {
+            // AddNewStringColour(FactLink, EvidenceColours)
+            caseObj.AddNewStringColour(link, (InterfaceControls.EvidenceColours)p.Colour);
+            Plugin.Log.LogInfo($"[CaseBoard] applied remote string case={p.CaseId} colour={p.Colour}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"ApplyString: {ex.Message}");
+        }
+        finally
+        {
+            IsApplyingRemote = false;
+        }
+    }
+
+    private static void ApplyHide(CaseBoardHidePacket p)
+    {
+        var caseObj = FindCase(p.CaseId);
+        if (caseObj == null) return;
+
+        var link = FindFactLink(p.FromEvId, p.FromKeys, p.ToEvId, p.ToKeys);
+        var fact = link?.fact;
+        if (fact == null)
+        {
+            Plugin.Log.LogWarning($"[CaseBoard] ApplyHide: fact {p.FromEvId}→{p.ToEvId} not found");
+            return;
+        }
+
+        IsApplyingRemote = true;
+        try
+        {
+            caseObj.SetHidden(fact, p.IsHidden);
+            Plugin.Log.LogInfo($"[CaseBoard] applied remote hide case={p.CaseId} hidden={p.IsHidden}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"ApplyHide: {ex.Message}");
+        }
+        finally
+        {
+            IsApplyingRemote = false;
+        }
+    }
+
+    private static void ApplyStatus(CaseBoardStatusPacket p)
+    {
+        var caseObj = FindCase(p.CaseId);
+        if (caseObj == null) return;
+        if ((byte)caseObj.caseStatus == p.Status) return;   // idempotent
+
+        IsApplyingRemote = true;
+        try
+        {
+            caseObj.SetStatus((Case.CaseStatus)p.Status, p.CancelObjectives);
+            Plugin.Log.LogInfo($"[CaseBoard] applied remote status case={p.CaseId} status={p.Status}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"ApplyStatus: {ex.Message}");
+        }
+        finally
+        {
+            IsApplyingRemote = false;
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     //  Lookup helpers
     // ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Resolve a Fact (string / hidden) by its 4-tuple identifier.
+    /// We start from the source Evidence's <c>factDictionary</c>, because that's
+    /// where the FactLink list is keyed by source DataKey, then narrow by
+    /// destination evidence + destination keys.
+    /// </summary>
+    private static Evidence.FactLink FindFactLink(
+        string fromEvId, byte[] fromKeys,
+        string toEvId,   byte[] toKeys)
+    {
+        if (string.IsNullOrEmpty(fromEvId) || string.IsNullOrEmpty(toEvId)) return null;
+        var fromEv = FindEvidence(fromEvId);
+        if (fromEv == null) return null;
+
+        try
+        {
+            var keysList = ToIl2CppList(fromKeys);
+            var links = fromEv.GetFactsForDataKey(keysList);
+            if (links == null) return null;
+
+            for (int i = 0; i < links.Count; i++)
+            {
+                var l = links[i];
+                if (l == null) continue;
+                // FactLink.destinationEvidence is a list (multi-target). First match wins.
+                string destEv = FirstEvId(l.destinationEvidence);
+                if (string.IsNullOrEmpty(destEv) || destEv != toEvId) continue;
+                if (!DataKeysEqual(l.destinationKeys, toKeys)) continue;
+                return l;
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"FindFactLink: {ex.Message}");
+        }
+        return null;
+    }
 
     private static Case FindCase(int caseId)
     {
@@ -378,6 +602,22 @@ public static class CaseBoardSync
     /// key for per-pin throttling — collisions just mean a pin is throttled
     /// against another, which is harmless.
     /// </summary>
+    /// <summary>
+    /// First evID from an Il2Cpp list of Evidence (or null if empty).
+    /// Used to collapse multi-target Fact / FactLink references to a single
+    /// stable wire identifier.
+    /// </summary>
+    private static string FirstEvId(Il2CppSystem.Collections.Generic.List<Evidence> list)
+    {
+        try
+        {
+            if (list == null || list.Count == 0) return null;
+            var first = list[0];
+            return first?.evID;
+        }
+        catch { return null; }
+    }
+
     private static long PinKey(int caseId, string evId, byte[] keys)
     {
         unchecked

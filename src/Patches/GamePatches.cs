@@ -215,6 +215,83 @@ public static class GamePatches
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    //  Case.AddNewStringColour — connect a coloured thread between two pins.
+    //  Case.SetHidden — hide / un-hide a fact card.
+    //  Case.SetStatus  — mark case as solved / failed / etc.
+    //
+    //  ToggleHidden is intentionally not patched — game code routes it through
+    //  SetHidden internally so a single patch covers both. If runtime shows
+    //  otherwise, add a postfix on ToggleHidden that reads the new state.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(Case), nameof(Case.AddNewStringColour))]
+    public static class Case_AddNewStringColour_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Case __instance, Evidence.FactLink link, InterfaceControls.EvidenceColours col)
+        {
+            try
+            {
+                if (__instance == null || link == null) return;
+                if (CaseBoardSync.IsApplyingRemote) return;
+                var fromEv = link.thisEvidence;
+                if (fromEv == null) return;
+                // destinationEvidence is List<Evidence> (multi-target FactLink) — take first.
+                if (link.destinationEvidence == null || link.destinationEvidence.Count == 0) return;
+                var toEv = link.destinationEvidence[0];
+                if (toEv == null) return;
+                CaseBoardSync.BroadcastString(
+                    __instance.id,
+                    fromEv.evID, link.thisKeys,
+                    toEv.evID,   link.destinationKeys,
+                    (byte)col);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"Case.AddNewStringColour patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(Case), nameof(Case.SetHidden))]
+    public static class Case_SetHidden_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Case __instance, Fact fact, bool val)
+        {
+            try
+            {
+                if (__instance == null || fact == null) return;
+                if (CaseBoardSync.IsApplyingRemote) return;
+                CaseBoardSync.BroadcastHide(__instance.id, fact, val);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"Case.SetHidden patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(Case), nameof(Case.SetStatus))]
+    public static class Case_SetStatus_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Case __instance, Case.CaseStatus newStatus, bool cancelObjectives)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (CaseBoardSync.IsApplyingRemote) return;
+                CaseBoardSync.BroadcastStatus(__instance.id, (byte)newStatus, cancelObjectives);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"Case.SetStatus patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     //  Human.Murder — fired whenever a citizen actually gets killed.
     //  Skip Player.Instance (the local player has no stable cross-machine ID).
     //  Skip while CitizenDeathSync.IsApplyingRemote so we don't echo.

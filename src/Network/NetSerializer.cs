@@ -680,6 +680,119 @@ public struct CaseBoardMovePacket : INetPacket
 }
 
 /// <summary>
+/// Connect a coloured string between two pinned facts on the case board.
+/// A fact is uniquely identified across machines by a directed evidence-key
+/// pair: (fromEvId, fromDataKeys) → (toEvId, toDataKeys). Colour is
+/// InterfaceControls.EvidenceColours packed as a byte.
+/// Replays Case.AddNewStringColour on the receiver.
+/// </summary>
+public struct CaseBoardStringPacket : INetPacket
+{
+    public PacketType Type => PacketType.CaseBoardString;
+
+    public int     CaseId;
+    public string  FromEvId;
+    public byte[]  FromKeys;
+    public string  ToEvId;
+    public byte[]  ToKeys;
+    public byte    Colour;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(CaseId);
+        w.Put(FromEvId ?? "");
+        w.Put((byte)(FromKeys?.Length ?? 0));
+        if (FromKeys != null) for (int i = 0; i < FromKeys.Length; i++) w.Put(FromKeys[i]);
+        w.Put(ToEvId ?? "");
+        w.Put((byte)(ToKeys?.Length ?? 0));
+        if (ToKeys != null) for (int i = 0; i < ToKeys.Length; i++) w.Put(ToKeys[i]);
+        w.Put(Colour);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        CaseId   = r.GetInt();
+        FromEvId = r.GetString();
+        int n    = r.GetByte();
+        FromKeys = new byte[n];
+        for (int i = 0; i < n; i++) FromKeys[i] = r.GetByte();
+        ToEvId   = r.GetString();
+        int m    = r.GetByte();
+        ToKeys   = new byte[m];
+        for (int i = 0; i < m; i++) ToKeys[i] = r.GetByte();
+        Colour   = r.GetByte();
+    }
+}
+
+/// <summary>
+/// Hide / show a fact card on the case board. Same fact identifier as the
+/// string packet (4-tuple). Replays Case.SetHidden(fact, IsHidden).
+/// </summary>
+public struct CaseBoardHidePacket : INetPacket
+{
+    public PacketType Type => PacketType.CaseBoardHide;
+
+    public int     CaseId;
+    public string  FromEvId;
+    public byte[]  FromKeys;
+    public string  ToEvId;
+    public byte[]  ToKeys;
+    public bool    IsHidden;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(CaseId);
+        w.Put(FromEvId ?? "");
+        w.Put((byte)(FromKeys?.Length ?? 0));
+        if (FromKeys != null) for (int i = 0; i < FromKeys.Length; i++) w.Put(FromKeys[i]);
+        w.Put(ToEvId ?? "");
+        w.Put((byte)(ToKeys?.Length ?? 0));
+        if (ToKeys != null) for (int i = 0; i < ToKeys.Length; i++) w.Put(ToKeys[i]);
+        w.Put(IsHidden);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        CaseId   = r.GetInt();
+        FromEvId = r.GetString();
+        int n    = r.GetByte();
+        FromKeys = new byte[n];
+        for (int i = 0; i < n; i++) FromKeys[i] = r.GetByte();
+        ToEvId   = r.GetString();
+        int m    = r.GetByte();
+        ToKeys   = new byte[m];
+        for (int i = 0; i < m; i++) ToKeys[i] = r.GetByte();
+        IsHidden = r.GetBool();
+    }
+}
+
+/// <summary>
+/// Case status (active / solved / failed). Replays Case.SetStatus.
+/// </summary>
+public struct CaseBoardStatusPacket : INetPacket
+{
+    public PacketType Type => PacketType.CaseBoardStatus;
+
+    public int  CaseId;
+    public byte Status;             // CaseStatus enum
+    public bool CancelObjectives;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(CaseId);
+        w.Put(Status);
+        w.Put(CancelObjectives);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        CaseId           = r.GetInt();
+        Status           = r.GetByte();
+        CancelObjectives = r.GetBool();
+    }
+}
+
+/// <summary>
 /// Citizen death — broadcast when <c>Human.Murder</c> fires on a non-player.
 /// Receiver finds the victim via CityData.citizenDictionary[humanID] and mirrors
 /// the dead state (isDead flag + CitizenAnimationController.SetDead(true) +
