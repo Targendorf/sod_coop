@@ -156,7 +156,8 @@ public static class SyncManager
                   || type == PacketType.CaseBoardStatus
                   || type == PacketType.CaseBoardResolveAnswer
                   || type == PacketType.CaseBoardResolve
-                  || type == PacketType.CaseBoardFactName)
+                  || type == PacketType.CaseBoardFactName
+                  || type == PacketType.CaseBoardStringRemove)
             {
                 CaseBoardSync.OnPacketReceived(type, reader, senderId);
             }

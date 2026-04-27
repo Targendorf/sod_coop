@@ -344,6 +344,80 @@ public static class GamePatches
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    //  StringController.RemoveCustomLink — player removes a thread.
+    //
+    //  We capture the connection identifier in the prefix because RemoveCustomLink
+    //  may null out the StringController's `connection` field as part of its
+    //  cleanup, leaving us unable to identify the link in the postfix.
+    //  Broadcast happens unconditionally in the postfix using the captured
+    //  identifier from __state.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(StringController), nameof(StringController.RemoveCustomLink))]
+    public static class StringController_RemoveCustomLink_Patch
+    {
+        /// <summary>
+        /// Frozen copy of the connection identifier captured in the prefix —
+        /// safe to use in the postfix even if RemoveCustomLink nulls out
+        /// connection / from / to during its cleanup.
+        /// </summary>
+        public class State
+        {
+            public bool   Valid;
+            public int    CaseId;
+            public string FromEvId;
+            public byte[] FromKeys;
+            public string ToEvId;
+            public byte[] ToKeys;
+        }
+
+        [HarmonyPrefix]
+        public static void Prefix(StringController __instance, out State __state)
+        {
+            __state = null;
+            try
+            {
+                if (__instance == null) return;
+                if (CaseBoardSync.IsApplyingRemote) return;
+
+                var conn = __instance.connection;
+                var from = conn?.from?.caseElement;
+                var to   = conn?.to?.caseElement;
+                if (from == null || to == null) return;
+                if (string.IsNullOrEmpty(from.id) || string.IsNullOrEmpty(to.id)) return;
+
+                __state = new State
+                {
+                    Valid    = true,
+                    CaseId   = from.caseID,
+                    FromEvId = from.id,
+                    FromKeys = SoDCoop.Sync.CaseBoardSync.SnapshotDataKeys(from.dk),
+                    ToEvId   = to.id,
+                    ToKeys   = SoDCoop.Sync.CaseBoardSync.SnapshotDataKeys(to.dk),
+                };
+            }
+            catch { }
+        }
+
+        [HarmonyPostfix]
+        public static void Postfix(State __state)
+        {
+            try
+            {
+                if (__state == null || !__state.Valid) return;
+                CaseBoardSync.BroadcastStringRemoveById(
+                    __state.CaseId,
+                    __state.FromEvId, __state.FromKeys,
+                    __state.ToEvId,   __state.ToKeys);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"StringController.RemoveCustomLink patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     //  Fact.SetCustomName — player relabels a fact card. Virtual method.
     // ─────────────────────────────────────────────────────────────────────────
 

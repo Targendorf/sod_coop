@@ -793,6 +793,48 @@ public struct CaseBoardStatusPacket : INetPacket
 }
 
 /// <summary>
+/// Player removed a thread between two pinned cards. Identified by the same
+/// (caseID, fromEvID, fromKeys, toEvID, toKeys) tuple used by AddNewStringColour.
+/// Receiver finds the matching <c>StringController</c> in
+/// <c>CasePanelController.spawnedStrings</c> and calls
+/// <c>RemoveCustomLink</c> on it locally.
+/// </summary>
+public struct CaseBoardStringRemovePacket : INetPacket
+{
+    public PacketType Type => PacketType.CaseBoardStringRemove;
+
+    public int     CaseId;
+    public string  FromEvId;
+    public byte[]  FromKeys;
+    public string  ToEvId;
+    public byte[]  ToKeys;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(CaseId);
+        w.Put(FromEvId ?? "");
+        w.Put((byte)(FromKeys?.Length ?? 0));
+        if (FromKeys != null) for (int i = 0; i < FromKeys.Length; i++) w.Put(FromKeys[i]);
+        w.Put(ToEvId ?? "");
+        w.Put((byte)(ToKeys?.Length ?? 0));
+        if (ToKeys != null) for (int i = 0; i < ToKeys.Length; i++) w.Put(ToKeys[i]);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        CaseId   = r.GetInt();
+        FromEvId = r.GetString();
+        int n    = r.GetByte();
+        FromKeys = new byte[n];
+        for (int i = 0; i < n; i++) FromKeys[i] = r.GetByte();
+        ToEvId   = r.GetString();
+        int m    = r.GetByte();
+        ToKeys   = new byte[m];
+        for (int i = 0; i < m; i++) ToKeys[i] = r.GetByte();
+    }
+}
+
+/// <summary>
 /// Resolve-question answer progress. Identified by parent caseID + the
 /// question's index in <c>Case.resolveQuestions</c>. Both clients run the
 /// same case schema so the index is stable cross-machine.

@@ -215,6 +215,47 @@ public static class CaseBoardSync
         }
     }
 
+    /// <summary>
+    /// Broadcast removal of a thread by its frozen identifier. The patch must
+    /// snapshot DataKeys before RemoveCustomLink runs (it may null out the
+    /// connection during cleanup), and pass the snapshot back here.
+    /// </summary>
+    public static void BroadcastStringRemoveById(
+        int caseId,
+        string fromEvId, byte[] fromKeys,
+        string toEvId,   byte[] toKeys)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (IsApplyingRemote) return;
+        if (string.IsNullOrEmpty(fromEvId) || string.IsNullOrEmpty(toEvId)) return;
+
+        try
+        {
+            var packet = new CaseBoardStringRemovePacket
+            {
+                CaseId   = caseId,
+                FromEvId = fromEvId,
+                FromKeys = fromKeys ?? System.Array.Empty<byte>(),
+                ToEvId   = toEvId,
+                ToKeys   = toKeys ?? System.Array.Empty<byte>(),
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.CaseBoardStringRemove, _writer, DeliveryMethod.ReliableOrdered);
+            Plugin.Log.LogInfo($"[CaseBoard] string-remove broadcast case={caseId} {fromEvId}→{toEvId}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"BroadcastStringRemoveById: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Public version of <see cref="ToByteArray"/> for the patch to take a
+    /// stable copy of CaseElement.dk before RemoveCustomLink runs.
+    /// </summary>
+    public static byte[] SnapshotDataKeys(Il2CppList keys) => ToByteArray(keys);
+
     public static void BroadcastFactName(Fact fact, string customName)
     {
         if (!NetworkManager.IsConnected) return;
@@ -373,6 +414,12 @@ public static class CaseBoardSync
                 var p = new CaseBoardFactNamePacket();
                 p.Deserialize(reader);
                 ApplyFactName(p);
+            }
+            else if (type == PacketType.CaseBoardStringRemove)
+            {
+                var p = new CaseBoardStringRemovePacket();
+                p.Deserialize(reader);
+                ApplyStringRemove(p);
             }
         }
         catch (System.Exception ex)
@@ -634,6 +681,32 @@ public static class CaseBoardSync
         }
     }
 
+    private static void ApplyStringRemove(CaseBoardStringRemovePacket p)
+    {
+        var sc = FindStringController(p.CaseId, p.FromEvId, p.FromKeys, p.ToEvId, p.ToKeys);
+        if (sc == null)
+        {
+            Plugin.Log.LogWarning(
+                $"[CaseBoard] ApplyStringRemove: no StringController for case={p.CaseId} {p.FromEvId}→{p.ToEvId}");
+            return;
+        }
+
+        IsApplyingRemote = true;
+        try
+        {
+            sc.RemoveCustomLink();
+            Plugin.Log.LogInfo($"[CaseBoard] applied remote string-remove case={p.CaseId} {p.FromEvId}→{p.ToEvId}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"ApplyStringRemove: {ex.Message}");
+        }
+        finally
+        {
+            IsApplyingRemote = false;
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     //  Lookup helpers
     // ─────────────────────────────────────────────────────────────────────────
@@ -771,6 +844,48 @@ public static class CaseBoardSync
     /// key for per-pin throttling — collisions just mean a pin is throttled
     /// against another, which is harmless.
     /// </summary>
+    /// <summary>
+    /// Find the local StringController whose endpoints match the given
+    /// (caseID, fromEv+keys, toEv+keys) tuple. Walks
+    /// <c>CasePanelController.spawnedStrings</c> and matches both endpoints
+    /// in either direction (the connection from/to order may differ between
+    /// machines if SoD spawned them in different order).
+    /// </summary>
+    private static StringController FindStringController(
+        int caseId,
+        string fromEvId, byte[] fromKeys,
+        string toEvId,   byte[] toKeys)
+    {
+        try
+        {
+            var cpc = CasePanelController.Instance;
+            var list = cpc?.spawnedStrings;
+            if (list == null) return null;
+
+            for (int i = 0; i < list.Count; i++)
+            {
+                var sc = list[i];
+                var conn = sc?.connection;
+                var fromElem = conn?.from?.caseElement;
+                var toElem   = conn?.to?.caseElement;
+                if (fromElem == null || toElem == null) continue;
+                if (fromElem.caseID != caseId) continue;
+
+                if (Matches(fromElem, fromEvId, fromKeys) && Matches(toElem, toEvId, toKeys)) return sc;
+                // Direction-swapped match — same logical thread.
+                if (Matches(fromElem, toEvId, toKeys) && Matches(toElem, fromEvId, fromKeys)) return sc;
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    private static bool Matches(Case.CaseElement elem, string evId, byte[] keys)
+    {
+        if (elem == null || elem.id != evId) return false;
+        return DataKeysEqual(elem.dk, keys);
+    }
+
     /// <summary>
     /// Walk activeCases to find the Case that owns the given ResolveQuestion,
     /// returning (Case, questionIndex). Returns (null, -1) if not found.

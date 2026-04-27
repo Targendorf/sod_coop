@@ -266,6 +266,12 @@ public enum PacketType : byte
     /// Player-typed custom name for a fact card. Replays Fact.SetCustomName.
     /// </summary>
     CaseBoardFactName = 74,
+
+    /// <summary>
+    /// Player removed a coloured thread between two pinned cards.
+    /// Replays StringController.RemoveCustomLink on the matching local string.
+    /// </summary>
+    CaseBoardStringRemove = 75,
     
     /// <summary>
     /// Suspect identified/arrested.
