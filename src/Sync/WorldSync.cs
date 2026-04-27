@@ -70,7 +70,8 @@ public class WorldSync
 
     private struct ClientCitizenState
     {
-        public bool                  RootMotionDisabled;
+        public bool                  AIControllerDisabled; // NewAIController.enabled = false done
+        public bool                  RootMotionDisabled;   // applyRootMotion = false done
         public CitizenBehaviourState BehaviourState;
         public bool                  IsDead;
     }
@@ -493,10 +494,16 @@ public class WorldSync
 
     /// <summary>
     /// Get (or re-enable) a citizen's NavMeshAgent on the client.
-    /// On first call also disables Animator root motion so it doesn't fight the agent.
-    /// We intentionally leave the NavMeshAgent enabled — it is what makes the citizen
-    /// walk. We disable SoD's high-level scheduler by overriding its destination every
-    /// COMMAND_SCAN_RATE, which is fast enough that any counter-write is invisible.
+    ///
+    /// On first call (per citizen):
+    ///   1. Disable NewAIController — stops SoD's scheduler from overwriting
+    ///      NavMeshAgent.destination every frame (~60 Hz). Without this, SoD wins 9
+    ///      out of 10 frames and our 10 Hz SetDestination has no lasting effect.
+    ///   2. Disable Animator root motion — prevents animation delta-pos from
+    ///      fighting our NavMeshAgent-driven movement.
+    ///
+    /// NavMeshAgent stays ENABLED so the citizen pathfinds locally using the
+    /// destination we supply from the host — smooth movement, correct animation.
     /// </summary>
     private NavMeshAgent GetOrEnableAgent(Human human, int citizenId)
     {
@@ -507,17 +514,55 @@ public class WorldSync
 
             if (!agent.enabled) agent.enabled = true;
 
-            // One-time: disable root motion so animation doesn't write delta-pos to transform
-            if (_clientStates.TryGetValue(citizenId, out var s) && !s.RootMotionDisabled)
+            _clientStates.TryGetValue(citizenId, out var s);
+            bool changed = false;
+
+            // One-time: kill SoD's AI scheduler so it stops competing with us.
+            if (!s.AIControllerDisabled)
+            {
+                DisableAIController(human);
+                s.AIControllerDisabled = true;
+                changed = true;
+            }
+
+            // One-time: disable root motion so animation doesn't write delta-pos to transform.
+            if (!s.RootMotionDisabled)
             {
                 DisableRootMotion(human);
                 s.RootMotionDisabled = true;
-                _clientStates[citizenId] = s;
+                changed = true;
             }
+
+            if (changed) _clientStates[citizenId] = s;
 
             return agent;
         }
         catch { return null; }
+    }
+
+    /// <summary>
+    /// Disable SoD's NewAIController MonoBehaviour on this citizen.
+    /// Setting enabled=false stops all Update/FixedUpdate callbacks — the citizen's
+    /// schedule, goal evaluation, and NavMeshAgent writes all cease.
+    /// NavMeshAgent stays alive and usable; we drive it via SetDestination.
+    /// </summary>
+    private static void DisableAIController(Human human)
+    {
+        try
+        {
+            var comp = human.gameObject.GetComponent("NewAIController");
+            if (comp == null) return;
+            var ai = comp.TryCast<NewAIController>();
+            if (ai != null && ai.enabled)
+            {
+                ai.enabled = false;
+                Plugin.Log.LogInfo($"[WorldSync] Disabled NewAIController on citizen {human.humanID}");
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"[WorldSync] DisableAIController({human.humanID}): {ex.Message}");
+        }
     }
 
     private static void StopAgent(Human human)
