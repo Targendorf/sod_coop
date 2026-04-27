@@ -170,6 +170,82 @@ public static class CaseBoardSync
         }
     }
 
+    public static void BroadcastResolveAnswer(int caseId, int questionIndex, float progress, bool forceTrigger)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (IsApplyingRemote) return;
+        if (questionIndex < 0) return;
+
+        try
+        {
+            var packet = new CaseBoardResolveAnswerPacket
+            {
+                CaseId        = caseId,
+                QuestionIndex = questionIndex,
+                Progress      = progress,
+                ForceTrigger  = forceTrigger,
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.CaseBoardResolveAnswer, _writer, DeliveryMethod.ReliableOrdered);
+            Plugin.Log.LogInfo($"[CaseBoard] resolve-answer broadcast case={caseId} q={questionIndex} p={progress:F2}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"BroadcastResolveAnswer: {ex.Message}");
+        }
+    }
+
+    public static void BroadcastResolve(int caseId)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (IsApplyingRemote) return;
+
+        try
+        {
+            var packet = new CaseBoardResolvePacket { CaseId = caseId };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.CaseBoardResolve, _writer, DeliveryMethod.ReliableOrdered);
+            Plugin.Log.LogInfo($"[CaseBoard] resolve broadcast case={caseId}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"BroadcastResolve: {ex.Message}");
+        }
+    }
+
+    public static void BroadcastFactName(Fact fact, string customName)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (IsApplyingRemote) return;
+        if (fact == null) return;
+
+        try
+        {
+            string fromEv = FirstEvId(fact.fromEvidence);
+            string toEv   = FirstEvId(fact.toEvidence);
+            if (string.IsNullOrEmpty(fromEv) || string.IsNullOrEmpty(toEv)) return;
+
+            var packet = new CaseBoardFactNamePacket
+            {
+                FromEvId   = fromEv,
+                FromKeys   = ToByteArray(fact.fromDataKeys),
+                ToEvId     = toEv,
+                ToKeys     = ToByteArray(fact.toDataKeys),
+                CustomName = customName ?? "",
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.CaseBoardFactName, _writer, DeliveryMethod.ReliableOrdered);
+            Plugin.Log.LogInfo($"[CaseBoard] fact-name broadcast {fromEv}→{toEv} = \"{customName}\"");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"BroadcastFactName: {ex.Message}");
+        }
+    }
+
     public static void BroadcastStatus(int caseId, byte status, bool cancelObjectives)
     {
         if (!NetworkManager.IsConnected) return;
@@ -279,6 +355,24 @@ public static class CaseBoardSync
                 var p = new CaseBoardStatusPacket();
                 p.Deserialize(reader);
                 ApplyStatus(p);
+            }
+            else if (type == PacketType.CaseBoardResolveAnswer)
+            {
+                var p = new CaseBoardResolveAnswerPacket();
+                p.Deserialize(reader);
+                ApplyResolveAnswer(p);
+            }
+            else if (type == PacketType.CaseBoardResolve)
+            {
+                var p = new CaseBoardResolvePacket();
+                p.Deserialize(reader);
+                ApplyResolve(p);
+            }
+            else if (type == PacketType.CaseBoardFactName)
+            {
+                var p = new CaseBoardFactNamePacket();
+                p.Deserialize(reader);
+                ApplyFactName(p);
             }
         }
         catch (System.Exception ex)
@@ -465,6 +559,81 @@ public static class CaseBoardSync
         }
     }
 
+    private static void ApplyResolveAnswer(CaseBoardResolveAnswerPacket p)
+    {
+        var caseObj = FindCase(p.CaseId);
+        if (caseObj == null) return;
+        var questions = caseObj.resolveQuestions;
+        if (questions == null) return;
+        if (p.QuestionIndex < 0 || p.QuestionIndex >= questions.Count) return;
+
+        var q = questions[p.QuestionIndex];
+        if (q == null) return;
+
+        IsApplyingRemote = true;
+        try
+        {
+            q.SetProgress(p.Progress, p.ForceTrigger);
+            Plugin.Log.LogInfo($"[CaseBoard] applied remote resolve-answer case={p.CaseId} q={p.QuestionIndex} p={p.Progress:F2}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"ApplyResolveAnswer: {ex.Message}");
+        }
+        finally
+        {
+            IsApplyingRemote = false;
+        }
+    }
+
+    private static void ApplyResolve(CaseBoardResolvePacket p)
+    {
+        var caseObj = FindCase(p.CaseId);
+        if (caseObj == null) return;
+        if (caseObj.isSolved) return;        // idempotent
+
+        IsApplyingRemote = true;
+        try
+        {
+            caseObj.Resolve();
+            Plugin.Log.LogInfo($"[CaseBoard] applied remote resolve case={p.CaseId}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"ApplyResolve: {ex.Message}");
+        }
+        finally
+        {
+            IsApplyingRemote = false;
+        }
+    }
+
+    private static void ApplyFactName(CaseBoardFactNamePacket p)
+    {
+        var link = FindFactLink(p.FromEvId, p.FromKeys, p.ToEvId, p.ToKeys);
+        var fact = link?.fact;
+        if (fact == null)
+        {
+            Plugin.Log.LogWarning($"[CaseBoard] ApplyFactName: fact {p.FromEvId}→{p.ToEvId} not found");
+            return;
+        }
+
+        IsApplyingRemote = true;
+        try
+        {
+            fact.SetCustomName(p.CustomName ?? "");
+            Plugin.Log.LogInfo($"[CaseBoard] applied remote fact-name = \"{p.CustomName}\"");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"ApplyFactName: {ex.Message}");
+        }
+        finally
+        {
+            IsApplyingRemote = false;
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     //  Lookup helpers
     // ─────────────────────────────────────────────────────────────────────────
@@ -602,6 +771,32 @@ public static class CaseBoardSync
     /// key for per-pin throttling — collisions just mean a pin is throttled
     /// against another, which is harmless.
     /// </summary>
+    /// <summary>
+    /// Walk activeCases to find the Case that owns the given ResolveQuestion,
+    /// returning (Case, questionIndex). Returns (null, -1) if not found.
+    /// </summary>
+    public static (Case caseObj, int index) FindOwnerOfResolveQuestion(Case.ResolveQuestion question)
+    {
+        if (question == null) return (null, -1);
+        try
+        {
+            var cpc = CasePanelController.Instance;
+            if (cpc?.activeCases == null) return (null, -1);
+            for (int i = 0; i < cpc.activeCases.Count; i++)
+            {
+                var c = cpc.activeCases[i];
+                var qs = c?.resolveQuestions;
+                if (qs == null) continue;
+                for (int j = 0; j < qs.Count; j++)
+                {
+                    if (qs[j] != null && qs[j].Pointer == question.Pointer) return (c, j);
+                }
+            }
+        }
+        catch { }
+        return (null, -1);
+    }
+
     /// <summary>
     /// First evID from an Il2Cpp list of Evidence (or null if empty).
     /// Used to collapse multi-target Fact / FactLink references to a single

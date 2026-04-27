@@ -250,6 +250,22 @@ public enum PacketType : byte
     /// Case status change (active / solved / failed). Replays Case.SetStatus.
     /// </summary>
     CaseBoardStatus = 71,
+
+    /// <summary>
+    /// Answer progress for a resolve-question (suspect / location / time pick).
+    /// Replays ResolveQuestion.SetProgress.
+    /// </summary>
+    CaseBoardResolveAnswer = 72,
+
+    /// <summary>
+    /// Final case resolution / hand-in. Replays Case.Resolve().
+    /// </summary>
+    CaseBoardResolve = 73,
+
+    /// <summary>
+    /// Player-typed custom name for a fact card. Replays Fact.SetCustomName.
+    /// </summary>
+    CaseBoardFactName = 74,
     
     /// <summary>
     /// Suspect identified/arrested.

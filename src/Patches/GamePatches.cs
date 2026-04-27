@@ -292,6 +292,81 @@ public static class GamePatches
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    //  ResolveQuestion.SetProgress — player picks a suspect / location / time.
+    //  Walk activeCases to find which Case owns this question + at what index.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(Case.ResolveQuestion), nameof(Case.ResolveQuestion.SetProgress))]
+    public static class ResolveQuestion_SetProgress_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Case.ResolveQuestion __instance, float val, bool forceTrigger)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (CaseBoardSync.IsApplyingRemote) return;
+                var (owner, idx) = CaseBoardSync.FindOwnerOfResolveQuestion(__instance);
+                if (owner == null || idx < 0) return;
+                CaseBoardSync.BroadcastResolveAnswer(owner.id, idx, val, forceTrigger);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"ResolveQuestion.SetProgress patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Case.Resolve — final hand-in. Either side can hand in a case (this is
+    //  legitimate co-op behaviour: whoever's standing at the case-board does it).
+    //  No conflict possible because Resolve flips isSolved and ApplyResolve
+    //  short-circuits on already-solved cases.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(Case), nameof(Case.Resolve))]
+    public static class Case_Resolve_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Case __instance)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (CaseBoardSync.IsApplyingRemote) return;
+                CaseBoardSync.BroadcastResolve(__instance.id);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"Case.Resolve patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Fact.SetCustomName — player relabels a fact card. Virtual method.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(Fact), nameof(Fact.SetCustomName))]
+    public static class Fact_SetCustomName_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Fact __instance, string str)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (CaseBoardSync.IsApplyingRemote) return;
+                CaseBoardSync.BroadcastFactName(__instance, str);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"Fact.SetCustomName patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     //  Human.Murder — fired whenever a citizen actually gets killed.
     //  Skip Player.Instance (the local player has no stable cross-machine ID).
     //  Skip while CitizenDeathSync.IsApplyingRemote so we don't echo.

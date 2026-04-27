@@ -793,6 +793,87 @@ public struct CaseBoardStatusPacket : INetPacket
 }
 
 /// <summary>
+/// Resolve-question answer progress. Identified by parent caseID + the
+/// question's index in <c>Case.resolveQuestions</c>. Both clients run the
+/// same case schema so the index is stable cross-machine.
+/// </summary>
+public struct CaseBoardResolveAnswerPacket : INetPacket
+{
+    public PacketType Type => PacketType.CaseBoardResolveAnswer;
+
+    public int   CaseId;
+    public int   QuestionIndex;
+    public float Progress;
+    public bool  ForceTrigger;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(CaseId);
+        w.Put(QuestionIndex);
+        w.Put(Progress);
+        w.Put(ForceTrigger);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        CaseId        = r.GetInt();
+        QuestionIndex = r.GetInt();
+        Progress      = r.GetFloat();
+        ForceTrigger  = r.GetBool();
+    }
+}
+
+/// <summary>Final case hand-in / resolve. Replays Case.Resolve().</summary>
+public struct CaseBoardResolvePacket : INetPacket
+{
+    public PacketType Type => PacketType.CaseBoardResolve;
+
+    public int CaseId;
+
+    public void Serialize(NetDataWriter w)   { w.Put(CaseId); }
+    public void Deserialize(NetDataReader r) { CaseId = r.GetInt(); }
+}
+
+/// <summary>
+/// Custom name typed onto a fact card. Same fact 4-tuple identifier as the
+/// string / hide packets, plus the new name string. Replays Fact.SetCustomName.
+/// </summary>
+public struct CaseBoardFactNamePacket : INetPacket
+{
+    public PacketType Type => PacketType.CaseBoardFactName;
+
+    public string  FromEvId;
+    public byte[]  FromKeys;
+    public string  ToEvId;
+    public byte[]  ToKeys;
+    public string  CustomName;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(FromEvId ?? "");
+        w.Put((byte)(FromKeys?.Length ?? 0));
+        if (FromKeys != null) for (int i = 0; i < FromKeys.Length; i++) w.Put(FromKeys[i]);
+        w.Put(ToEvId ?? "");
+        w.Put((byte)(ToKeys?.Length ?? 0));
+        if (ToKeys != null) for (int i = 0; i < ToKeys.Length; i++) w.Put(ToKeys[i]);
+        w.Put(CustomName ?? "");
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        FromEvId   = r.GetString();
+        int n      = r.GetByte();
+        FromKeys   = new byte[n];
+        for (int i = 0; i < n; i++) FromKeys[i] = r.GetByte();
+        ToEvId     = r.GetString();
+        int m      = r.GetByte();
+        ToKeys     = new byte[m];
+        for (int i = 0; i < m; i++) ToKeys[i] = r.GetByte();
+        CustomName = r.GetString();
+    }
+}
+
+/// <summary>
 /// Citizen death — broadcast when <c>Human.Murder</c> fires on a non-player.
 /// Receiver finds the victim via CityData.citizenDictionary[humanID] and mirrors
 /// the dead state (isDead flag + CitizenAnimationController.SetDead(true) +
