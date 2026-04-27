@@ -132,9 +132,14 @@ public class WorldSync
                 bool isDead = SafeIsDead(human);
 
                 var   agent = GetAgent(human);
-                var   dest  = agent != null && agent.enabled ? agent.destination : pos;
-                float speed = agent != null ? agent.speed : 0f;
-                var   state = InferBehaviourState(human, agent, isDead);
+                // Prefer NewAIController.currentDestinationPositon — this is what SoD's
+                // pathfinder writes directly; NavMeshAgent.destination lags by one frame.
+                var   aiCtrl = GetNewAIController(human);
+                var   dest   = aiCtrl != null ? aiCtrl.currentDestinationPositon
+                                              : (agent != null && agent.enabled ? agent.destination : pos);
+                // movementAmount is 0-1 float; agent.speed is m/s — send both packed as speed
+                float speed  = agent != null ? agent.speed : 0f;
+                var   state  = InferBehaviourState(human, agent, aiCtrl, isDead);
 
                 bool send;
                 if (_hostSent.TryGetValue(id, out var prev))
@@ -339,6 +344,11 @@ public class WorldSync
                 agent.SetDestination(cmd.Destination);
 
             if (agent.isStopped) agent.isStopped = false;
+
+            // Tell SoD's animation controller the speed changed so the walk/run
+            // blend tree updates immediately, not on the next AI tick.
+            var animCtrl = GetAnimController(human);
+            animCtrl?.UpdateMovementSpeed();
         }
         catch (System.Exception ex)
         {
@@ -445,6 +455,43 @@ public class WorldSync
     }
 
     /// <summary>
+    /// Get SoD's NewAIController — contains currentDestinationPositon and movementAmount,
+    /// which are more direct than reading NavMeshAgent.destination.
+    /// </summary>
+    private static NewAIController GetNewAIController(Human human)
+    {
+        try
+        {
+            var comp = human.gameObject.GetComponent("NewAIController");
+            return comp?.TryCast<NewAIController>();
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Get SoD's CitizenAnimationController — exposes UpdateMovementSpeed(),
+    /// ForceUpdateAnimationSate(), SetDead(), SetInBed() etc.
+    /// From CitizenDiag we know it lives on the "Model" direct child of the citizen.
+    /// CitizenAnimationController is an Assembly-CSharp type, so generic GetComponent works.
+    /// </summary>
+    private static CitizenAnimationController GetAnimController(Human human)
+    {
+        try
+        {
+            // Fast path: SoD always puts CitizenAnimationController on the "Model" child.
+            var model = human.transform.Find("Model");
+            if (model != null)
+            {
+                var comp = model.gameObject.GetComponent("CitizenAnimationController");
+                if (comp != null) return comp.TryCast<CitizenAnimationController>();
+            }
+            // Fallback: search the whole hierarchy.
+            return human.GetComponentInChildren<CitizenAnimationController>(true);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
     /// Get (or re-enable) a citizen's NavMeshAgent on the client.
     /// On first call also disables Animator root motion so it doesn't fight the agent.
     /// We intentionally leave the NavMeshAgent enabled — it is what makes the citizen
@@ -485,6 +532,15 @@ public class WorldSync
             }
         }
         catch { }
+
+        // Force the animation controller to update immediately so the idle
+        // blend state kicks in right away (no walking-in-place artefact).
+        try
+        {
+            var animCtrl = GetAnimController(human);
+            animCtrl?.UpdateMovementSpeed();
+        }
+        catch { }
     }
 
     private static void DisableRootMotion(Human human)
@@ -510,15 +566,20 @@ public class WorldSync
     // -------------------------------------------------------------------------
 
     private static CitizenBehaviourState InferBehaviourState(
-        Human human, NavMeshAgent agent, bool isDead)
+        Human human, NavMeshAgent agent, NewAIController aiCtrl, bool isDead)
     {
         if (isDead) return CitizenBehaviourState.Dead;
-        if (agent == null || !agent.enabled || agent.isStopped)
+
+        // movementAmount (0-1) from NewAIController is the authoritative speed signal.
+        // Fall back to NavMeshAgent.velocity if the AI controller isn't available.
+        float moveAmt = aiCtrl?.movementAmount ?? (agent?.velocity.magnitude ?? 0f);
+
+        if (agent == null || !agent.enabled || agent.isStopped || moveAmt < 0.05f)
             return CitizenBehaviourState.Idle;
 
-        float vel = agent.velocity.magnitude;
-        if (vel < 0.1f) return CitizenBehaviourState.Idle;
-        if (agent.speed > WALK_SPEED_THRESHOLD) return CitizenBehaviourState.Running;
+        // speed > threshold → Running; otherwise Walking
+        float agentSpeed = agent?.speed ?? 0f;
+        if (agentSpeed > WALK_SPEED_THRESHOLD) return CitizenBehaviourState.Running;
         return CitizenBehaviourState.Walking;
     }
 

@@ -17,6 +17,12 @@
     <BepInExPath>$(APPDATA)\com.kesomannen.gale\shadows-of-doubt\profiles\Default\BepInEx</BepInExPath>
   </PropertyGroup>
 
+  <!-- Exclude the Assembly-CSharp dump folder — it is for reference only, not compilation -->
+  <ItemGroup>
+    <Compile Remove="Assembly-CSharp_Dump\**" />
+    <None Include="Assembly-CSharp_Dump\**" />
+  </ItemGroup>
+
   <!-- BepInEx IL2CPP Dependencies -->
   <ItemGroup>
     <PackageReference Include="BepInEx.Unity.IL2CPP" Version="6.0.0-be.*" IncludeAssets="compile" />
