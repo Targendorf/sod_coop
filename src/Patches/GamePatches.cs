@@ -1,5 +1,7 @@
 using HarmonyLib;
 using SoDCoop.Sync;
+using SoDCoop.UI;
+using UnityEngine;
 
 namespace SoDCoop.Patches;
 
@@ -56,6 +58,29 @@ public static class GamePatches
             catch (System.Exception ex)
             {
                 Plugin.Log.LogWarning($"NewDoor.OnClose patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  SessionData.TogglePause(bool openDesktopMode) — pause UI / menu transition.
+    //  Read Time.timeScale right after to determine the new pause state.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(SessionData), nameof(SessionData.TogglePause))]
+    public static class SessionData_TogglePause_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix()
+        {
+            try
+            {
+                bool nowPaused = Time.timeScale == 0f;
+                PingSystem.NotifyLocalPauseChanged(nowPaused);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"SessionData.TogglePause patch: {ex.Message}");
             }
         }
     }

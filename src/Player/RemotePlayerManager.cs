@@ -250,6 +250,16 @@ public static class RemotePlayerManager
     {
         if (playerId < 0) return;
         if (playerId == Network.NetworkManager.LocalPlayerId) return;
+
+        // If a position packet already created this RemotePlayer with a
+        // placeholder name, just update the existing instance instead of
+        // duplicating it.
+        if (_players.TryGetValue(playerId, out var existing) && existing != null)
+        {
+            existing.UpdateName(playerName);
+            return;
+        }
+
         SpawnRemotePlayer(playerId, playerName);
     }
 

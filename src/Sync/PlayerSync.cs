@@ -205,10 +205,24 @@ public class PlayerSync
         var rp = RemotePlayerManager.GetPlayer(packet.PlayerId);
         if (rp == null)
         {
-            RemotePlayerManager.SpawnRemotePlayer(packet.PlayerId, $"Player {packet.PlayerId}");
+            // Look up the real name from the player roster; only fall back to
+            // the placeholder if the position packet outraced the join event.
+            string name = ResolveName(packet.PlayerId);
+            RemotePlayerManager.SpawnRemotePlayer(packet.PlayerId, name);
             rp = RemotePlayerManager.GetPlayer(packet.PlayerId);
         }
         rp?.ApplyPositionState(packet);
+    }
+
+    private static string ResolveName(int playerId)
+    {
+        if (NetworkManager.Players != null
+            && NetworkManager.Players.TryGetValue(playerId, out var info)
+            && !string.IsNullOrEmpty(info.PlayerName))
+        {
+            return info.PlayerName;
+        }
+        return $"Player {playerId}";
     }
 
     public void SendInteraction(InteractionType type, int targetId, Vector3 targetPosition)

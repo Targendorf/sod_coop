@@ -69,7 +69,9 @@ public static class PingSystem
         }
         catch { }
 
-        // Pause-state edge detection.
+        // Pause-state polling — the SessionData.TogglePause Harmony patch is the
+        // primary signal, but we also poll Time.timeScale as a fallback in case
+        // SoD takes a code path the patch doesn't cover (alt-tab, focus loss, ...).
         try
         {
             bool paused = Time.timeScale == 0f;
@@ -80,6 +82,17 @@ public static class PingSystem
             }
         }
         catch { }
+    }
+
+    /// <summary>
+    /// Called from the SessionData.TogglePause Harmony patch — gives us a clean
+    /// signal exactly when SoD flips its own pause state, no timing guesswork.
+    /// </summary>
+    public static void NotifyLocalPauseChanged(bool isPaused)
+    {
+        if (isPaused == _wasPausedLocally) return;
+        _wasPausedLocally = isPaused;
+        BroadcastPauseState(isPaused);
     }
 
     // -------------------------------------------------------------------------

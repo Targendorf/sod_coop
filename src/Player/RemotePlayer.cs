@@ -90,6 +90,20 @@ public class RemotePlayer : MonoBehaviour
     }
 
     /// <summary>
+    /// Late name update. If a position packet arrived before the player-joined
+    /// event, the RemotePlayer was spawned with a placeholder; this lets the
+    /// join handler patch in the real name without recreating the avatar.
+    /// </summary>
+    [HideFromIl2Cpp]
+    public void UpdateName(string playerName)
+    {
+        if (string.IsNullOrEmpty(playerName)) return;
+        if (PlayerName == playerName) return;
+        PlayerName = playerName;
+        try { gameObject.name = $"RemotePlayer_{PlayerId}_{playerName}"; } catch { }
+    }
+
+    /// <summary>
     /// Called by PlayerSync when a position packet arrives.
     /// </summary>
     [HideFromIl2Cpp]
