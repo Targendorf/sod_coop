@@ -154,7 +154,20 @@ public enum PacketType : byte
     /// to fix floating-point drift accumulated from independent NavMesh runs.
     /// </summary>
     CitizenCorrectionBatch = 40,
-    
+
+    /// <summary>
+    /// Client → Host: "I am taking ownership of citizen #N for local interaction
+    /// (dialog, combat, etc.)". Host pauses its own AI for this citizen and stops
+    /// sending sync commands for it. Other clients also stop receiving updates.
+    /// </summary>
+    CitizenOwnershipClaim = 41,
+
+    /// <summary>
+    /// Client → Host: "I'm done with citizen #N; resume normal sync."
+    /// Host re-enables its NewAIController and resumes broadcasting.
+    /// </summary>
+    CitizenOwnershipRelease = 42,
+
     #endregion
     
     #region Case/Investigation Sync Packets (60-79)

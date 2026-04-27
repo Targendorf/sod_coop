@@ -44,13 +44,30 @@ public class WorldSync
     private const float CORRECTION_SNAP_DIST = 4.0f;   // m — hard snap above this
     private const float WALK_SPEED_THRESHOLD = 2.5f;   // m/s — above this = Running state
 
+    // ── Ownership transfer (client interaction) ───────────────────────────────
+    private const float OWNERSHIP_SCAN_RATE     = 0.3f;   // s — how often client checks for nearby citizens
+    private const float OWNERSHIP_CLAIM_DIST    = 2.5f;   // m — claim ownership inside this radius
+    private const float OWNERSHIP_RELEASE_DIST  = 4.5f;   // m — release outside this radius (hysteresis)
+
     #endregion
 
     public int SyncedSeed { get; private set; }
 
     private float _lastCommandScan;
     private float _lastCorrectionScan;
+    private float _lastOwnershipScan;
     private readonly NetDataWriter _writer = new();
+    private readonly NetDataWriter _ownershipWriter = new();
+
+    // ── Ownership tracking ────────────────────────────────────────────────────
+    /// <summary>Host-side: which player owns each citizen (missing = host owns).</summary>
+    private readonly Dictionary<int, int> _citizenOwners = new();
+
+    /// <summary>Client-side: which citizens THIS client currently owns (interaction range).</summary>
+    private readonly HashSet<int> _myOwnedCitizens = new();
+
+    /// <summary>Both sides: citizens whose AI is currently paused due to client ownership.</summary>
+    private readonly HashSet<int> _pausedAI = new();
 
     // ── Host-side: per-citizen last-sent state ────────────────────────────────
     private readonly Dictionary<int, HostSentState> _hostSent = new();
@@ -85,21 +102,139 @@ public class WorldSync
         if (!NetworkManager.IsConnected) return;
         if (!WorldReadyGate.IsWorldReady) return;
 
-        if (!NetworkManager.IsHost) return;
-
         float now = Time.unscaledTime;
 
-        if (now - _lastCommandScan >= COMMAND_SCAN_RATE)
+        if (NetworkManager.IsHost)
         {
-            _lastCommandScan = now;
-            HostScanCommands(now);
+            if (now - _lastCommandScan >= COMMAND_SCAN_RATE)
+            {
+                _lastCommandScan = now;
+                HostScanCommands(now);
+            }
+
+            if (now - _lastCorrectionScan >= CORRECTION_INTERVAL)
+            {
+                _lastCorrectionScan = now;
+                HostSendCorrections(now);
+            }
+        }
+        else
+        {
+            // Client: scan nearby citizens to claim/release ownership for interactions.
+            if (now - _lastOwnershipScan >= OWNERSHIP_SCAN_RATE)
+            {
+                _lastOwnershipScan = now;
+                ClientOwnershipScan();
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    //  Client-side ownership scanner — claim nearby citizens, release distant
+    // -------------------------------------------------------------------------
+
+    private void ClientOwnershipScan()
+    {
+        try
+        {
+            var localPlayer = global::Player.Instance;
+            if (localPlayer == null) return;
+
+            Vector3 myPos = localPlayer.transform.position;
+            var dict = CityData.Instance?.citizenDictionary;
+            if (dict == null) return;
+
+            // Step 1: release citizens we own that drifted out of range / disappeared.
+            // Buffer to a list — can't modify HashSet during iteration.
+            List<int> toRelease = null;
+            foreach (var id in _myOwnedCitizens)
+            {
+                var human = NetworkIdResolver.GetHuman(id);
+                if (human == null || human.gameObject == null)
+                {
+                    (toRelease ??= new()).Add(id);
+                    continue;
+                }
+                float d = Vector3.Distance(human.transform.position, myPos);
+                if (d > OWNERSHIP_RELEASE_DIST)
+                    (toRelease ??= new()).Add(id);
+            }
+            if (toRelease != null)
+                foreach (var id in toRelease) ClientReleaseOwnership(id);
+
+            // Step 2: claim nearby citizens we don't already own.
+            foreach (var kv in dict)
+            {
+                int id = kv.Key;
+                if (_myOwnedCitizens.Contains(id)) continue;
+
+                var human = kv.Value;
+                if (human == null || human.gameObject == null) continue;
+                if (IsLocalPlayerHuman(human)) continue;
+                if (SafeIsDead(human)) continue;
+
+                float d = Vector3.Distance(human.transform.position, myPos);
+                if (d < OWNERSHIP_CLAIM_DIST)
+                    ClientClaimOwnership(id, human);
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"ClientOwnershipScan: {ex.Message}");
+        }
+    }
+
+    private void ClientClaimOwnership(int citizenId, Human human)
+    {
+        _myOwnedCitizens.Add(citizenId);
+
+        // Notify host so it pauses its own AI for this citizen and stops broadcasting.
+        SendOwnershipPacket(PacketType.CitizenOwnershipClaim, citizenId);
+
+        // Locally re-enable SoD's AI so dialog / combat / fear etc. work natively.
+        EnableAIController(human);
+        EnableRootMotion(human);
+        _pausedAI.Remove(citizenId);
+
+        Plugin.Log.LogInfo($"[Ownership] Claimed citizen {citizenId} (interaction range)");
+    }
+
+    private void ClientReleaseOwnership(int citizenId)
+    {
+        if (!_myOwnedCitizens.Remove(citizenId)) return;
+
+        SendOwnershipPacket(PacketType.CitizenOwnershipRelease, citizenId);
+
+        // Disable local AI again — host resumes authoritative control.
+        var human = NetworkIdResolver.GetHuman(citizenId);
+        if (human != null && human.gameObject != null)
+        {
+            DisableAIController(human);
+            DisableRootMotion(human);
         }
 
-        if (now - _lastCorrectionScan >= CORRECTION_INTERVAL)
+        // Force a re-init of clientStates so the next host command re-applies cleanly.
+        if (_clientStates.TryGetValue(citizenId, out var s))
         {
-            _lastCorrectionScan = now;
-            HostSendCorrections(now);
+            s.AIControllerDisabled = true;  // we just disabled it
+            s.RootMotionDisabled   = true;
+            _clientStates[citizenId] = s;
         }
+
+        Plugin.Log.LogInfo($"[Ownership] Released citizen {citizenId} (left interaction range)");
+    }
+
+    private void SendOwnershipPacket(PacketType type, int citizenId)
+    {
+        var packet = new CitizenOwnershipPacket
+        {
+            Type      = type,
+            CitizenId = citizenId,
+            OwnerId   = NetworkManager.LocalPlayerId,
+        };
+        _ownershipWriter.Reset();
+        packet.Serialize(_ownershipWriter);
+        NetworkManager.SendToHost(type, _ownershipWriter, DeliveryMethod.ReliableOrdered);
     }
 
     // -------------------------------------------------------------------------
@@ -126,10 +261,15 @@ public class WorldSync
                 if (human == null || human.gameObject == null) continue;
                 if (IsLocalPlayerHuman(human)) continue;
 
+                int  id     = kv.Key;
+
+                // Skip citizens currently owned by a client — they're being driven
+                // by that client's local AI for an interaction (dialog, combat, etc.).
+                if (_citizenOwners.ContainsKey(id)) continue;
+
                 var pos = human.transform.position;
                 if (!IsAnchorReachable(pos, anchors)) continue;
 
-                int  id     = kv.Key;
                 bool isDead = SafeIsDead(human);
 
                 var   agent = GetAgent(human);
@@ -217,6 +357,9 @@ public class WorldSync
                 if (IsLocalPlayerHuman(human)) continue;
                 if (SafeIsDead(human)) continue;
 
+                // Skip client-owned citizens — they don't need correction during interaction.
+                if (_citizenOwners.ContainsKey(kv.Key)) continue;
+
                 var pos = human.transform.position;
                 if (!IsAnchorReachable(pos, anchors)) continue;
 
@@ -285,7 +428,64 @@ public class WorldSync
             case PacketType.CitizenDeath:
                 OnCitizenDeath(reader);
                 break;
+            case PacketType.CitizenOwnershipClaim:
+                OnOwnershipClaim(reader, senderId);
+                break;
+            case PacketType.CitizenOwnershipRelease:
+                OnOwnershipRelease(reader, senderId);
+                break;
         }
+    }
+
+    // -------------------------------------------------------------------------
+    //  Ownership packet handlers (host-side authority + client mirror)
+    // -------------------------------------------------------------------------
+
+    private void OnOwnershipClaim(NetPacketReader reader, int senderId)
+    {
+        var p = new CitizenOwnershipPacket();
+        p.Deserialize(reader);
+
+        if (!NetworkManager.IsHost) return;  // only host tracks ownership table
+
+        _citizenOwners[p.CitizenId] = p.OwnerId;
+
+        // Pause host-side AI for this citizen so it stays put while the client
+        // interacts with it. Saved to _pausedAI so we know to re-enable on release.
+        var human = NetworkIdResolver.GetHuman(p.CitizenId);
+        if (human != null && human.gameObject != null && _pausedAI.Add(p.CitizenId))
+        {
+            DisableAIController(human);
+        }
+
+        Plugin.Log.LogInfo($"[Ownership] Client {p.OwnerId} claimed citizen {p.CitizenId}");
+    }
+
+    private void OnOwnershipRelease(NetPacketReader reader, int senderId)
+    {
+        var p = new CitizenOwnershipPacket();
+        p.Deserialize(reader);
+
+        if (!NetworkManager.IsHost) return;
+
+        // Only release if the sender actually owned it (prevent stray packets clearing state).
+        if (_citizenOwners.TryGetValue(p.CitizenId, out var current) && current == p.OwnerId)
+        {
+            _citizenOwners.Remove(p.CitizenId);
+        }
+
+        // Resume host-side AI.
+        if (_pausedAI.Remove(p.CitizenId))
+        {
+            var human = NetworkIdResolver.GetHuman(p.CitizenId);
+            if (human != null && human.gameObject != null)
+                EnableAIController(human);
+        }
+
+        // Force a re-send of this citizen's state on the next scan tick.
+        _hostSent.Remove(p.CitizenId);
+
+        Plugin.Log.LogInfo($"[Ownership] Client {p.OwnerId} released citizen {p.CitizenId}");
     }
 
     // ── Command batch ─────────────────────────────────────────────────────────
@@ -310,6 +510,9 @@ public class WorldSync
 
     private void ApplyCitizenCommand(CitizenCommandPacket cmd)
     {
+        // We own this citizen for an interaction — let SoD's AI drive it locally.
+        if (_myOwnedCitizens.Contains(cmd.CitizenId)) return;
+
         var human = NetworkIdResolver.GetHuman(cmd.CitizenId);
         if (human == null || human.gameObject == null) return;
 
@@ -379,6 +582,9 @@ public class WorldSync
 
     private void ApplyCorrection(CitizenCorrectionPacket corr)
     {
+        // Skip if we own this citizen — SoD's local AI is driving it.
+        if (_myOwnedCitizens.Contains(corr.CitizenId)) return;
+
         var human = NetworkIdResolver.GetHuman(corr.CitizenId);
         if (human == null || human.gameObject == null) return;
 
@@ -556,12 +762,49 @@ public class WorldSync
             if (ai != null && ai.enabled)
             {
                 ai.enabled = false;
-                Plugin.Log.LogInfo($"[WorldSync] Disabled NewAIController on citizen {human.humanID}");
             }
         }
         catch (System.Exception ex)
         {
             Plugin.Log.LogWarning($"[WorldSync] DisableAIController({human.humanID}): {ex.Message}");
+        }
+    }
+
+    /// <summary>Inverse of DisableAIController — used when ownership is transferred.</summary>
+    private static void EnableAIController(Human human)
+    {
+        try
+        {
+            var comp = human.gameObject.GetComponent("NewAIController");
+            if (comp == null) return;
+            var ai = comp.TryCast<NewAIController>();
+            if (ai != null && !ai.enabled)
+            {
+                ai.enabled = true;
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"[WorldSync] EnableAIController({human.humanID}): {ex.Message}");
+        }
+    }
+
+    /// <summary>Inverse of DisableRootMotion — used when ownership is transferred.</summary>
+    private static void EnableRootMotion(Human human)
+    {
+        try
+        {
+            var animators = human.GetComponentsInChildren<Animator>(true);
+            if (animators == null) return;
+            for (int i = 0; i < animators.Count; i++)
+            {
+                var anim = animators[i];
+                if (anim != null) anim.applyRootMotion = true;
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"EnableRootMotion({human.humanID}): {ex.Message}");
         }
     }
 
@@ -724,5 +967,8 @@ public class WorldSync
     {
         _clientStates.Clear();
         _hostSent.Clear();
+        _citizenOwners.Clear();
+        _myOwnedCitizens.Clear();
+        _pausedAI.Clear();
     }
 }

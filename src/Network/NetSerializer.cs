@@ -511,3 +511,34 @@ public struct CitizenCorrectionPacket : INetPacket
     public static byte CompressYaw(Quaternion rot) =>
         (byte)(((rot.eulerAngles.y % 360f + 360f) % 360f) / 360f * 255f);
 }
+
+/// <summary>
+/// Client → Host transfer-of-ownership packet.
+///
+/// When the local player walks within range of a citizen we send a Claim;
+/// the host then pauses that citizen's authoritative AI and stops broadcasting
+/// commands for it. Other clients are notified and skip applying state for
+/// citizens owned by another player. Released when the player walks away.
+///
+/// This is the "Skyrim Together LocalActor" pattern — exactly one machine drives
+/// each NPC at any moment.
+/// </summary>
+public struct CitizenOwnershipPacket : INetPacket
+{
+    public PacketType Type { get; set; }   // Claim or Release
+
+    public int CitizenId;
+    public int OwnerId;   // playerId of the claiming/releasing client
+
+    public void Serialize(NetDataWriter writer)
+    {
+        writer.Put(CitizenId);
+        writer.Put(OwnerId);
+    }
+
+    public void Deserialize(NetDataReader reader)
+    {
+        CitizenId = reader.GetInt();
+        OwnerId   = reader.GetInt();
+    }
+}
