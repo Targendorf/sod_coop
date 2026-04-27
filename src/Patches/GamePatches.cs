@@ -120,6 +120,33 @@ public static class GamePatches
     //  consumed/binned — skip broadcast in that case.
     // ─────────────────────────────────────────────────────────────────────────
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Interactable.SetSwitchState — drawers, cabinets, fridges, safes, etc.
+    //  Lights are excluded because they go via the dedicated LightState packet
+    //  (LightController.SetOn calls SetSwitchState internally — we'd double up).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(Interactable), nameof(Interactable.SetSwitchState))]
+    public static class Interactable_SetSwitchState_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Interactable __instance, bool val)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (WorldStateSync.IsApplyingRemote) return;
+                // Filter out lights — they have their own LightState channel.
+                if (WorldStateSync.IsLightInteractable(__instance)) return;
+                WorldStateSync.BroadcastSwitchState(__instance.id, val);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"Interactable.SetSwitchState patch: {ex.Message}");
+            }
+        }
+    }
+
     [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.PickUpItem))]
     public static class FPItemController_PickUpItem_Patch
     {

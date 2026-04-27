@@ -115,8 +115,10 @@ public static class SyncManager
             {
                 PlayerSync?.OnPacketReceived(type, reader, senderId);
             }
-            // Doors + lights (50-59) — go to WorldStateSync, not WorldSync.
-            else if (type == PacketType.DoorState || type == PacketType.LightState)
+            // Doors + lights + switches (50-59) — go to WorldStateSync, not WorldSync.
+            else if (type == PacketType.DoorState
+                  || type == PacketType.LightState
+                  || type == PacketType.SwitchState)
             {
                 WorldStateSync.OnPacketReceived(type, reader, senderId);
             }

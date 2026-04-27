@@ -62,6 +62,29 @@ public static class WorldStateSync
         }
     }
 
+    /// <summary>
+    /// Broadcast a generic switch (drawer, cabinet, fridge, safe…) toggle.
+    /// Called from the <c>Interactable.SetSwitchState</c> postfix, which already
+    /// filters out lights so they don't double-broadcast on top of LightState.
+    /// </summary>
+    public static void BroadcastSwitchState(int interactableId, bool isOn)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (IsApplyingRemote) return;
+
+        try
+        {
+            var packet = new SwitchStatePacket { InteractableId = interactableId, IsOn = isOn };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.SwitchState, _writer, DeliveryMethod.ReliableOrdered);
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"BroadcastSwitchState({interactableId}): {ex.Message}");
+        }
+    }
+
     // -------------------------------------------------------------------------
     //  Inbound
     // -------------------------------------------------------------------------
@@ -81,6 +104,12 @@ public static class WorldStateSync
                 var p = new LightStatePacket();
                 p.Deserialize(reader);
                 ApplyLightState(p);
+            }
+            else if (type == PacketType.SwitchState)
+            {
+                var p = new SwitchStatePacket();
+                p.Deserialize(reader);
+                ApplySwitchState(p);
             }
         }
         catch (System.Exception ex)
@@ -105,6 +134,33 @@ public static class WorldStateSync
         catch (System.Exception ex)
         {
             Plugin.Log.LogWarning($"ApplyDoorState({p.InteractableId}): {ex.Message}");
+        }
+        finally
+        {
+            IsApplyingRemote = false;
+        }
+    }
+
+    /// <summary>
+    /// Apply a remote switch toggle by calling Interactable.SetSwitchState directly.
+    /// We pass interactor=null and forceUpdate=true so SoD treats it as an
+    /// authoritative state change without re-running click animations.
+    /// </summary>
+    private static void ApplySwitchState(SwitchStatePacket p)
+    {
+        var inter = FindInteractableById(p.InteractableId);
+        if (inter == null) return;
+        if (inter.sw0 == p.IsOn) return;
+
+        IsApplyingRemote = true;
+        try
+        {
+            // SetSwitchState(val, interactor, playSFX, forceUpdate, forceInstantLights)
+            inter.SetSwitchState(p.IsOn, null, true, true, false);
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"ApplySwitchState({p.InteractableId}): {ex.Message}");
         }
         finally
         {
@@ -181,6 +237,22 @@ public static class WorldStateSync
         }
         catch { }
         return null;
+    }
+
+    /// <summary>
+    /// True if this Interactable's spawnedObject carries a LightController — used
+    /// by the SetSwitchState patch to avoid double-broadcasting (lights have their
+    /// own dedicated LightState channel).
+    /// </summary>
+    public static bool IsLightInteractable(Interactable inter)
+    {
+        try
+        {
+            var go = inter?.spawnedObject;
+            if (go == null) return false;
+            return go.GetComponentInChildren<LightController>(true) != null;
+        }
+        catch { return false; }
     }
 
     private static Interactable FindInteractableById(int id)

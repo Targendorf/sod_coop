@@ -186,6 +186,13 @@ public enum PacketType : byte
     /// </summary>
     LightState = 51,
 
+    /// <summary>
+    /// Generic Interactable.sw0 toggle — drawers, cabinets, fridges, safes, etc.
+    /// Anything that calls Interactable.SetSwitchState. Lights are filtered out
+    /// at the broadcast site because they go via LightState=51.
+    /// </summary>
+    SwitchState = 52,
+
     #endregion
     
     #region Case/Investigation Sync Packets (60-79)

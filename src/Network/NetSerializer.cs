@@ -575,6 +575,23 @@ public struct LightStatePacket : INetPacket
     public void Deserialize(NetDataReader r) { InteractableId = r.GetInt(); IsOn = r.GetBool(); }
 }
 
+/// <summary>
+/// Generic switch toggle (drawer, cabinet, fridge door, safe, etc.) — keyed by
+/// Interactable.id, mirrors the sw0 bool. Receivers call Interactable.SetSwitchState
+/// locally with interactor=null so SoD treats it as an unattributed change.
+/// Lights / doors use their own dedicated packets.
+/// </summary>
+public struct SwitchStatePacket : INetPacket
+{
+    public PacketType Type => PacketType.SwitchState;
+
+    public int  InteractableId;
+    public bool IsOn;          // true == sw0 on (drawer open, fridge open, …)
+
+    public void Serialize(NetDataWriter w)   { w.Put(InteractableId); w.Put(IsOn); }
+    public void Deserialize(NetDataReader r) { InteractableId = r.GetInt(); IsOn = r.GetBool(); }
+}
+
 /// <summary>Player vitals — small fixed-size HUD update at low rate.</summary>
 public struct PlayerVitalsPacket : INetPacket
 {
