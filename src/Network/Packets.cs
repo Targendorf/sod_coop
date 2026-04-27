@@ -260,16 +260,22 @@ public enum PacketType : byte
     /// Citizen died (murder, accident).
     /// </summary>
     CitizenDeath = 100,
-    
+
     /// <summary>
     /// Crime committed.
     /// </summary>
     CrimeCommitted = 101,
-    
+
     /// <summary>
     /// Player discovered crime scene.
     /// </summary>
     CrimeSceneDiscovered = 102,
+
+    /// <summary>
+    /// Phone call started/ended notification — host-authoritative.
+    /// Lightweight banner: caller name and start/end flag, no full PhoneCall replay.
+    /// </summary>
+    PhoneCallNotify = 103,
     
     #endregion
 }

@@ -132,6 +132,16 @@ public static class SyncManager
             {
                 WeatherSync.OnPacketReceived(type, reader, senderId);
             }
+            // Citizen death + crime-scene discovery (100, 102).
+            else if (type == PacketType.CitizenDeath || type == PacketType.CrimeSceneDiscovered)
+            {
+                CitizenDeathSync.OnPacketReceived(type, reader, senderId);
+            }
+            // Phone call notification banner (103).
+            else if (type == PacketType.PhoneCallNotify)
+            {
+                PhoneSync.OnPacketReceived(type, reader, senderId);
+            }
             // World Packets: 30-49 + 1 (WorldSeed) + Critical (100+) → WorldSync (NPCs, time, etc.)
             else if (((int)type >= 30 && (int)type <= 49) || type == PacketType.WorldSeed || (int)type >= 100)
             {

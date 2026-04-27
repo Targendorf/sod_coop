@@ -111,6 +111,115 @@ public static class GamePatches
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    //  Human.Murder — fired whenever a citizen actually gets killed.
+    //  Skip Player.Instance (the local player has no stable cross-machine ID).
+    //  Skip while CitizenDeathSync.IsApplyingRemote so we don't echo.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(Human), nameof(Human.Murder))]
+    public static class Human_Murder_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Human __instance, Human killer, Interactable weapon)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (CitizenDeathSync.IsApplyingRemote) return;
+                // Don't broadcast deaths of the local player — there is no shared
+                // identity for "the local player" across machines.
+                if (global::Player.Instance != null && __instance.Pointer == global::Player.Instance.Pointer)
+                    return;
+
+                Vector3 pos = Vector3.zero;
+                try { if (__instance.transform != null) pos = __instance.transform.position; } catch { }
+
+                CitizenDeathSync.BroadcastDeath(
+                    __instance.humanID,
+                    killer != null ? killer.humanID : -1,
+                    weapon != null ? weapon.id     : -1,
+                    pos);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"Human.Murder patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  MurderController.OnVictimDiscovery — fired the moment a player walks past
+    //  a corpse. Mirroring it across the wire means the case is flagged
+    //  discovered on every machine without each player having to find the body.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(MurderController), nameof(MurderController.OnVictimDiscovery))]
+    public static class MurderController_OnVictimDiscovery_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix()
+        {
+            try
+            {
+                if (CitizenDeathSync.IsApplyingRemote) return;
+                CitizenDeathSync.BroadcastDiscovery();
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"MurderController.OnVictimDiscovery patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  TelephoneController.AddActiveCall / RemoveActiveCall — only the host
+    //  emits banner notifications, since both machines run the same call
+    //  scheduler and we don't want duplicate broadcasts.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(TelephoneController), nameof(TelephoneController.AddActiveCall))]
+    public static class TelephoneController_AddActiveCall_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(TelephoneController.PhoneCall newCall)
+        {
+            try
+            {
+                if (newCall == null) return;
+                if (!NetworkManager.IsHost) return;
+                int caller = newCall.caller;
+                string name = PhoneSync.ResolveCallerName(caller);
+                PhoneSync.BroadcastCallStart(caller, name);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"TelephoneController.AddActiveCall patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(TelephoneController), nameof(TelephoneController.RemoveActiveCall))]
+    public static class TelephoneController_RemoveActiveCall_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(TelephoneController.PhoneCall newCall)
+        {
+            try
+            {
+                if (newCall == null) return;
+                if (!NetworkManager.IsHost) return;
+                int caller = newCall.caller;
+                string name = PhoneSync.ResolveCallerName(caller);
+                PhoneSync.BroadcastCallEnd(caller, name);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"TelephoneController.RemoveActiveCall patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     //  SessionData.SetWeather — host-authoritative weather sync.
     //
     //  • Host: postfix broadcasts every successful SetWeather call.

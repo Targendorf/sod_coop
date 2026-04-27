@@ -576,6 +576,82 @@ public struct LightStatePacket : INetPacket
 }
 
 /// <summary>
+/// Citizen death — broadcast when <c>Human.Murder</c> fires on a non-player.
+/// Receiver finds the victim via CityData.citizenDictionary[humanID] and mirrors
+/// the dead state (isDead flag + CitizenAnimationController.SetDead(true) +
+/// disable NewAIController). Host stays authoritative for the case logic;
+/// clients only mirror the visible body.
+/// </summary>
+public struct CitizenDeathPacket : INetPacket
+{
+    public PacketType Type => PacketType.CitizenDeath;
+
+    public int VictimHumanId;
+    public int KillerHumanId;          // -1 if unknown
+    public int WeaponInteractableId;   // -1 if no weapon
+    public Vector3 DeathPosition;      // best-effort visual snap on receiver
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(VictimHumanId);
+        w.Put(KillerHumanId);
+        w.Put(WeaponInteractableId);
+        w.Put(DeathPosition);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        VictimHumanId         = r.GetInt();
+        KillerHumanId         = r.GetInt();
+        WeaponInteractableId  = r.GetInt();
+        DeathPosition         = r.GetVector3();
+    }
+}
+
+/// <summary>
+/// Crime-scene discovery — broadcast when MurderController.OnVictimDiscovery
+/// fires on either side. Receiver replays the call locally so the case is
+/// flagged "discovered" on both machines without each player having to walk
+/// past the body independently.
+/// </summary>
+public struct CrimeSceneDiscoveredPacket : INetPacket
+{
+    public PacketType Type => PacketType.CrimeSceneDiscovered;
+
+    public int DiscovererPlayerId;   // who walked over the body (informational)
+
+    public void Serialize(NetDataWriter w)   { w.Put(DiscovererPlayerId); }
+    public void Deserialize(NetDataReader r) { DiscovererPlayerId = r.GetInt(); }
+}
+
+/// <summary>
+/// Phone call notification — lightweight banner-only sync (PhoneCall objects
+/// are too tangled with audio/dialog presets to safely replicate).
+/// </summary>
+public struct PhoneCallNotifyPacket : INetPacket
+{
+    public PacketType Type => PacketType.PhoneCallNotify;
+
+    public int    CallerHumanId;   // -1 if anonymous/system
+    public string CallerName;      // resolved on the broadcasting side; empty if unknown
+    public bool   IsStarting;      // true = call begun, false = call ended
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(CallerHumanId);
+        w.Put(CallerName ?? "");
+        w.Put(IsStarting);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        CallerHumanId = r.GetInt();
+        CallerName    = r.GetString();
+        IsStarting    = r.GetBool();
+    }
+}
+
+/// <summary>
 /// Host-authoritative weather snapshot. Mirrors the parameters of
 /// <c>SessionData.SetWeather(rain, wind, snow, lightning, fog, transitionSpeed, instant)</c>.
 /// Sent by the host whenever its own SetWeather fires (and once on player-join so
