@@ -512,6 +512,45 @@ public struct CitizenCorrectionPacket : INetPacket
         (byte)(((rot.eulerAngles.y % 360f + 360f) % 360f) / 360f * 255f);
 }
 
+/// <summary>
+/// World-space ping marker dropped by a player ("look here!").
+/// Auto-expires on the receiving side after MapPing.LIFETIME seconds.
+/// </summary>
+public struct MapPingPacket : INetPacket
+{
+    public PacketType Type => PacketType.MapPing;
+
+    public int     PlayerId;
+    public string  PlayerName;
+    public Vector3 Position;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(PlayerId);
+        w.Put(PlayerName ?? "");
+        w.Put(Position);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        PlayerId   = r.GetInt();
+        PlayerName = r.GetString();
+        Position   = r.GetVector3();
+    }
+}
+
+/// <summary>Local pause state — broadcast when a player opens/closes a menu.</summary>
+public struct PauseStatePacket : INetPacket
+{
+    public PacketType Type => PacketType.PauseState;
+
+    public int  PlayerId;
+    public bool IsPaused;
+
+    public void Serialize(NetDataWriter w)   { w.Put(PlayerId); w.Put(IsPaused); }
+    public void Deserialize(NetDataReader r) { PlayerId = r.GetInt(); IsPaused = r.GetBool(); }
+}
+
 /// <summary>Door open/close — keyed by Interactable.id.</summary>
 public struct DoorStatePacket : INetPacket
 {

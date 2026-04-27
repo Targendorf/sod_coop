@@ -233,11 +233,17 @@ public enum PacketType : byte
     /// Player marker/ping on map.
     /// </summary>
     MapPing = 81,
-    
+
     /// <summary>
     /// Waypoint placed.
     /// </summary>
     Waypoint = 82,
+
+    /// <summary>
+    /// Local pause state — broadcast when a player opens/closes the in-game
+    /// menu so others see a "Player X is paused" overlay.
+    /// </summary>
+    PauseState = 83,
     
     #endregion
     

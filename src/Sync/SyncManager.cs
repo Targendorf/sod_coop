@@ -136,6 +136,10 @@ public static class SyncManager
             {
                 CoopUI.OnChatPacketReceived(reader, senderId);
             }
+            else if (type == PacketType.MapPing || type == PacketType.PauseState)
+            {
+                PingSystem.OnPacketReceived(type, reader, senderId);
+            }
         }
         catch (System.Exception ex)
         {

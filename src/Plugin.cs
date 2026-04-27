@@ -183,6 +183,7 @@ public class CoopUpdateRunner : MonoBehaviour
             NetworkManager.Update();
             SyncManager.Update();
             CoopUI.Update();
+            PingSystem.Update();
         }
         catch (System.Exception ex)
         {
@@ -195,6 +196,7 @@ public class CoopUpdateRunner : MonoBehaviour
         try
         {
             CoopUI.OnGUI();
+            PingSystem.OnGUI();
         }
         catch (System.Exception ex)
         {
