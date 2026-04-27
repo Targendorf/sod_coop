@@ -576,6 +576,43 @@ public struct LightStatePacket : INetPacket
 }
 
 /// <summary>
+/// Host-authoritative weather snapshot. Mirrors the parameters of
+/// <c>SessionData.SetWeather(rain, wind, snow, lightning, fog, transitionSpeed, instant)</c>.
+/// Sent by the host whenever its own SetWeather fires (and once on player-join so
+/// late-joiners catch up). Clients block their local weather scheduler and only
+/// apply the values they receive over the wire.
+/// </summary>
+public struct WeatherStatePacket : INetPacket
+{
+    public PacketType Type => PacketType.WeatherSync;
+
+    public float Rain;
+    public float Wind;
+    public float Snow;
+    public float Lightning;
+    public float Fog;
+    public float TransitionSpeed;
+    public bool  Instant;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(Rain); w.Put(Wind); w.Put(Snow); w.Put(Lightning); w.Put(Fog);
+        w.Put(TransitionSpeed); w.Put(Instant);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        Rain      = r.GetFloat();
+        Wind      = r.GetFloat();
+        Snow      = r.GetFloat();
+        Lightning = r.GetFloat();
+        Fog       = r.GetFloat();
+        TransitionSpeed = r.GetFloat();
+        Instant   = r.GetBool();
+    }
+}
+
+/// <summary>
 /// Generic switch toggle (drawer, cabinet, fridge door, safe, etc.) — keyed by
 /// Interactable.id, mirrors the sw0 bool. Receivers call Interactable.SetSwitchState
 /// locally with interactor=null so SoD treats it as an unattributed change.

@@ -111,6 +111,57 @@ public static class GamePatches
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    //  SessionData.SetWeather — host-authoritative weather sync.
+    //
+    //  • Host: postfix broadcasts every successful SetWeather call.
+    //  • Client: prefix blocks ALL local SetWeather calls except the ones we
+    //    inject from WeatherSync.ApplyWeather (flag IsApplyingRemote=true). This
+    //    silences SoD's local weatherChangeTimer on clients so they only ever
+    //    see what the host broadcasts.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(SessionData), nameof(SessionData.SetWeather))]
+    public static class SessionData_SetWeather_Patch
+    {
+        [HarmonyPrefix]
+        public static bool Prefix()
+        {
+            // Apply path always wins.
+            if (WeatherSync.IsApplyingRemote) return true;
+
+            // Single-player or pre-connection — let SoD do its thing.
+            if (!NetworkManager.IsConnected) return true;
+
+            // Host runs the authoritative weather scheduler.
+            if (NetworkManager.IsHost) return true;
+
+            // Connected client, not applying a remote packet → swallow the call.
+            return false;
+        }
+
+        [HarmonyPostfix]
+        public static void Postfix(
+            float newRain, float newWind, float newSnow, float newLightning, float newFog,
+            float newTransitionSpeed, bool updateInstantly)
+        {
+            try
+            {
+                if (WeatherSync.IsApplyingRemote) return;       // remote → don't echo
+                if (!NetworkManager.IsConnected)  return;
+                if (!NetworkManager.IsHost)       return;       // client never reaches here (prefix blocked)
+
+                WeatherSync.BroadcastSetWeather(
+                    newRain, newWind, newSnow, newLightning, newFog,
+                    newTransitionSpeed, updateInstantly);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"SessionData.SetWeather patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     //  Item pickup / drop — FirstPersonItemController.PickUpItem / EmptySlot
     //
     //  PickUpItem returns bool; we only broadcast on success (__result == true).

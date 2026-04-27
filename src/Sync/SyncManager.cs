@@ -49,14 +49,19 @@ public static class SyncManager
         NetworkManager.OnConnected += OnConnected;
         NetworkManager.OnDisconnected += OnDisconnected;
         NetworkManager.OnPacketReceived += OnPacketReceived;
-        
+
+        // Weather is host-authoritative; needs OnPlayerJoined to push state to late-joiners.
+        WeatherSync.Initialize();
+
         Plugin.Log.LogInfo("SyncManager initialized.");
     }
     
     public static void Shutdown()
     {
         IsActive = false;
-        
+
+        WeatherSync.Shutdown();
+
         NetworkManager.OnConnected -= OnConnected;
         NetworkManager.OnDisconnected -= OnDisconnected;
         NetworkManager.OnPacketReceived -= OnPacketReceived;
@@ -121,6 +126,11 @@ public static class SyncManager
                   || type == PacketType.SwitchState)
             {
                 WorldStateSync.OnPacketReceived(type, reader, senderId);
+            }
+            // Weather (34) — host-authoritative, dedicated handler.
+            else if (type == PacketType.WeatherSync)
+            {
+                WeatherSync.OnPacketReceived(type, reader, senderId);
             }
             // World Packets: 30-49 + 1 (WorldSeed) + Critical (100+) → WorldSync (NPCs, time, etc.)
             else if (((int)type >= 30 && (int)type <= 49) || type == PacketType.WorldSeed || (int)type >= 100)
