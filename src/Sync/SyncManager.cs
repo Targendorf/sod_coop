@@ -105,8 +105,13 @@ public static class SyncManager
             // We could use ranges from Packets.cs to optimize, but for now simple dispatch
             // Each manager checks if the type belongs to it
             
-            // Player Packets: 10-29
-            if ((int)type >= 10 && (int)type <= 29)
+            // Item pickup / drop (14, 15) — handled by ItemSync, not PlayerSync.
+            if (type == PacketType.PlayerPickup || type == PacketType.PlayerDrop)
+            {
+                ItemSync.OnPacketReceived(type, reader, senderId);
+            }
+            // Player Packets: 10-29 (excluding 14 and 15 handled above)
+            else if ((int)type >= 10 && (int)type <= 29)
             {
                 PlayerSync?.OnPacketReceived(type, reader, senderId);
             }

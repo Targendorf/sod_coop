@@ -2,6 +2,7 @@ using HarmonyLib;
 using SoDCoop.Sync;
 using SoDCoop.UI;
 using UnityEngine;
+using SoDCoop.Network;
 
 namespace SoDCoop.Patches;
 
@@ -105,6 +106,76 @@ public static class GamePatches
             catch (System.Exception ex)
             {
                 Plugin.Log.LogWarning($"LightController.SetOn patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Item pickup / drop — FirstPersonItemController.PickUpItem / EmptySlot
+    //
+    //  PickUpItem returns bool; we only broadcast on success (__result == true).
+    //  EmptySlot: we capture the interactableID in the prefix (before the slot is
+    //  cleared), then broadcast the drop position in the postfix once the game has
+    //  placed the object back in the world.  destroyObject==true means the item was
+    //  consumed/binned — skip broadcast in that case.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.PickUpItem))]
+    public static class FPItemController_PickUpItem_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Interactable pickUpThis, bool __result)
+        {
+            try
+            {
+                if (!__result) return;               // pick-up failed — nothing changed
+                if (pickUpThis == null) return;
+                if (ItemSync.IsApplyingRemote) return;
+                ItemSync.BroadcastPickup(pickUpThis.id);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"FPItemController.PickUpItem patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.EmptySlot))]
+    public static class FPItemController_EmptySlot_Patch
+    {
+        /// <summary>
+        /// Capture the interactableID before the slot is cleared, pass it to the
+        /// postfix via Harmony's __state mechanism.
+        /// -1 means "skip broadcast" (destroyed item or no slot).
+        /// </summary>
+        [HarmonyPrefix]
+        public static void Prefix(
+            FirstPersonItemController.InventorySlot emptySlot,
+            bool destroyObject,
+            out int __state)
+        {
+            __state = -1;
+            try
+            {
+                if (ItemSync.IsApplyingRemote) return;
+                if (destroyObject) return;           // item consumed/binned — no drop event
+                if (emptySlot == null) return;
+                __state = emptySlot.interactableID;
+            }
+            catch { }
+        }
+
+        [HarmonyPostfix]
+        public static void Postfix(int __state)
+        {
+            try
+            {
+                if (__state < 0) return;
+                ItemSync.BroadcastDrop(__state);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"FPItemController.EmptySlot patch: {ex.Message}");
             }
         }
     }

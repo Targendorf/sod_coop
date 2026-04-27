@@ -607,6 +607,41 @@ public struct PlayerVitalsPacket : INetPacket
 }
 
 /// <summary>
+/// Item pickup event — keyed by Interactable.id.
+/// Sent after a successful FirstPersonItemController.PickUpItem so peers can
+/// hide the in-world object (it's now in the picker's inventory).
+/// </summary>
+public struct ItemPickupPacket : INetPacket
+{
+    public PacketType Type => PacketType.PlayerPickup;
+
+    /// <summary>PlayerId of the player who picked the item up.</summary>
+    public int PlayerId;
+    /// <summary>Interactable.id of the item.</summary>
+    public int InteractableId;
+
+    public void Serialize(NetDataWriter w)   { w.Put(PlayerId); w.Put(InteractableId); }
+    public void Deserialize(NetDataReader r) { PlayerId = r.GetInt(); InteractableId = r.GetInt(); }
+}
+
+/// <summary>
+/// Item drop event — keyed by Interactable.id, includes world-space drop position.
+/// Sent after FirstPersonItemController.EmptySlot (when the item is returned to the
+/// world, not destroyed) so peers can teleport and show the in-world object.
+/// </summary>
+public struct ItemDropPacket : INetPacket
+{
+    public PacketType Type => PacketType.PlayerDrop;
+
+    public int     InteractableId;
+    /// <summary>World-space position where the item landed (from spawnedObject after drop).</summary>
+    public Vector3 DropPosition;
+
+    public void Serialize(NetDataWriter w)   { w.Put(InteractableId); w.Put(DropPosition); }
+    public void Deserialize(NetDataReader r) { InteractableId = r.GetInt(); DropPosition = r.GetVector3(); }
+}
+
+/// <summary>
 /// Client → Host transfer-of-ownership packet.
 ///
 /// When the local player walks within range of a citizen we send a Claim;
