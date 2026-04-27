@@ -26,3 +26,6 @@ packages/
 # Local overrides
 Directory.Build.user.props
 appsettings.Development.json
+
+# Decompiled game source — reference only, large, not for the repo
+Assembly-CSharp_Dump/
