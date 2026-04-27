@@ -576,6 +576,110 @@ public struct LightStatePacket : INetPacket
 }
 
 /// <summary>
+/// Pin a card onto the shared case board. Identified cross-machine by
+/// (CaseId, EvId, DataKeys) — all three are deterministic from the world seed.
+/// Position is the local panel coordinate where the card should land. If the
+/// receiver was issued a remote pin while ForceAutoPin=true the layout step is
+/// allowed to override the position (keeps SoD's auto-arrange working when
+/// the original sender used auto-pin).
+/// </summary>
+public struct CaseBoardPinPacket : INetPacket
+{
+    public PacketType Type => PacketType.CaseBoardPin;
+
+    public int     CaseId;
+    public string  EvId;
+    public byte[]  DataKeys;
+    public Vector2 Position;
+    public bool    ForceAutoPin;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(CaseId);
+        w.Put(EvId ?? "");
+        w.Put((byte)(DataKeys?.Length ?? 0));
+        if (DataKeys != null) for (int i = 0; i < DataKeys.Length; i++) w.Put(DataKeys[i]);
+        w.Put(Position);
+        w.Put(ForceAutoPin);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        CaseId   = r.GetInt();
+        EvId     = r.GetString();
+        int n    = r.GetByte();
+        DataKeys = new byte[n];
+        for (int i = 0; i < n; i++) DataKeys[i] = r.GetByte();
+        Position     = r.GetVector2();
+        ForceAutoPin = r.GetBool();
+    }
+}
+
+/// <summary>Unpin a card from the shared case board.</summary>
+public struct CaseBoardUnpinPacket : INetPacket
+{
+    public PacketType Type => PacketType.CaseBoardUnpin;
+
+    public int     CaseId;
+    public string  EvId;
+    public byte[]  DataKeys;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(CaseId);
+        w.Put(EvId ?? "");
+        w.Put((byte)(DataKeys?.Length ?? 0));
+        if (DataKeys != null) for (int i = 0; i < DataKeys.Length; i++) w.Put(DataKeys[i]);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        CaseId   = r.GetInt();
+        EvId     = r.GetString();
+        int n    = r.GetByte();
+        DataKeys = new byte[n];
+        for (int i = 0; i < n; i++) DataKeys[i] = r.GetByte();
+    }
+}
+
+/// <summary>
+/// Live drag of a pinned card. Streamed at ~20 Hz while the user is dragging
+/// so the other player sees the motion in real-time. Sent over Sequenced
+/// (not ReliableOrdered) — it's OK to drop intermediate frames.
+/// </summary>
+public struct CaseBoardMovePacket : INetPacket
+{
+    public PacketType Type => PacketType.CaseBoardMove;
+
+    public int     CaseId;
+    public string  EvId;
+    public byte[]  DataKeys;
+    public Vector2 Position;
+    public int     SenderId;     // for "host wins" tie-break
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(CaseId);
+        w.Put(EvId ?? "");
+        w.Put((byte)(DataKeys?.Length ?? 0));
+        if (DataKeys != null) for (int i = 0; i < DataKeys.Length; i++) w.Put(DataKeys[i]);
+        w.Put(Position);
+        w.Put(SenderId);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        CaseId   = r.GetInt();
+        EvId     = r.GetString();
+        int n    = r.GetByte();
+        DataKeys = new byte[n];
+        for (int i = 0; i < n; i++) DataKeys[i] = r.GetByte();
+        Position = r.GetVector2();
+        SenderId = r.GetInt();
+    }
+}
+
+/// <summary>
 /// Citizen death — broadcast when <c>Human.Murder</c> fires on a non-player.
 /// Receiver finds the victim via CityData.citizenDictionary[humanID] and mirrors
 /// the dead state (isDead flag + CitizenAnimationController.SetDead(true) +

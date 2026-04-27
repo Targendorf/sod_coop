@@ -147,7 +147,14 @@ public static class SyncManager
             {
                 WorldSync?.OnPacketReceived(type, reader, senderId);
             }
-            // Case Packets: 60-79
+            // Shared case board (66/67/68) — own handler.
+            else if (type == PacketType.CaseBoardPin
+                  || type == PacketType.CaseBoardUnpin
+                  || type == PacketType.CaseBoardMove)
+            {
+                CaseBoardSync.OnPacketReceived(type, reader, senderId);
+            }
+            // Other Case Packets: 60-79
             else if ((int)type >= 60 && (int)type <= 79)
             {
                 CaseSync?.OnPacketReceived(type, reader, senderId);

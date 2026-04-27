@@ -216,6 +216,24 @@ public enum PacketType : byte
     /// Case board update (pins, strings, photos).
     /// </summary>
     CaseBoard = 63,
+
+    /// <summary>
+    /// Pin a card onto the case board. Keyed by (caseID, evID, DataKey set).
+    /// Replays CasePanelController.PinToCasePanel on the receiver.
+    /// </summary>
+    CaseBoardPin = 66,
+
+    /// <summary>
+    /// Unpin a card. Keyed by (caseID, evID, DataKey set).
+    /// Replays CasePanelController.UnPinFromCasePanel on the receiver.
+    /// </summary>
+    CaseBoardUnpin = 67,
+
+    /// <summary>
+    /// Move (live-drag) a pinned card. Streamed at ~20 Hz while dragging so
+    /// peers see the motion in real-time, like in single-player.
+    /// </summary>
+    CaseBoardMove = 68,
     
     /// <summary>
     /// Suspect identified/arrested.

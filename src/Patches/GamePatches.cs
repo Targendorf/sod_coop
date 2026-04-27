@@ -111,6 +111,110 @@ public static class GamePatches
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    //  Case-board sync: Pin / Unpin / live-drag Move.
+    //
+    //  CasePanelController has two PinToCasePanel overloads (single key vs list)
+    //  and one UnPinFromCasePanel. PinnedItemController.SetPostion fires every
+    //  drag frame. All four route through CaseBoardSync, which throttles moves
+    //  to 20 Hz internally. IsApplyingRemote guards prevent echo on replay.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(CasePanelController), nameof(CasePanelController.PinToCasePanel),
+        new System.Type[]
+        {
+            typeof(Case), typeof(Evidence), typeof(Evidence.DataKey),
+            typeof(bool), typeof(Vector2), typeof(bool),
+        })]
+    public static class CPC_PinToCasePanel_Single_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Case toCase, Evidence ev, Evidence.DataKey evKey,
+                                   bool forceAutoPin, Vector2 localPostion)
+        {
+            try
+            {
+                if (toCase == null || ev == null) return;
+                if (CaseBoardSync.IsApplyingRemote) return;
+                var keys = new Il2CppSystem.Collections.Generic.List<Evidence.DataKey>();
+                keys.Add(evKey);
+                CaseBoardSync.BroadcastPin(toCase.id, ev.evID, keys, localPostion, forceAutoPin);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"CPC.PinToCasePanel(single) patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(CasePanelController), nameof(CasePanelController.PinToCasePanel),
+        new System.Type[]
+        {
+            typeof(Case), typeof(Evidence),
+            typeof(Il2CppSystem.Collections.Generic.List<Evidence.DataKey>),
+            typeof(bool), typeof(Vector2), typeof(bool),
+        })]
+    public static class CPC_PinToCasePanel_List_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Case toCase, Evidence ev,
+                                   Il2CppSystem.Collections.Generic.List<Evidence.DataKey> evKeys,
+                                   bool forceAutoPin, Vector2 localPostion)
+        {
+            try
+            {
+                if (toCase == null || ev == null || evKeys == null) return;
+                if (CaseBoardSync.IsApplyingRemote) return;
+                CaseBoardSync.BroadcastPin(toCase.id, ev.evID, evKeys, localPostion, forceAutoPin);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"CPC.PinToCasePanel(list) patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(CasePanelController), nameof(CasePanelController.UnPinFromCasePanel))]
+    public static class CPC_UnPinFromCasePanel_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Case thisCase, Evidence ev,
+                                   Il2CppSystem.Collections.Generic.List<Evidence.DataKey> evKeys)
+        {
+            try
+            {
+                if (thisCase == null || ev == null) return;
+                if (CaseBoardSync.IsApplyingRemote) return;
+                CaseBoardSync.BroadcastUnpin(thisCase.id, ev.evID, evKeys);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"CPC.UnPinFromCasePanel patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(PinnedItemController), nameof(PinnedItemController.SetPostion))]
+    public static class PIC_SetPostion_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(PinnedItemController __instance, Vector2 newPos)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (CaseBoardSync.IsApplyingRemote) return;
+                var element = __instance.caseElement;
+                if (element == null) return;
+                CaseBoardSync.BroadcastMove(element, newPos);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"PIC.SetPostion patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     //  Human.Murder — fired whenever a citizen actually gets killed.
     //  Skip Player.Instance (the local player has no stable cross-machine ID).
     //  Skip while CitizenDeathSync.IsApplyingRemote so we don't echo.
