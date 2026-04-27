@@ -512,6 +512,61 @@ public struct CitizenCorrectionPacket : INetPacket
         (byte)(((rot.eulerAngles.y % 360f + 360f) % 360f) / 360f * 255f);
 }
 
+/// <summary>Door open/close — keyed by Interactable.id.</summary>
+public struct DoorStatePacket : INetPacket
+{
+    public PacketType Type => PacketType.DoorState;
+
+    public int  InteractableId;
+    public bool IsClosed;       // true = closed; false = open
+
+    public void Serialize(NetDataWriter w)   { w.Put(InteractableId); w.Put(IsClosed); }
+    public void Deserialize(NetDataReader r) { InteractableId = r.GetInt(); IsClosed = r.GetBool(); }
+}
+
+/// <summary>Light on/off — keyed by Interactable.id of the light's controller.</summary>
+public struct LightStatePacket : INetPacket
+{
+    public PacketType Type => PacketType.LightState;
+
+    public int  InteractableId;
+    public bool IsOn;
+
+    public void Serialize(NetDataWriter w)   { w.Put(InteractableId); w.Put(IsOn); }
+    public void Deserialize(NetDataReader r) { InteractableId = r.GetInt(); IsOn = r.GetBool(); }
+}
+
+/// <summary>Player vitals — small fixed-size HUD update at low rate.</summary>
+public struct PlayerVitalsPacket : INetPacket
+{
+    public PacketType Type => PacketType.PlayerVitals;
+
+    public int  PlayerId;
+    public byte Nourishment;   // 0-255 (raw float * 255)
+    public byte Hydration;
+    public byte Energy;
+    public bool IsDead;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(PlayerId);
+        w.Put(Nourishment); w.Put(Hydration); w.Put(Energy);
+        w.Put(IsDead);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        PlayerId   = r.GetInt();
+        Nourishment = r.GetByte();
+        Hydration   = r.GetByte();
+        Energy      = r.GetByte();
+        IsDead      = r.GetBool();
+    }
+
+    public static byte Pack(float v01) => (byte)Mathf.Clamp(v01 * 255f, 0f, 255f);
+    public static float Unpack(byte b) => b / 255f;
+}
+
 /// <summary>
 /// Client → Host transfer-of-ownership packet.
 ///

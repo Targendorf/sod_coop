@@ -91,7 +91,13 @@ public enum PacketType : byte
     /// Player health/status change.
     /// </summary>
     PlayerStatus = 18,
-    
+
+    /// <summary>
+    /// Player vitals (nourishment, hydration, energy, isDead). Sent at low rate
+    /// from each client; rendered as bars in the UI HUD.
+    /// </summary>
+    PlayerVitals = 19,
+
     #endregion
     
     #region World Sync Packets (30-59)
@@ -167,6 +173,18 @@ public enum PacketType : byte
     /// Host re-enables its NewAIController and resumes broadcasting.
     /// </summary>
     CitizenOwnershipRelease = 42,
+
+    /// <summary>
+    /// Door open/close state — uses Interactable.id as the network identifier.
+    /// Broadcast by whoever changed it; receivers mirror via NewDoor.SetOpen.
+    /// </summary>
+    DoorState = 50,
+
+    /// <summary>
+    /// Light on/off state — uses LightController's owning Interactable.id.
+    /// Broadcast on change; receivers call LightController.SetOn locally.
+    /// </summary>
+    LightState = 51,
 
     #endregion
     

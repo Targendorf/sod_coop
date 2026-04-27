@@ -40,6 +40,15 @@ public class PlayerSync
     private ushort _sequence;
     private readonly NetDataWriter _writer = new();
 
+    // Vitals — small float bundle, sent at 1 Hz. Cached on remote players for HUD.
+    private float _lastVitalsSendTime;
+    private const float VITALS_INTERVAL = 1.0f;
+    private readonly NetDataWriter _vitalsWriter = new();
+
+    /// <summary>Latest vitals received per remote player (PlayerId → packet).</summary>
+    private static readonly System.Collections.Generic.Dictionary<int, PlayerVitalsPacket> _remoteVitals = new();
+    public static System.Collections.Generic.IReadOnlyDictionary<int, PlayerVitalsPacket> RemoteVitals => _remoteVitals;
+
     #endregion
 
     public void Update()
@@ -84,6 +93,60 @@ public class PlayerSync
         _lastSentPosition = pos;
         _lastSentRotation = rot;
         if (!changed || keepaliveDue) _lastKeepaliveTime = now;
+
+        // Vitals at 1 Hz alongside position.
+        if (now - _lastVitalsSendTime >= VITALS_INTERVAL)
+        {
+            _lastVitalsSendTime = now;
+            SendVitals();
+        }
+    }
+
+    private void SendVitals()
+    {
+        try
+        {
+            var p = global::Player.Instance;
+            if (p == null) return;
+
+            var packet = new PlayerVitalsPacket
+            {
+                PlayerId    = NetworkManager.LocalPlayerId,
+                Nourishment = PlayerVitalsPacket.Pack(SafeGetVital(p, "nourishment")),
+                Hydration   = PlayerVitalsPacket.Pack(SafeGetVital(p, "hydration")),
+                Energy      = PlayerVitalsPacket.Pack(SafeGetVital(p, "energy")),
+                IsDead      = SafeGetIsDead(p),
+            };
+
+            _vitalsWriter.Reset();
+            packet.Serialize(_vitalsWriter);
+            NetworkManager.SendToAll(PacketType.PlayerVitals, _vitalsWriter, DeliveryMethod.Sequenced);
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"SendVitals: {ex.Message}");
+        }
+    }
+
+    private static float SafeGetVital(global::Player p, string field)
+    {
+        // Player extends Human — these vitals live on Human (nourishment/hydration/energy).
+        try
+        {
+            switch (field)
+            {
+                case "nourishment": return p.nourishment;
+                case "hydration":   return p.hydration;
+                case "energy":      return p.energy;
+            }
+        }
+        catch { }
+        return 1f;
+    }
+
+    private static bool SafeGetIsDead(global::Player p)
+    {
+        try { return p.isDead; } catch { return false; }
     }
 
     private void SendPosition(Vector3 pos, Quaternion rot, Vector3 velocity, float speed)
@@ -124,6 +187,13 @@ public class PlayerSync
             packet.Deserialize(reader);
             if (packet.PlayerId == NetworkManager.LocalPlayerId) return;
             // TODO: apply interaction
+        }
+        else if (type == PacketType.PlayerVitals)
+        {
+            var packet = new PlayerVitalsPacket();
+            packet.Deserialize(reader);
+            if (packet.PlayerId == NetworkManager.LocalPlayerId) return;
+            _remoteVitals[packet.PlayerId] = packet;
         }
     }
 

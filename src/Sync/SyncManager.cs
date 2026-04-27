@@ -110,8 +110,13 @@ public static class SyncManager
             {
                 PlayerSync?.OnPacketReceived(type, reader, senderId);
             }
-            // World Packets: 30-59 + 1 (WorldSeed) + Critical (100+)
-            else if (((int)type >= 30 && (int)type <= 59) || type == PacketType.WorldSeed || (int)type >= 100)
+            // Doors + lights (50-59) — go to WorldStateSync, not WorldSync.
+            else if (type == PacketType.DoorState || type == PacketType.LightState)
+            {
+                WorldStateSync.OnPacketReceived(type, reader, senderId);
+            }
+            // World Packets: 30-49 + 1 (WorldSeed) + Critical (100+) → WorldSync (NPCs, time, etc.)
+            else if (((int)type >= 30 && (int)type <= 49) || type == PacketType.WorldSeed || (int)type >= 100)
             {
                 WorldSync?.OnPacketReceived(type, reader, senderId);
             }

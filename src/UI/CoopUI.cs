@@ -292,23 +292,78 @@ public static class CoopUI
         var players = NetworkManager.Players;
         if (players == null) return;
 
-        const float w = 220f, lineH = 18f, pad = 6f;
-        float h = pad * 2 + lineH * (players.Count + 1);
+        const float w = 240f, lineH = 18f, barH = 5f, barGap = 2f, pad = 6f;
+        float rowH = lineH + (barH + barGap) * 3 + 4f;
+        float h = pad * 2 + lineH + players.Count * rowH;
         var rect = new Rect(Screen.width - w - 10f, 10f, w, h);
 
         GUI.Box(rect, "");
         GUI.Label(new Rect(rect.x + pad, rect.y + pad, rect.width - pad * 2, lineH),
             $"Players online: {players.Count}");
 
-        int i = 1;
+        int i = 0;
         foreach (var p in players.Values)
         {
+            float rowY = rect.y + pad + lineH + i * rowH;
+
             string prefix = p.IsHost ? "[H] " : "    ";
             string suffix = p.PlayerId == NetworkManager.LocalPlayerId ? "  (you)" : "";
-            GUI.Label(
-                new Rect(rect.x + pad, rect.y + pad + lineH * i, rect.width - pad * 2, lineH),
-                $"{prefix}{p.PlayerName}{suffix}");
+
+            // Vitals — local from Player.Instance, remote from PlayerSync cache.
+            float nour = 1f, hyd = 1f, ene = 1f;
+            bool dead = false;
+            if (p.PlayerId == NetworkManager.LocalPlayerId)
+            {
+                try
+                {
+                    var local = global::Player.Instance;
+                    if (local != null)
+                    {
+                        nour = local.nourishment;
+                        hyd  = local.hydration;
+                        ene  = local.energy;
+                        dead = local.isDead;
+                    }
+                }
+                catch { }
+            }
+            else if (Sync.PlayerSync.RemoteVitals.TryGetValue(p.PlayerId, out var v))
+            {
+                nour = PlayerVitalsPacket.Unpack(v.Nourishment);
+                hyd  = PlayerVitalsPacket.Unpack(v.Hydration);
+                ene  = PlayerVitalsPacket.Unpack(v.Energy);
+                dead = v.IsDead;
+            }
+
+            string deadTag = dead ? "  X" : "";
+            GUI.Label(new Rect(rect.x + pad, rowY, rect.width - pad * 2, lineH),
+                $"{prefix}{p.PlayerName}{suffix}{deadTag}");
+
+            float barX = rect.x + pad;
+            float barW = rect.width - pad * 2;
+            float by = rowY + lineH;
+            DrawBar(new Rect(barX, by, barW, barH), nour, new Color(0.85f, 0.55f, 0.10f));
+            DrawBar(new Rect(barX, by + barH + barGap, barW, barH), hyd, new Color(0.20f, 0.55f, 0.95f));
+            DrawBar(new Rect(barX, by + (barH + barGap) * 2, barW, barH), ene, new Color(0.95f, 0.85f, 0.20f));
+
             i++;
+        }
+    }
+
+    private static Texture2D _barFill;
+    private static Texture2D _barBg;
+    private static void DrawBar(Rect r, float fill01, Color color)
+    {
+        if (_barBg == null)   _barBg   = MakeTexture(2, 2, new Color(0.05f, 0.05f, 0.05f, 0.8f));
+        if (_barFill == null) _barFill = MakeTexture(2, 2, Color.white);
+
+        GUI.DrawTexture(r, _barBg);
+        if (fill01 > 0f)
+        {
+            var prev = GUI.color;
+            GUI.color = color;
+            GUI.DrawTexture(new Rect(r.x, r.y, r.width * Mathf.Clamp01(fill01), r.height), _barFill);
+            GUI.color = prev;
         }
     }
 
