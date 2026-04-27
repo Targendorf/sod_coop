@@ -31,15 +31,26 @@ public class WorldSync
 {
     #region Tuning
 
-    private const float WORLD_SYNC_RATE       = 0.5f;   // s between batches (2 Hz)
+    // Increased from 0.5s (2Hz) → 0.2s (5Hz):
+    // At 1.5m/s walk speed, 2Hz gives 0.75m gaps between packets (visible pop even with interp).
+    // 5Hz gives 0.3m gaps which lerp invisibly within the window.
+    private const float WORLD_SYNC_RATE       = 0.2f;   // s between batches (5 Hz)
     private const float FORCE_RESYNC_INTERVAL = 3f;     // s — re-send a citizen even if static
-    private const int   MAX_NPCS_PER_BATCH    = 20;
+    // Raised from 20 → 30 to compensate for the higher packet frequency
+    private const int   MAX_NPCS_PER_BATCH    = 30;
     private const float NPC_SYNC_RANGE        = 50f;    // m around any player
 
-    private const float MIN_MOVE_DELTA  = 0.5f;
+    // Lowered from 0.5m → 0.1m to catch slow-moving citizens (e.g. idle shuffles)
+    private const float MIN_MOVE_DELTA  = 0.1f;
     private const float MIN_ANGLE_DELTA = 10f;
 
     private const float TELEPORT_DIST   = 8f;   // m — snap rather than lerp above this
+
+    // TODO(known-limitation): NPC visual hash mismatch
+    // Host and client load different cities → same humanID may have different outfits/meshes.
+    // MVP fix: host should include a deterministic VisualHash (e.g. humanID ^ outfitSeed) per
+    // citizen in CitizenStatePacket so the client can swap to the closest-matching local citizen.
+    // For now this is a known limitation — positions sync correctly, appearance may differ.
 
     #endregion
 

@@ -239,6 +239,17 @@ public class RemotePlayer : MonoBehaviour
     {
         try
         {
+            // ── Dump ALL parameters once for discovery in the log ─────────────
+            int paramCount = _animator.parameterCount;
+            Plugin.Log.LogInfo($"RemotePlayer {PlayerId}: scanning {paramCount} animator params…");
+            for (int i = 0; i < paramCount; i++)
+            {
+                var param = _animator.GetParameter(i);
+                Plugin.Log.LogInfo($"  AnimParam[{i}]: \"{param.name}\" hash={param.nameHash} type={param.type}");
+            }
+
+            // ── Match against all known SoD / Unity citizen parameter names ───
+            // Uses _animator.parameters because it returns a managed array.
             var pars = _animator.parameters;
             if (pars == null) return;
             for (int i = 0; i < pars.Length; i++)
@@ -246,14 +257,29 @@ public class RemotePlayer : MonoBehaviour
                 var p = pars[i];
                 if (p == null || string.IsNullOrEmpty(p.name)) continue;
                 var n = p.name.ToLowerInvariant();
-                if (_animSpeedHash == -1 && (n == "speed" || n == "movespeed" || n == "movementspeed"))
+
+                // Speed / movement magnitude
+                if (_animSpeedHash == -1 &&
+                    (n == "speed" || n == "movespeed" || n == "movementspeed" ||
+                     n == "velocity" || n == "forwardspeed"))
                     _animSpeedHash = p.nameHash;
-                else if (_animIsRunningHash == -1 && (n == "isrunning" || n == "running" || n == "issprinting" || n == "sprint"))
+
+                // Running / sprinting — also covers bare "run" seen in SoD logs
+                else if (_animIsRunningHash == -1 &&
+                    (n == "isrunning" || n == "running" || n == "run" ||
+                     n == "issprinting" || n == "sprint" || n == "sprinting"))
                     _animIsRunningHash = p.nameHash;
-                else if (_animIsCrouchingHash == -1 && (n == "iscrouching" || n == "crouch" || n == "iscrouched"))
+
+                // Crouching — also covers bare "crouch" seen in SoD logs
+                else if (_animIsCrouchingHash == -1 &&
+                    (n == "iscrouching" || n == "crouching" || n == "crouch" ||
+                     n == "iscrouched" || n == "duck" || n == "isducking"))
                     _animIsCrouchingHash = p.nameHash;
             }
-            Plugin.Log.LogInfo($"RemotePlayer {PlayerId} animator params: speed={_animSpeedHash}, run={_animIsRunningHash}, crouch={_animIsCrouchingHash}");
+
+            Plugin.Log.LogInfo(
+                $"RemotePlayer {PlayerId} animator mapped: " +
+                $"speed={_animSpeedHash}, run={_animIsRunningHash}, crouch={_animIsCrouchingHash}");
         }
         catch { }
     }

@@ -131,6 +131,10 @@ public static class CitizenVisualCloner
     /// <summary>
     /// Destroy all MonoBehaviours/AI components on the clone tree, keeping only
     /// rendering-essential things (Transform, Renderer subclasses, MeshFilter, Animator).
+    ///
+    /// IL2CPP note: C# `is` type checks do NOT work for Unity-native types (Transform,
+    /// Renderer, MeshFilter, Animator) when running under BepInEx IL2CPP interop.
+    /// We use GetIl2CppType().Name instead, which always returns the correct native type name.
     /// </summary>
     private static void StripComponents(GameObject root)
     {
@@ -138,10 +142,14 @@ public static class CitizenVisualCloner
         foreach (var comp in all)
         {
             if (comp == null) continue;
-            if (comp is Transform) continue;
-            if (comp is Renderer) continue;      // SkinnedMeshRenderer / MeshRenderer
-            if (comp is MeshFilter) continue;
-            if (comp is Animator) continue;      // keep skeleton driver; applyRootMotion=false below
+
+            // IL2CPP-safe type checks — `comp is Transform` etc. do NOT work here.
+            var typeName = comp.GetIl2CppType()?.Name ?? "";
+            if (typeName == "Transform") continue;
+            if (typeName == "MeshRenderer" || typeName == "SkinnedMeshRenderer") continue;
+            if (typeName == "MeshFilter") continue;
+            if (typeName == "Animator") continue;  // keep skeleton driver; applyRootMotion=false below
+
             try { UnityEngine.Object.Destroy(comp); }
             catch { /* some components refuse — ignore */ }
         }

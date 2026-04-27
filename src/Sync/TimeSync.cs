@@ -20,9 +20,9 @@ public class TimeSync
 {
     #region Constants
 
-    private const float TIME_SYNC_RATE  = 1.0f;   // s between host broadcasts
-    private const float SNAP_THRESHOLD  = 2.0f;   // game-minutes — snap directly above this
-    private const float SMOOTH_RATE     = 0.1f;   // fraction per second for small corrections
+    private const float TIME_SYNC_RATE  = 0.5f;   // s between host broadcasts (2 Hz)
+    private const float SNAP_THRESHOLD  = 0.5f;   // game-minutes — snap directly above this
+    private const float SMOOTH_RATE     = 0.5f;   // fraction per call for small corrections (50%)
 
     #endregion
 
@@ -116,7 +116,7 @@ public class TimeSync
             }
             else if (drift > 0.05f)
             {
-                // Small drift — nudge 10% toward target per call (called 1 Hz).
+                // Small drift — nudge 50% toward target per call (called 2 Hz).
                 session.gameTime = Mathf.Lerp(current, target, SMOOTH_RATE);
             }
             // else within noise — do nothing
