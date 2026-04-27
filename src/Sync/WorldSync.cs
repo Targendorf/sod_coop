@@ -4,86 +4,75 @@ using LiteNetLib.Utils;
 using UnityEngine;
 using UnityEngine.AI;
 using System.Collections.Generic;
-using Il2CppInterop.Runtime;
 
 namespace SoDCoop.Sync;
 
 /// <summary>
-/// Megabonk-style NPC sync.
+/// AI Command Streaming NPC sync.
+///
+/// Because host and client share the same world seed, their NavMesh topologies are
+/// identical. Instead of streaming per-frame positions and lerping, the host streams
+/// NavMeshAgent destinations + behaviour states. The client re-runs the same
+/// NavMeshAgent commands locally, producing smooth natively-animated movement.
 ///
 /// Host:
-///   - Every WORLD_SYNC_RATE seconds scan citizens within NPC_SYNC_RANGE of any player.
-///   - Delta-filter: only include citizens that moved/rotated/changed isDead, or are stale.
-///   - Pack ≤ MAX_NPCS_PER_BATCH per packet, send via PacketType.CitizenStateBatch (Sequenced).
+///   - Every COMMAND_SCAN_RATE (10 Hz) check each in-range citizen.
+///   - If destination / speed / behaviour changed → CitizenCommandBatch (ReliableOrdered).
+///   - Every CORRECTION_INTERVAL (3 s) send authoritative positions for moving citizens
+///     so floating-point drift never accumulates → CitizenCorrectionBatch (Sequenced).
 ///
 /// Client:
-///   - First time we receive state for a citizen, we DISABLE its NavMeshAgent so SoD's AI
-///     stops driving its position locally. (Equivalent of megabonk-together prefix-blocking
-///     EnemyMovementRb.MyFixedUpdate; we use component disable since SoD's AI class names
-///     are not known without source.)
-///   - Then we apply the host position via snapshot interpolation: keep last + current target,
-///     lerp transform between them across the WORLD_SYNC_RATE window.
-///   - When the world unloads (return to menu), all client-side state is dropped.
+///   - CitizenCommandBatch → enable NavMeshAgent, SetDestination, SetSpeed.
+///   - CitizenCorrectionBatch → Warp if drift > threshold.
+///   - SoD's own AI scheduler still runs on the client (same seed/time), so it often
+///     picks the same destination independently; commands keep them in sync.
 ///
-/// Host-side citizens are NEVER touched — host runs its normal authoritative simulation.
+/// Host-side citizens are NEVER touched — host runs normal authoritative simulation.
 /// </summary>
 public class WorldSync
 {
     #region Tuning
 
-    // Increased from 0.5s (2Hz) → 0.2s (5Hz):
-    // At 1.5m/s walk speed, 2Hz gives 0.75m gaps between packets (visible pop even with interp).
-    // 5Hz gives 0.3m gaps which lerp invisibly within the window.
-    private const float WORLD_SYNC_RATE       = 0.2f;   // s between batches (5 Hz)
-    private const float FORCE_RESYNC_INTERVAL = 3f;     // s — re-send a citizen even if static
-    // Raised from 20 → 30 to compensate for the higher packet frequency
-    private const int   MAX_NPCS_PER_BATCH    = 30;
-    private const float NPC_SYNC_RANGE        = 50f;    // m around any player
-
-    // Lowered from 0.5m → 0.1m to catch slow-moving citizens (e.g. idle shuffles)
-    private const float MIN_MOVE_DELTA  = 0.1f;
-    private const float MIN_ANGLE_DELTA = 10f;
-
-    private const float TELEPORT_DIST   = 8f;   // m — snap rather than lerp above this
-
-    // TODO(known-limitation): NPC visual hash mismatch
-    // Host and client load different cities → same humanID may have different outfits/meshes.
-    // MVP fix: host should include a deterministic VisualHash (e.g. humanID ^ outfitSeed) per
-    // citizen in CitizenStatePacket so the client can swap to the closest-matching local citizen.
-    // For now this is a known limitation — positions sync correctly, appearance may differ.
+    private const float COMMAND_SCAN_RATE    = 0.1f;   // s — host scans for destination changes (10 Hz)
+    private const float CORRECTION_INTERVAL  = 3.0f;   // s — authoritative position correction
+    private const float NPC_SYNC_RANGE       = 50f;    // m around any player
+    private const int   MAX_CMDS_PER_BATCH   = 30;
+    private const int   MAX_CORR_PER_BATCH   = 30;
+    private const float MIN_DEST_DELTA       = 0.3f;   // m — resend if destination moved more than this
+    private const float MIN_SPEED_DELTA      = 0.2f;   // m/s — resend if speed changed more than this
+    private const float CORRECTION_LERP_DIST = 0.5f;   // m — soft nudge above this
+    private const float CORRECTION_SNAP_DIST = 4.0f;   // m — hard snap above this
+    private const float WALK_SPEED_THRESHOLD = 2.5f;   // m/s — above this = Running state
 
     #endregion
 
     public int SyncedSeed { get; private set; }
 
-    private float _lastBroadcastTime;
+    private float _lastCommandScan;
+    private float _lastCorrectionScan;
     private readonly NetDataWriter _writer = new();
 
-    /// <summary>Per-citizen last sent state (host).</summary>
+    // ── Host-side: per-citizen last-sent state ────────────────────────────────
     private readonly Dictionary<int, HostSentState> _hostSent = new();
 
-    /// <summary>Per-citizen client-side interp state. Populated only on client.</summary>
+    // ── Client-side: per-citizen agent/behaviour tracking ────────────────────
     private readonly Dictionary<int, ClientCitizenState> _clientStates = new();
-
-    /// <summary>Citizens whose NavMeshAgent we've already disabled on this client.</summary>
-    private readonly HashSet<int> _aiDisabled = new();
 
     private struct HostSentState
     {
-        public Vector3    Position;
-        public Quaternion Rotation;
-        public bool       IsDead;
-        public float      SentAt;
+        public Vector3               LastDestination;
+        public float                 LastSpeed;
+        public CitizenBehaviourState LastBehaviour;
+        public bool                  IsDead;
+        public float                 LastCommandSentAt;
+        public float                 LastCorrectionSentAt;
     }
 
     private struct ClientCitizenState
     {
-        public Vector3    PrevPosition;
-        public Quaternion PrevRotation;
-        public Vector3    TargetPosition;
-        public Quaternion TargetRotation;
-        public float      AppliedAt;          // local time when we received the latest packet
-        public bool       IsDead;
+        public bool                  RootMotionDisabled;
+        public CitizenBehaviourState BehaviourState;
+        public bool                  IsDead;
     }
 
     // -------------------------------------------------------------------------
@@ -95,26 +84,33 @@ public class WorldSync
         if (!NetworkManager.IsConnected) return;
         if (!WorldReadyGate.IsWorldReady) return;
 
-        if (NetworkManager.IsHost)
-            HostTick();
-        else
-            ClientTick();
+        if (!NetworkManager.IsHost) return;
+
+        float now = Time.unscaledTime;
+
+        if (now - _lastCommandScan >= COMMAND_SCAN_RATE)
+        {
+            _lastCommandScan = now;
+            HostScanCommands(now);
+        }
+
+        if (now - _lastCorrectionScan >= CORRECTION_INTERVAL)
+        {
+            _lastCorrectionScan = now;
+            HostSendCorrections(now);
+        }
     }
 
     // -------------------------------------------------------------------------
-    //  Host: scan, delta-filter, broadcast
+    //  Host: scan for changed destinations → CitizenCommandBatch
     // -------------------------------------------------------------------------
 
-    private void HostTick()
+    private void HostScanCommands(float now)
     {
-        float now = Time.unscaledTime;
-        if (now - _lastBroadcastTime < WORLD_SYNC_RATE) return;
-        _lastBroadcastTime = now;
-
         var anchors = GetAnchorPositions();
         if (anchors.Count == 0) return;
 
-        var batch = new List<CitizenStatePacket>(MAX_NPCS_PER_BATCH);
+        var cmds = new List<CitizenCommandPacket>(MAX_CMDS_PER_BATCH);
 
         try
         {
@@ -123,12 +119,10 @@ public class WorldSync
 
             foreach (var kv in dict)
             {
-                if (batch.Count >= MAX_NPCS_PER_BATCH) break;
+                if (cmds.Count >= MAX_CMDS_PER_BATCH) break;
 
                 var human = kv.Value;
                 if (human == null || human.gameObject == null) continue;
-
-                // Don't sync the host's local player (it's already a Human in some games).
                 if (IsLocalPlayerHuman(human)) continue;
 
                 var pos = human.transform.position;
@@ -137,14 +131,19 @@ public class WorldSync
                 int  id     = kv.Key;
                 bool isDead = SafeIsDead(human);
 
+                var   agent = GetAgent(human);
+                var   dest  = agent != null && agent.enabled ? agent.destination : pos;
+                float speed = agent != null ? agent.speed : 0f;
+                var   state = InferBehaviourState(human, agent, isDead);
+
                 bool send;
                 if (_hostSent.TryGetValue(id, out var prev))
                 {
-                    bool moved        = Vector3.Distance(pos, prev.Position) > MIN_MOVE_DELTA;
-                    bool rotated      = Quaternion.Angle(human.transform.rotation, prev.Rotation) > MIN_ANGLE_DELTA;
-                    bool stateChanged = prev.IsDead != isDead;
-                    bool stale        = now - prev.SentAt > FORCE_RESYNC_INTERVAL;
-                    send = moved || rotated || stateChanged || stale;
+                    bool destMoved    = Vector3.Distance(dest, prev.LastDestination) > MIN_DEST_DELTA;
+                    bool speedChanged = Mathf.Abs(speed - prev.LastSpeed)            > MIN_SPEED_DELTA;
+                    bool stateChanged = state != prev.LastBehaviour || isDead != prev.IsDead;
+                    bool stale        = now - prev.LastCommandSentAt > CORRECTION_INTERVAL;
+                    send = destMoved || speedChanged || stateChanged || stale;
                 }
                 else
                 {
@@ -153,66 +152,106 @@ public class WorldSync
 
                 if (!send) continue;
 
-                batch.Add(new CitizenStatePacket
+                cmds.Add(new CitizenCommandPacket
                 {
-                    CitizenId         = id,
-                    Position          = pos,
-                    Rotation          = human.transform.rotation,
-                    CurrentAction     = 0,
-                    CurrentLocationId = 0,  // InstanceID is per-process — useless across machines
-                    IsDead            = isDead,
-                    IsUnconscious     = false,
+                    CitizenId      = id,
+                    Destination    = dest,
+                    Speed          = speed,
+                    BehaviourState = state,
+                    IsDead         = isDead,
                 });
 
-                _hostSent[id] = new HostSentState
-                {
-                    Position = pos,
-                    Rotation = human.transform.rotation,
-                    IsDead   = isDead,
-                    SentAt   = now,
-                };
+                _hostSent.TryGetValue(id, out var s);
+                s.LastDestination   = dest;
+                s.LastSpeed         = speed;
+                s.LastBehaviour     = state;
+                s.IsDead            = isDead;
+                s.LastCommandSentAt = now;
+                _hostSent[id]       = s;
             }
         }
         catch (System.Exception ex)
         {
-            Plugin.Log.LogError($"WorldSync.HostTick: {ex.Message}");
+            Plugin.Log.LogError($"WorldSync.HostScanCommands: {ex.Message}");
             return;
         }
 
-        if (batch.Count == 0) return;
+        if (cmds.Count == 0) return;
 
         _writer.Reset();
-        _writer.Put(batch.Count);
-        foreach (var p in batch)
-        {
-            p.Serialize(_writer);
-        }
-        NetworkManager.SendToAll(PacketType.CitizenStateBatch, _writer, DeliveryMethod.Sequenced);
+        _writer.Put(cmds.Count);
+        foreach (var c in cmds) c.Serialize(_writer);
+
+        // ReliableOrdered: destination changes must arrive in order, never dropped
+        NetworkManager.SendToAll(PacketType.CitizenCommandBatch, _writer, DeliveryMethod.ReliableOrdered);
     }
 
     // -------------------------------------------------------------------------
-    //  Client: per-frame interpolation toward host targets
+    //  Host: periodic authoritative corrections → CitizenCorrectionBatch
     // -------------------------------------------------------------------------
 
-    private void ClientTick()
+    private void HostSendCorrections(float now)
     {
-        if (_clientStates.Count == 0) return;
+        var anchors = GetAnchorPositions();
+        if (anchors.Count == 0) return;
 
-        float now = Time.unscaledTime;
+        var corrs = new List<CitizenCorrectionPacket>(MAX_CORR_PER_BATCH);
 
-        foreach (var kv in _clientStates)
+        try
         {
-            var human = NetworkIdResolver.GetHuman(kv.Key);
-            if (human == null || human.gameObject == null) continue;
+            var dict = CityData.Instance?.citizenDictionary;
+            if (dict == null) return;
 
-            var s = kv.Value;
-            if (s.IsDead) continue; // dead citizens — don't move them
+            foreach (var kv in dict)
+            {
+                if (corrs.Count >= MAX_CORR_PER_BATCH) break;
 
-            // Lerp factor: how far through the WORLD_SYNC_RATE window we are.
-            float t = Mathf.Clamp01((now - s.AppliedAt) / WORLD_SYNC_RATE);
-            human.transform.position = Vector3.Lerp(s.PrevPosition, s.TargetPosition, t);
-            human.transform.rotation = Quaternion.Slerp(s.PrevRotation, s.TargetRotation, t);
+                var human = kv.Value;
+                if (human == null || human.gameObject == null) continue;
+                if (IsLocalPlayerHuman(human)) continue;
+                if (SafeIsDead(human)) continue;
+
+                var pos = human.transform.position;
+                if (!IsAnchorReachable(pos, anchors)) continue;
+
+                // Skip stationary citizens — they don't accumulate drift
+                if (_hostSent.TryGetValue(kv.Key, out var prev))
+                {
+                    if (prev.LastBehaviour == CitizenBehaviourState.Idle    ||
+                        prev.LastBehaviour == CitizenBehaviourState.Sitting  ||
+                        prev.LastBehaviour == CitizenBehaviourState.Sleeping ||
+                        prev.LastBehaviour == CitizenBehaviourState.Talking)
+                        continue;
+                }
+
+                corrs.Add(new CitizenCorrectionPacket
+                {
+                    CitizenId = kv.Key,
+                    Position  = pos,
+                    YawByte   = CitizenCorrectionPacket.CompressYaw(human.transform.rotation),
+                });
+
+                if (_hostSent.TryGetValue(kv.Key, out var s))
+                {
+                    s.LastCorrectionSentAt = now;
+                    _hostSent[kv.Key] = s;
+                }
+            }
         }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"WorldSync.HostSendCorrections: {ex.Message}");
+            return;
+        }
+
+        if (corrs.Count == 0) return;
+
+        _writer.Reset();
+        _writer.Put(corrs.Count);
+        foreach (var c in corrs) c.Serialize(_writer);
+
+        // Sequenced: drop older correction packets, only apply the latest
+        NetworkManager.SendToAll(PacketType.CitizenCorrectionBatch, _writer, DeliveryMethod.Sequenced);
     }
 
     // -------------------------------------------------------------------------
@@ -224,15 +263,18 @@ public class WorldSync
         switch (type)
         {
             case PacketType.WorldSeed:
-                {
-                    var p = new WorldSeedPacket();
-                    p.Deserialize(reader);
-                    SyncedSeed = p.Seed;
-                    Plugin.Log.LogInfo($"World seed synced: {p.Seed}, City: {p.CityName}");
-                    break;
-                }
-            case PacketType.CitizenStateBatch:
-                OnCitizenBatch(reader);
+            {
+                var p = new WorldSeedPacket();
+                p.Deserialize(reader);
+                SyncedSeed = p.Seed;
+                Plugin.Log.LogInfo($"World seed synced: {p.Seed}, City: {p.CityName}");
+                break;
+            }
+            case PacketType.CitizenCommandBatch:
+                if (!NetworkManager.IsHost) OnCommandBatch(reader);
+                break;
+            case PacketType.CitizenCorrectionBatch:
+                if (!NetworkManager.IsHost) OnCorrectionBatch(reader);
                 break;
             case PacketType.CitizenDeath:
                 OnCitizenDeath(reader);
@@ -240,36 +282,141 @@ public class WorldSync
         }
     }
 
-    private void OnCitizenBatch(NetPacketReader reader)
-    {
-        if (NetworkManager.IsHost) return; // host doesn't apply its own broadcast
+    // ── Command batch ─────────────────────────────────────────────────────────
 
+    private void OnCommandBatch(NetPacketReader reader)
+    {
         try
         {
             int count = reader.GetInt();
-            float now = Time.unscaledTime;
-
             for (int i = 0; i < count; i++)
             {
-                var p = new CitizenStatePacket();
-                p.Deserialize(reader);
-                ApplyCitizenState(p, now);
+                var cmd = new CitizenCommandPacket();
+                cmd.Deserialize(reader);
+                ApplyCitizenCommand(cmd);
             }
         }
         catch (System.Exception ex)
         {
-            Plugin.Log.LogError($"OnCitizenBatch: {ex.Message}");
+            Plugin.Log.LogError($"OnCommandBatch: {ex.Message}");
         }
     }
+
+    private void ApplyCitizenCommand(CitizenCommandPacket cmd)
+    {
+        var human = NetworkIdResolver.GetHuman(cmd.CitizenId);
+        if (human == null || human.gameObject == null) return;
+
+        _clientStates.TryGetValue(cmd.CitizenId, out var s);
+        s.BehaviourState = cmd.BehaviourState;
+        s.IsDead         = cmd.IsDead;
+        _clientStates[cmd.CitizenId] = s;
+
+        // Dead or stationary — stop the agent
+        if (cmd.IsDead || cmd.BehaviourState == CitizenBehaviourState.Dead)
+        {
+            StopAgent(human);
+            return;
+        }
+
+        if (cmd.BehaviourState == CitizenBehaviourState.Sitting  ||
+            cmd.BehaviourState == CitizenBehaviourState.Sleeping  ||
+            cmd.BehaviourState == CitizenBehaviourState.Talking)
+        {
+            StopAgent(human);
+            return;
+        }
+
+        // Moving — drive NavMeshAgent to host's destination
+        try
+        {
+            var agent = GetOrEnableAgent(human, cmd.CitizenId);
+            if (agent == null) return;
+
+            agent.speed = cmd.Speed;
+
+            if (Vector3.Distance(agent.destination, cmd.Destination) > MIN_DEST_DELTA)
+                agent.SetDestination(cmd.Destination);
+
+            if (agent.isStopped) agent.isStopped = false;
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"ApplyCitizenCommand({cmd.CitizenId}): {ex.Message}");
+        }
+    }
+
+    // ── Correction batch ──────────────────────────────────────────────────────
+
+    private void OnCorrectionBatch(NetPacketReader reader)
+    {
+        try
+        {
+            int count = reader.GetInt();
+            for (int i = 0; i < count; i++)
+            {
+                var corr = new CitizenCorrectionPacket();
+                corr.Deserialize(reader);
+                ApplyCorrection(corr);
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"OnCorrectionBatch: {ex.Message}");
+        }
+    }
+
+    private void ApplyCorrection(CitizenCorrectionPacket corr)
+    {
+        var human = NetworkIdResolver.GetHuman(corr.CitizenId);
+        if (human == null || human.gameObject == null) return;
+
+        // Don't correct dead or truly stationary citizens
+        if (_clientStates.TryGetValue(corr.CitizenId, out var s))
+        {
+            if (s.IsDead ||
+                s.BehaviourState == CitizenBehaviourState.Sitting  ||
+                s.BehaviourState == CitizenBehaviourState.Sleeping)
+                return;
+        }
+
+        float drift = Vector3.Distance(human.transform.position, corr.Position);
+
+        if (drift > CORRECTION_SNAP_DIST)
+        {
+            // Hard snap — citizen badly out of sync (teleport, room change)
+            Plugin.Log.LogInfo($"Correction SNAP citizen {corr.CitizenId} drift={drift:F1}m");
+            var agent = GetAgent(human);
+            if (agent != null && agent.enabled)
+                agent.Warp(corr.Position);
+            else
+                human.transform.position = corr.Position;
+
+            human.transform.rotation = corr.GetRotation();
+        }
+        else if (drift > CORRECTION_LERP_DIST)
+        {
+            // Soft nudge — push 30% toward host position via NavMesh Warp
+            Vector3 nudged = Vector3.Lerp(human.transform.position, corr.Position, 0.3f);
+            var agent = GetAgent(human);
+            if (agent != null && agent.enabled)
+                agent.Warp(nudged);
+            else
+                human.transform.position = nudged;
+        }
+        // else: within tolerance — do nothing
+    }
+
+    // ── Citizen death ─────────────────────────────────────────────────────────
 
     private void OnCitizenDeath(NetPacketReader reader)
     {
         try
         {
             int id = reader.GetInt();
-            // No SetHealth call — SoD API not confirmed. Just drop the citizen from sync state
-            // so we stop driving its transform; the host-driven death animation will play locally
-            // when the actual death state arrives in the next batch.
+            var human = NetworkIdResolver.GetHuman(id);
+            if (human != null) StopAgent(human);
+
             if (_clientStates.TryGetValue(id, out var s))
             {
                 s.IsDead = true;
@@ -282,107 +429,97 @@ public class WorldSync
         }
     }
 
-    private void ApplyCitizenState(CitizenStatePacket packet, float now)
+    // -------------------------------------------------------------------------
+    //  NavMeshAgent helpers (IL2CPP-safe — string-based GetComponent + TryCast)
+    // -------------------------------------------------------------------------
+
+    /// <summary>Get NavMeshAgent via string lookup to avoid IL2CPP generic-store failures.</summary>
+    private static NavMeshAgent GetAgent(Human human)
     {
-        var human = NetworkIdResolver.GetHuman(packet.CitizenId);
-        if (human == null || human.gameObject == null) return;
-
-        // First contact: kill the AI driver so it doesn't fight our transform writes.
-        // This is the megabonk-together equivalent of prefix-blocking EnemyMovementRb.
-        if (!_aiDisabled.Contains(packet.CitizenId))
+        try
         {
-            _aiDisabled.Add(packet.CitizenId);
-            DisableAI(human);
+            var comp = human.gameObject.GetComponent("NavMeshAgent");
+            return comp?.TryCast<NavMeshAgent>();
         }
-
-        // Build / update interp record. On big jumps (room/floor change) snap directly.
-        Vector3 currentPos = human.transform.position;
-        bool teleport = !_clientStates.ContainsKey(packet.CitizenId)
-                     || Vector3.Distance(currentPos, packet.Position) > TELEPORT_DIST;
-
-        if (teleport)
-        {
-            human.transform.position = packet.Position;
-            human.transform.rotation = packet.Rotation;
-            _clientStates[packet.CitizenId] = new ClientCitizenState
-            {
-                PrevPosition   = packet.Position,
-                PrevRotation   = packet.Rotation,
-                TargetPosition = packet.Position,
-                TargetRotation = packet.Rotation,
-                AppliedAt      = now,
-                IsDead         = packet.IsDead,
-            };
-            return;
-        }
-
-        var prev = _clientStates[packet.CitizenId];
-        _clientStates[packet.CitizenId] = new ClientCitizenState
-        {
-            // PrevPosition is "where we are visually right now", so the next lerp starts smoothly.
-            PrevPosition   = currentPos,
-            PrevRotation   = human.transform.rotation,
-            TargetPosition = packet.Position,
-            TargetRotation = packet.Rotation,
-            AppliedAt      = now,
-            IsDead         = packet.IsDead,
-        };
+        catch { return null; }
     }
 
     /// <summary>
-    /// Stop SoD's AI from driving this citizen on the client.
-    ///
-    /// 1. NavMeshAgent: stop + clear path + disable.
-    ///    Use string-based GetComponent to bypass IL2CPP generic method store
-    ///    initialization failure for GetComponent&lt;NavMeshAgent&gt;().
-    ///
-    /// 2. Animator root motion: set applyRootMotion=false so the animation
-    ///    clip no longer writes delta-position/rotation to the transform.
-    ///    Without this, the idle/walk animation's root motion fights our
-    ///    per-frame transform writes and makes citizens "walk backwards".
+    /// Get (or re-enable) a citizen's NavMeshAgent on the client.
+    /// On first call also disables Animator root motion so it doesn't fight the agent.
+    /// We intentionally leave the NavMeshAgent enabled — it is what makes the citizen
+    /// walk. We disable SoD's high-level scheduler by overriding its destination every
+    /// COMMAND_SCAN_RATE, which is fast enough that any counter-write is invisible.
     /// </summary>
-    private static void DisableAI(Human human)
+    private NavMeshAgent GetOrEnableAgent(Human human, int citizenId)
     {
-        // ── NavMeshAgent ───────────────────────────────────────────────────
         try
         {
-            var agentComp = human.gameObject.GetComponent("NavMeshAgent");
-            if (agentComp != null)
-            {
-                var agent = agentComp.TryCast<NavMeshAgent>();
-                if (agent != null && agent.enabled)
-                {
-                    agent.isStopped = true;
-                    try { agent.ResetPath(); } catch { }
-                    agent.enabled = false;
-                }
-            }
-        }
-        catch (System.Exception ex)
-        {
-            Plugin.Log.LogWarning($"DisableAI NavMeshAgent({human.humanID}): {ex.Message}");
-        }
+            var agent = GetAgent(human);
+            if (agent == null) return null;
 
-        // ── Animator root motion ───────────────────────────────────────────
-        // Animator is a standard UnityEngine type; generic GetComponent works.
+            if (!agent.enabled) agent.enabled = true;
+
+            // One-time: disable root motion so animation doesn't write delta-pos to transform
+            if (_clientStates.TryGetValue(citizenId, out var s) && !s.RootMotionDisabled)
+            {
+                DisableRootMotion(human);
+                s.RootMotionDisabled = true;
+                _clientStates[citizenId] = s;
+            }
+
+            return agent;
+        }
+        catch { return null; }
+    }
+
+    private static void StopAgent(Human human)
+    {
         try
         {
-            // Search citizen's whole hierarchy — SoD may keep the Animator on a child.
-            var animators = human.GetComponentsInChildren<Animator>(true);
-            if (animators != null)
+            var agent = GetAgent(human);
+            if (agent != null && agent.enabled)
             {
-                for (int i = 0; i < animators.Count; i++)
-                {
-                    var anim = animators[i];
-                    if (anim != null)
-                        anim.applyRootMotion = false;
-                }
+                agent.isStopped = true;
+                try { agent.ResetPath(); } catch { }
+            }
+        }
+        catch { }
+    }
+
+    private static void DisableRootMotion(Human human)
+    {
+        try
+        {
+            var animators = human.GetComponentsInChildren<Animator>(true);
+            if (animators == null) return;
+            for (int i = 0; i < animators.Count; i++)
+            {
+                var anim = animators[i];
+                if (anim != null) anim.applyRootMotion = false;
             }
         }
         catch (System.Exception ex)
         {
-            Plugin.Log.LogWarning($"DisableAI Animator({human.humanID}): {ex.Message}");
+            Plugin.Log.LogWarning($"DisableRootMotion({human.humanID}): {ex.Message}");
         }
+    }
+
+    // -------------------------------------------------------------------------
+    //  Behaviour inference (host side only)
+    // -------------------------------------------------------------------------
+
+    private static CitizenBehaviourState InferBehaviourState(
+        Human human, NavMeshAgent agent, bool isDead)
+    {
+        if (isDead) return CitizenBehaviourState.Dead;
+        if (agent == null || !agent.enabled || agent.isStopped)
+            return CitizenBehaviourState.Idle;
+
+        float vel = agent.velocity.magnitude;
+        if (vel < 0.1f) return CitizenBehaviourState.Idle;
+        if (agent.speed > WALK_SPEED_THRESHOLD) return CitizenBehaviourState.Running;
+        return CitizenBehaviourState.Walking;
     }
 
     // -------------------------------------------------------------------------
@@ -409,7 +546,6 @@ public class WorldSync
     //  Helpers
     // -------------------------------------------------------------------------
 
-    /// <summary>All player positions (local + remote) — citizen sync radius is measured against any of these.</summary>
     private static List<Vector3> GetAnchorPositions()
     {
         var list = new List<Vector3>(4);
@@ -481,7 +617,6 @@ public class WorldSync
     public void ClearClientState()
     {
         _clientStates.Clear();
-        _aiDisabled.Clear();
         _hostSent.Clear();
     }
 }

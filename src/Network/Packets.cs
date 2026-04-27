@@ -140,6 +140,20 @@ public enum PacketType : byte
     /// World state checksum for validation.
     /// </summary>
     WorldChecksum = 38,
+
+    /// <summary>
+    /// AI command batch: NavMeshAgent destination + behaviour state per citizen.
+    /// Sent when a citizen's destination or behaviour changes.
+    /// Client re-runs NavMeshAgent locally — no position lerp needed.
+    /// </summary>
+    CitizenCommandBatch = 39,
+
+    /// <summary>
+    /// Authoritative position correction batch.
+    /// Sent every CORRECTION_INTERVAL seconds for moving citizens
+    /// to fix floating-point drift accumulated from independent NavMesh runs.
+    /// </summary>
+    CitizenCorrectionBatch = 40,
     
     #endregion
     

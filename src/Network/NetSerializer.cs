@@ -415,3 +415,99 @@ public struct CitizenStatePacket : INetPacket
         IsUnconscious = reader.GetBool();
     }
 }
+
+/// <summary>
+/// Known citizen behaviour states mirroring SoD's CitizenAnimationController states.
+/// Kept as byte to save bandwidth. Unknown/future states map to Idle.
+/// </summary>
+public enum CitizenBehaviourState : byte
+{
+    Idle      = 0,   // standing still, looking around
+    Walking   = 1,   // NavMeshAgent moving at normal speed
+    Running   = 2,   // NavMeshAgent moving at run speed (fleeing/chasing)
+    Sitting   = 3,   // seated — no position interpolation needed on client
+    Talking   = 4,   // in dialogue — stationary
+    Sleeping  = 5,   // lying down
+    Fleeing   = 6,   // panicking, running away from crime
+    Dead      = 7,   // corpse — never move
+}
+
+/// <summary>
+/// AI command packet — one entry serialised inside a CitizenCommandBatch.
+///
+/// Host sends this whenever a citizen's NavMeshAgent destination or behaviour state
+/// changes. Client re-runs the same NavMeshAgent command locally — because both
+/// machines share the same world seed the NavMesh topology is identical, so the
+/// resulting paths will match without streaming per-frame positions.
+///
+/// Size: 4 + 12 + 4 + 1 + 1 = 22 bytes per citizen.
+/// </summary>
+public struct CitizenCommandPacket : INetPacket
+{
+    public PacketType Type => PacketType.CitizenCommandBatch;
+
+    public int                   CitizenId;
+    public Vector3               Destination;     // NavMeshAgent.destination on host
+    public float                 Speed;           // NavMeshAgent.speed on host
+    public CitizenBehaviourState BehaviourState;  // current high-level state
+    public bool                  IsDead;          // dead → client stops all movement
+
+    public void Serialize(NetDataWriter writer)
+    {
+        writer.Put(CitizenId);
+        writer.Put(Destination);
+        writer.Put(Speed);
+        writer.Put((byte)BehaviourState);
+        writer.Put(IsDead);
+    }
+
+    public void Deserialize(NetDataReader reader)
+    {
+        CitizenId      = reader.GetInt();
+        Destination    = reader.GetVector3();
+        Speed          = reader.GetFloat();
+        BehaviourState = (CitizenBehaviourState)reader.GetByte();
+        IsDead         = reader.GetBool();
+    }
+}
+
+/// <summary>
+/// Authoritative position correction — one entry in a CitizenCorrectionBatch.
+///
+/// Sent every CORRECTION_INTERVAL seconds for moving citizens.
+/// Corrects floating-point drift that accumulates when two NavMesh simulations
+/// run independently. Client snaps or lerps toward the host's position
+/// if delta exceeds CORRECTION_SNAP_DIST.
+///
+/// Size: 4 + 12 + 1 = 17 bytes per citizen.
+/// </summary>
+public struct CitizenCorrectionPacket : INetPacket
+{
+    public PacketType Type => PacketType.CitizenCorrectionBatch;
+
+    public int     CitizenId;
+    public Vector3 Position;    // authoritative world-space position from host
+    public byte    YawByte;     // yaw compressed to 0-255; saves 3 floats vs full Quaternion
+
+    public void Serialize(NetDataWriter writer)
+    {
+        writer.Put(CitizenId);
+        writer.Put(Position);
+        writer.Put(YawByte);
+    }
+
+    public void Deserialize(NetDataReader reader)
+    {
+        CitizenId = reader.GetInt();
+        Position  = reader.GetVector3();
+        YawByte   = reader.GetByte();
+    }
+
+    /// <summary>Decompress yaw byte back to a Y-axis world rotation.</summary>
+    public Quaternion GetRotation() =>
+        Quaternion.Euler(0f, YawByte / 255f * 360f, 0f);
+
+    /// <summary>Compress a world-space rotation to a single yaw byte.</summary>
+    public static byte CompressYaw(Quaternion rot) =>
+        (byte)(((rot.eulerAngles.y % 360f + 360f) % 360f) / 360f * 255f);
+}
