@@ -56,6 +56,7 @@ public static class TwinManager
         {
             record.HumanID = picked;
             CharacterStore.Persist(seed);
+            FreezeTwin(picked);
             Plugin.Log.LogInfo(
                 $"[TwinManager] assigned twin humanID={picked} to {record.FirstName} {record.Surname} (client {record.ClientGuid})");
             return picked;
@@ -126,6 +127,10 @@ public static class TwinManager
             Plugin.Log.LogInfo($"[TwinManager] reapply: applied={applied}, repicked={repicked}, skipped(no humanID yet)={skipped}");
             if (repicked > 0) CharacterStore.Persist(seed);
         }
+
+        // Freeze every twin: SoD just reloaded citizens with their AI enabled,
+        // so we have to re-disable for our claimed identities every host start.
+        FreezeAllTwins();
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -206,6 +211,86 @@ public static class TwinManager
         {
             Plugin.Log.LogError($"[TwinManager] PickCandidate failed: {ex}");
             return 0;
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Phase B.3 — protection / removal-from-simulation
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>True iff this humanID is currently a twin for any client in the host's current seed.</summary>
+    public static bool IsTwin(int humanID)
+    {
+        if (humanID <= 0) return false;
+        try
+        {
+            string seed = CharacterStore.CurrentSeed();
+            foreach (var rec in CharacterStore.AllForSeed(seed))
+                if (rec.HumanID == humanID) return true;
+        }
+        catch { }
+        return false;
+    }
+
+    /// <summary>
+    /// All currently-claimed twin humanIDs for the host's current seed.
+    /// Used by the murder-victim protection prefix in
+    /// <c>SoDCoop.Patches.GamePatches</c> to temporarily isDead-mask
+    /// twins during SoD's victim-picking pass.
+    /// </summary>
+    public static List<int> GetAllTwinHumanIDsForCurrentSeed()
+    {
+        var list = new List<int>();
+        try
+        {
+            string seed = CharacterStore.CurrentSeed();
+            foreach (var rec in CharacterStore.AllForSeed(seed))
+                if (rec.HumanID > 0) list.Add(rec.HumanID);
+        }
+        catch { }
+        return list;
+    }
+
+    /// <summary>
+    /// Disable each twin's <c>NewAIController</c> so they stop walking their
+    /// daily schedule and freeze in place. Called after <see cref="ReapplyAll"/>
+    /// (host startup) and after each fresh <see cref="EnsureTwinAssigned"/>.
+    ///
+    /// <para>Trade-off: the twin's body stops moving, but the citizen record
+    /// stays alive in city DB so phone calls / ID papers / employment / case
+    /// board references all keep resolving correctly. This is the
+    /// "remove from schedule" behaviour the user requested for B.3.</para>
+    /// </summary>
+    public static void FreezeAllTwins()
+    {
+        int frozen = 0;
+        foreach (var humanID in GetAllTwinHumanIDsForCurrentSeed())
+        {
+            if (FreezeTwin(humanID)) frozen++;
+        }
+        if (frozen > 0) Plugin.Log.LogInfo($"[TwinManager] froze {frozen} twin(s) (NewAIController disabled).");
+    }
+
+    private static bool FreezeTwin(int humanID)
+    {
+        try
+        {
+            var city = global::CityData.Instance;
+            if (city == null || city.citizenDictionary == null) return false;
+            if (!city.citizenDictionary.TryGetValue(humanID, out var human) || human == null || human.gameObject == null) return false;
+
+            var comp = human.gameObject.GetComponent("NewAIController");
+            if (comp == null) return false;
+            var ai = comp.TryCast<NewAIController>();
+            if (ai == null) return false;
+            if (!ai.enabled) return false;
+            ai.enabled = false;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"[TwinManager] FreezeTwin({humanID}): {ex.Message}");
+            return false;
         }
     }
 
