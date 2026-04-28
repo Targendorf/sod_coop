@@ -626,6 +626,10 @@ public static class NetworkManager
                     HandleCharacterSubmit(reader, peer);
                     break;
 
+                case PacketType.CharacterReset:
+                    HandleCharacterReset(peer);
+                    break;
+
                 default:
                     // Forward to registered handlers
                     OnPacketReceived?.Invoke(packetType, reader, senderId);
@@ -778,6 +782,62 @@ public static class NetworkManager
             Plugin.Log.LogInfo($"[NetworkManager] {firstName} {surName} → twin citizen humanID={twinHumanID}");
 
         AssignCharacterAndCompleteHandshake(peer, playerId, firstName, surName);
+    }
+
+    /// <summary>
+    /// Host-side. A client requested to forget its character record on this
+    /// world. We delete the record + unfreeze their old twin citizen + kick
+    /// the peer. The client is responsible for wiping its own local
+    /// clientGuid (see <see cref="Player.CharacterIdentity.Reset"/>).
+    /// </summary>
+    private static void HandleCharacterReset(NetPeer peer)
+    {
+        if (!IsHost) return;
+
+        // Find the player's record by peer.
+        string clientGuid = null;
+        int playerId = -1;
+        foreach (var kvp in _players)
+        {
+            if (kvp.Value.Peer == peer)
+            {
+                playerId = kvp.Key;
+                clientGuid = kvp.Value.ClientGuid;
+                break;
+            }
+        }
+        if (string.IsNullOrEmpty(clientGuid))
+        {
+            Plugin.Log.LogWarning($"[NetworkManager] CharacterReset from peer {peer.Address}:{peer.Port} with no clientGuid — ignoring.");
+            return;
+        }
+
+        Plugin.Log.LogInfo($"[NetworkManager] CharacterReset from playerId={playerId} clientGuid={clientGuid}");
+
+        try { TwinManager.ReleaseRecord(CharacterStore.CurrentSeed(), clientGuid); }
+        catch (Exception ex) { Plugin.Log.LogWarning($"TwinManager.ReleaseRecord: {ex.Message}"); }
+
+        // Disconnect the peer with a reason. Client-side OnPeerDisconnected
+        // will fire and the UI will route back to Main; we trust the client
+        // to call CharacterIdentity.Reset() locally before reconnecting.
+        try { peer.Disconnect(); } catch { }
+    }
+
+    /// <summary>
+    /// Client-only. Asks the host to forget our character record on its
+    /// world. Triggers a host-initiated disconnect; the caller should then
+    /// wipe the local clientGuid via <see cref="Player.CharacterIdentity.Reset"/>.
+    /// </summary>
+    public static void RequestCharacterReset()
+    {
+        if (IsHost || HostPeer == null)
+        {
+            Plugin.Log.LogWarning("[NetworkManager] RequestCharacterReset called outside client context — ignored.");
+            return;
+        }
+
+        _writer.Reset();
+        SendToHost(PacketType.CharacterReset, _writer);
     }
 
     /// <summary>

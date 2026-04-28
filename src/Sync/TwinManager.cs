@@ -271,6 +271,69 @@ public static class TwinManager
         if (frozen > 0) Plugin.Log.LogInfo($"[TwinManager] froze {frozen} twin(s) (NewAIController disabled).");
     }
 
+    /// <summary>
+    /// Inverse of <see cref="FreezeTwin"/>. Re-enables the twin's
+    /// <c>NewAIController</c> so they rejoin the daily simulation. Used when
+    /// a client resets their character on this world — the formerly-claimed
+    /// citizen returns to ordinary NPC behaviour (still with the
+    /// player-given name though; we don't restore the original name because
+    /// we never stored it).
+    /// </summary>
+    private static bool UnfreezeTwin(int humanID)
+    {
+        try
+        {
+            var city = global::CityData.Instance;
+            if (city == null || city.citizenDictionary == null) return false;
+            if (!city.citizenDictionary.TryGetValue(humanID, out var human) || human == null || human.gameObject == null) return false;
+
+            var comp = human.gameObject.GetComponent("NewAIController");
+            if (comp == null) return false;
+            var ai = comp.TryCast<NewAIController>();
+            if (ai == null || ai.enabled) return false;
+            ai.enabled = true;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"[TwinManager] UnfreezeTwin({humanID}): {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Host-side handler for <see cref="Network.PacketType.CharacterReset"/>.
+    /// Removes the client's record from the store, unfreezes their old twin
+    /// citizen so they rejoin the simulation, and returns true on success.
+    /// Caller is responsible for disconnecting the peer afterwards.
+    /// </summary>
+    public static bool ReleaseRecord(string seed, string clientGuid)
+    {
+        try
+        {
+            var rec = CharacterStore.TryGet(seed, clientGuid);
+            if (rec == null)
+            {
+                Plugin.Log.LogInfo($"[TwinManager] ReleaseRecord: no record for {clientGuid} in seed \"{seed}\" — nothing to do.");
+                return false;
+            }
+
+            int humanID = rec.HumanID;
+            string name = $"{rec.FirstName} {rec.Surname}".Trim();
+
+            CharacterStore.Delete(seed, clientGuid);
+            if (humanID > 0) UnfreezeTwin(humanID);
+
+            Plugin.Log.LogInfo($"[TwinManager] released character \"{name}\" (humanID={humanID}, client={clientGuid}); citizen rejoins simulation.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogError($"[TwinManager] ReleaseRecord({clientGuid}): {ex}");
+            return false;
+        }
+    }
+
     private static bool FreezeTwin(int humanID)
     {
         try

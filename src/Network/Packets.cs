@@ -58,6 +58,15 @@ public enum PacketType : byte
     /// </summary>
     CharacterSubmit = 8,
 
+    /// <summary>
+    /// Client → host. "Forget my character record on this world." Host removes
+    /// the (clientGuid → record) entry from its per-seed store, re-enables the
+    /// twin citizen's AI (so they rejoin city simulation), and disconnects the
+    /// peer. Client then wipes its local clientGuid so the next connection
+    /// behaves as a brand-new joiner.
+    /// </summary>
+    CharacterReset = 9,
+
     #endregion
     
     #region Player Sync Packets (10-29)

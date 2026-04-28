@@ -1,4 +1,5 @@
 using SoDCoop.Network;
+using SoDCoop.Player;
 using SoDCoop.Sync;
 using UnityEngine;
 using UnityEngine.UI;
@@ -25,6 +26,12 @@ public class LobbyPanel : CoopPanelBase
     private Text _hostTime;
     private Text _hostPlayers;
     private Button _disconnectBtn;
+    private Button _resetBtn;
+    private Text   _resetStatus;
+    private bool   _resetArmed;
+
+    private const string RESET_LABEL_NORMAL = "🗑  Reset character & disconnect";
+    private const string RESET_LABEL_ARMED  = "⚠  Click again to confirm";
 
     protected override void BuildBody()
     {
@@ -42,6 +49,18 @@ public class LobbyPanel : CoopPanelBase
 
         _disconnectBtn = CoopMenuFactory.MenuButton("Disconnect", Body,
             "🚪  Disconnect", OnDisconnectClick);
+
+        Spacer(6f);
+
+        // Reset character on this host. Clients only — for host themselves
+        // it'd just orphan their own twin (host's identity comes from
+        // Game.Instance, not from CharacterStore).
+        _resetBtn = CoopMenuFactory.MenuButton("ResetChar", Body,
+            RESET_LABEL_NORMAL, OnResetClick);
+        _resetStatus = BodyLabel(
+            "Forgets your name on this host's world and disconnects. " +
+            "Your old in-game identity (citizen) keeps the name but rejoins normal NPC life.",
+            CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
 
         Spacer(6f);
 
@@ -153,5 +172,65 @@ public class LobbyPanel : CoopPanelBase
     {
         try { NetworkManager.Shutdown(); } catch { }
         CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Main);
+    }
+
+    private void OnResetClick()
+    {
+        // Hide the reset action when we're the host — it's nonsensical (host
+        // identity comes from Game.Instance, not CharacterStore) and would
+        // just orphan its own twin record on disk.
+        if (NetworkManager.IsHost)
+        {
+            if (_resetStatus != null)
+            {
+                _resetStatus.text  = "Reset is for joining clients only — host identity comes from your loaded save.";
+                _resetStatus.color = CoopMenuTheme.LabelWarn;
+            }
+            return;
+        }
+
+        if (!_resetArmed)
+        {
+            _resetArmed = true;
+            UpdateResetButtonLabel();
+            if (_resetStatus != null)
+            {
+                _resetStatus.text  = "Sure? You'll be disconnected and your name on this world cleared.";
+                _resetStatus.color = CoopMenuTheme.LabelWarn;
+            }
+            return;
+        }
+
+        try
+        {
+            // Tell the host to drop our record + unfreeze our old twin.
+            NetworkManager.RequestCharacterReset();
+
+            // Wipe local stable identity so a reconnect is treated as new.
+            CharacterIdentity.Reset();
+
+            // Host will close the connection in response to CharacterReset;
+            // but call Shutdown here too as a safety net so the UI cleans up
+            // immediately without waiting for the disconnect round-trip.
+            try { NetworkManager.Shutdown(); } catch { }
+
+            CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Main);
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"LobbyPanel.OnResetClick: {ex}");
+        }
+        finally
+        {
+            _resetArmed = false;
+            UpdateResetButtonLabel();
+        }
+    }
+
+    private void UpdateResetButtonLabel()
+    {
+        if (_resetBtn == null) return;
+        var lbl = _resetBtn.GetComponentInChildren<Text>();
+        if (lbl != null) lbl.text = _resetArmed ? RESET_LABEL_ARMED : RESET_LABEL_NORMAL;
     }
 }
