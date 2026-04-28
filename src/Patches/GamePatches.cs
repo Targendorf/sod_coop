@@ -427,6 +427,9 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Fact __instance, string str)
         {
+            if (!NetworkManager.IsConnected) return;
+            if (!NetworkManager.HasPeers) return;
+            if (WorldReadyGate.IsInInitGrace) return;
             try
             {
                 if (__instance == null) return;
@@ -1128,6 +1131,11 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Evidence __instance, Evidence.Discovery disc)
         {
+            // Cheap-bail gates first: avoid IL2CPP getter on __instance.evID
+            // during solo play and the world-init seeded burst.
+            if (!NetworkManager.IsConnected) return;
+            if (!NetworkManager.HasPeers) return;
+            if (WorldReadyGate.IsInInitGrace) return;
             try
             {
                 if (__instance == null) return;
@@ -1151,6 +1159,12 @@ public static class GamePatches
                                    Il2CppSystem.Collections.Generic.List<Evidence.DataKey> keys,
                                    string str)
         {
+            // Cheap-bail gates first: SetNote fires thousands of times during
+            // SoD's seeded citizen-name init; skipping marshaling here is the
+            // single biggest load-time win.
+            if (!NetworkManager.IsConnected) return;
+            if (!NetworkManager.HasPeers) return;
+            if (WorldReadyGate.IsInInitGrace) return;
             try
             {
                 if (__instance == null) return;
@@ -1173,6 +1187,9 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Evidence __instance, Evidence.DataKey dk, string newCustomName)
         {
+            if (!NetworkManager.IsConnected) return;
+            if (!NetworkManager.HasPeers) return;
+            if (WorldReadyGate.IsInInitGrace) return;
             try
             {
                 if (__instance == null) return;
@@ -1293,6 +1310,9 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Actor __instance, bool newVal, bool isLowBed)
         {
+            // Fires for every NPC asleep on schedule. Bail before Player.Instance
+            // marshaling when not in coop.
+            if (!NetworkManager.IsConnected) return;
             try
             {
                 if (__instance == null) return;
@@ -1314,6 +1334,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Actor __instance)
         {
+            if (!NetworkManager.IsConnected) return;
             try
             {
                 if (__instance == null) return;
@@ -1335,6 +1356,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Actor __instance)
         {
+            if (!NetworkManager.IsConnected) return;
             try
             {
                 if (__instance == null) return;
@@ -1397,6 +1419,9 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(StateSaveData.MessageThreadSave __result)
         {
+            if (!NetworkManager.IsConnected) return;
+            if (!NetworkManager.HasPeers) return;
+            if (WorldReadyGate.IsInInitGrace) return;
             try
             {
                 if (__result == null) return;
@@ -1653,6 +1678,8 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(CitizenOutfitController __instance, ClothesPreset.OutfitCategory category)
         {
+            // Fires per-NPC during seeded outfit init; bail before Player.Instance.
+            if (!NetworkManager.IsConnected) return;
             try
             {
                 if (__instance == null) return;
@@ -1692,6 +1719,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(SideJob __instance)
         {
+            if (!NetworkManager.IsConnected) return;
             try { SideJobSync.BroadcastFromCtor(__instance); }
             catch (System.Exception ex) { Plugin.Log.LogWarning($"SideJob ctor patch: {ex.Message}"); }
         }
@@ -1703,6 +1731,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(SideJob __instance, SideJob.JobState newState)
         {
+            if (!NetworkManager.IsConnected) return;
             try { SideJobSync.BroadcastStateChange(__instance, newState); }
             catch (System.Exception ex) { Plugin.Log.LogWarning($"SideJob.SetJobState patch: {ex.Message}"); }
         }
@@ -1859,6 +1888,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(NewAIController __instance, bool val, float duration)
         {
+            if (!NetworkManager.IsConnected) return;
             try
             {
                 if (__instance == null) return;
@@ -1884,6 +1914,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(NewAIController __instance, bool val)
         {
+            if (!NetworkManager.IsConnected) return;
             try
             {
                 if (__instance == null) return;
