@@ -1280,6 +1280,93 @@ public struct ItemActionPacket : INetPacket
 }
 
 /// <summary>
+/// Player gave an item to an NPC. Receiver re-invokes
+/// <c>recipient.TryGiveItem(item, null, defaultSuccess, enableSpeech)</c> so
+/// the NPC mirrors the take. <c>givenBy</c> is sent as null on the receiver
+/// because each machine has its own local Player and humanIDs don't match
+/// across machines for players.
+/// </summary>
+public struct ItemGivePacket : INetPacket
+{
+    public PacketType Type => PacketType.ItemGive;
+
+    public int  GiverPlayerId;        // network player id of the giver, for echo dedup
+    public int  RecipientHumanId;     // Human.humanID of the NPC receiving
+    public int  ItemInteractableId;   // Interactable.id of the gifted item
+    public bool DefaultSuccess;
+    public bool EnableSpeech;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(GiverPlayerId);
+        w.Put(RecipientHumanId);
+        w.Put(ItemInteractableId);
+        w.Put(DefaultSuccess);
+        w.Put(EnableSpeech);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        GiverPlayerId      = r.GetInt();
+        RecipientHumanId   = r.GetInt();
+        ItemInteractableId = r.GetInt();
+        DefaultSuccess     = r.GetBool();
+        EnableSpeech       = r.GetBool();
+    }
+}
+
+/// <summary>NPC restrained / unrestrained (NewAIController.SetRestrained).</summary>
+public struct NpcRestrainedPacket : INetPacket
+{
+    public PacketType Type => PacketType.NpcRestrained;
+
+    public int   SenderId;
+    public int   NpcHumanId;
+    public bool  IsRestrained;
+    public float Duration;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(SenderId);
+        w.Put(NpcHumanId);
+        w.Put(IsRestrained);
+        w.Put(Duration);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        SenderId     = r.GetInt();
+        NpcHumanId   = r.GetInt();
+        IsRestrained = r.GetBool();
+        Duration     = r.GetFloat();
+    }
+}
+
+/// <summary>NPC stunned / unstunned (NewAIController.SetStunned).</summary>
+public struct NpcStunnedPacket : INetPacket
+{
+    public PacketType Type => PacketType.NpcStunned;
+
+    public int  SenderId;
+    public int  NpcHumanId;
+    public bool IsStunned;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(SenderId);
+        w.Put(NpcHumanId);
+        w.Put(IsStunned);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        SenderId   = r.GetInt();
+        NpcHumanId = r.GetInt();
+        IsStunned  = r.GetBool();
+    }
+}
+
+/// <summary>
 /// Visual mock of a tactical placement (codebreaker, doorwedge, tracker, mine).
 /// The placer's machine has the real Interactable; receivers spawn a stripped
 /// copy of the preset prefab as decoration. PlacerSourceId is the placer's

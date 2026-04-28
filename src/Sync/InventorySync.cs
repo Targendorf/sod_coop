@@ -367,6 +367,218 @@ public static class InventorySync
         _placedMocks.Clear();
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Phase 3b — NPC state mutations & player-to-NPC item transfer.
+    //  Patches sit on the leaf state-changing methods (SetRestrained /
+    //  SetStunned / TryGiveItem) so every code path that reaches them — player
+    //  Handcuff/Takedown/Give, scripted scenes, cop arrests — is mirrored
+    //  uniformly.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    public static void BroadcastGive(int recipientHumanId, int itemInteractableId, bool defaultSuccess, bool enableSpeech)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (IsApplyingRemote) return;
+        if (recipientHumanId < 0 || itemInteractableId < 0) return;
+
+        try
+        {
+            var packet = new ItemGivePacket
+            {
+                GiverPlayerId      = NetworkManager.LocalPlayerId,
+                RecipientHumanId   = recipientHumanId,
+                ItemInteractableId = itemInteractableId,
+                DefaultSuccess     = defaultSuccess,
+                EnableSpeech       = enableSpeech,
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.ItemGive, _writer, DeliveryMethod.ReliableOrdered);
+            Plugin.Log.LogInfo($"[InventorySync] give broadcast item={itemInteractableId} → npc={recipientHumanId}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"InventorySync.BroadcastGive: {ex.Message}");
+        }
+    }
+
+    public static void BroadcastRestrained(int npcHumanId, bool isRestrained, float duration)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (IsApplyingRemote) return;
+        if (npcHumanId < 0) return;
+
+        try
+        {
+            var packet = new NpcRestrainedPacket
+            {
+                SenderId     = NetworkManager.LocalPlayerId,
+                NpcHumanId   = npcHumanId,
+                IsRestrained = isRestrained,
+                Duration     = duration,
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.NpcRestrained, _writer, DeliveryMethod.ReliableOrdered);
+            Plugin.Log.LogInfo($"[InventorySync] restrained broadcast npc={npcHumanId} val={isRestrained} dur={duration:F1}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"InventorySync.BroadcastRestrained: {ex.Message}");
+        }
+    }
+
+    public static void BroadcastStunned(int npcHumanId, bool isStunned)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (IsApplyingRemote) return;
+        if (npcHumanId < 0) return;
+
+        try
+        {
+            var packet = new NpcStunnedPacket
+            {
+                SenderId   = NetworkManager.LocalPlayerId,
+                NpcHumanId = npcHumanId,
+                IsStunned  = isStunned,
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.NpcStunned, _writer, DeliveryMethod.ReliableOrdered);
+            Plugin.Log.LogInfo($"[InventorySync] stunned broadcast npc={npcHumanId} val={isStunned}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"InventorySync.BroadcastStunned: {ex.Message}");
+        }
+    }
+
+    private static void ApplyGive(ItemGivePacket p)
+    {
+        try
+        {
+            var npc = ResolveHumanByHumanId(p.RecipientHumanId);
+            if (npc == null)
+            {
+                Plugin.Log.LogWarning($"[InventorySync] ApplyGive: recipient humanID {p.RecipientHumanId} not found");
+                return;
+            }
+            var item = ResolveInteractableById(p.ItemInteractableId);
+            if (item == null)
+            {
+                Plugin.Log.LogWarning($"[InventorySync] ApplyGive: item id {p.ItemInteractableId} not found");
+                return;
+            }
+
+            IsApplyingRemote = true;
+            try
+            {
+                // givenBy=null because the host's/client's local Player.Instance
+                // doesn't represent the actual giver across machines.
+                npc.TryGiveItem(item, null, p.DefaultSuccess, p.EnableSpeech);
+                Plugin.Log.LogInfo($"[InventorySync] applied remote give item={p.ItemInteractableId} → npc={p.RecipientHumanId}");
+            }
+            finally
+            {
+                IsApplyingRemote = false;
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"InventorySync.ApplyGive failed: {ex.Message}");
+        }
+    }
+
+    private static void ApplyRestrained(NpcRestrainedPacket p)
+    {
+        try
+        {
+            var aic = ResolveAIController(p.NpcHumanId);
+            if (aic == null) return;
+
+            IsApplyingRemote = true;
+            try { aic.SetRestrained(p.IsRestrained, p.Duration); }
+            finally { IsApplyingRemote = false; }
+            Plugin.Log.LogInfo($"[InventorySync] applied remote restrained npc={p.NpcHumanId} val={p.IsRestrained}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"InventorySync.ApplyRestrained failed: {ex.Message}");
+        }
+    }
+
+    private static void ApplyStunned(NpcStunnedPacket p)
+    {
+        try
+        {
+            var aic = ResolveAIController(p.NpcHumanId);
+            if (aic == null) return;
+
+            IsApplyingRemote = true;
+            try { aic.SetStunned(p.IsStunned); }
+            finally { IsApplyingRemote = false; }
+            Plugin.Log.LogInfo($"[InventorySync] applied remote stunned npc={p.NpcHumanId} val={p.IsStunned}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"InventorySync.ApplyStunned failed: {ex.Message}");
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Lookup helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private static Human ResolveHumanByHumanId(int humanId)
+    {
+        try
+        {
+            var dict = CityData.Instance?.citizenDictionary;
+            if (dict != null && dict.TryGetValue(humanId, out var h)) return h;
+        }
+        catch { }
+        return null;
+    }
+
+    private static Interactable ResolveInteractableById(int id)
+    {
+        try
+        {
+            var dir = CityData.Instance?.interactableDirectory;
+            if (dir == null) return null;
+            if (id >= 0 && id < dir.Count)
+            {
+                var c = dir[id];
+                if (c != null && c.id == id) return c;
+            }
+            for (int i = 0; i < dir.Count; i++)
+            {
+                var c = dir[i];
+                if (c != null && c.id == id) return c;
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    private static NewAIController ResolveAIController(int humanId)
+    {
+        var human = ResolveHumanByHumanId(humanId);
+        if (human == null || human.gameObject == null) return null;
+        try
+        {
+            // IL2CPP-safe lookup: string GetComponent + TryCast (handles
+            // the rare case where generic GetComponent throws on certain rigs).
+            var c = human.gameObject.GetComponent("NewAIController");
+            return c?.TryCast<NewAIController>();
+        }
+        catch
+        {
+            try { return human.gameObject.GetComponent<NewAIController>(); }
+            catch { return null; }
+        }
+    }
+
     public static void BroadcastAction(ItemActionKind action)
     {
         if (!NetworkManager.IsConnected) return;
@@ -475,6 +687,27 @@ public static class InventorySync
                 IsApplyingRemote = true;
                 try { ApplyPlace(p); }
                 finally { IsApplyingRemote = false; }
+            }
+            else if (type == PacketType.ItemGive)
+            {
+                var p = new ItemGivePacket();
+                p.Deserialize(reader);
+                if (p.GiverPlayerId == NetworkManager.LocalPlayerId) return;
+                ApplyGive(p);   // ApplyGive sets IsApplyingRemote internally
+            }
+            else if (type == PacketType.NpcRestrained)
+            {
+                var p = new NpcRestrainedPacket();
+                p.Deserialize(reader);
+                if (p.SenderId == NetworkManager.LocalPlayerId) return;
+                ApplyRestrained(p);
+            }
+            else if (type == PacketType.NpcStunned)
+            {
+                var p = new NpcStunnedPacket();
+                p.Deserialize(reader);
+                if (p.SenderId == NetworkManager.LocalPlayerId) return;
+                ApplyStunned(p);
             }
         }
         catch (System.Exception ex)

@@ -132,6 +132,22 @@ public enum PacketType : byte
     /// </summary>
     ItemPlaceVisual = 24,
 
+    /// <summary>
+    /// Player gave an item to a Human (NPC takes it into their possession).
+    /// Replays Human.TryGiveItem on the receiver.
+    /// </summary>
+    ItemGive = 25,
+
+    /// <summary>
+    /// NPC handcuff state changed (NewAIController.SetRestrained).
+    /// </summary>
+    NpcRestrained = 26,
+
+    /// <summary>
+    /// NPC stun state changed (NewAIController.SetStunned).
+    /// </summary>
+    NpcStunned = 27,
+
     #endregion
     
     #region World Sync Packets (30-59)

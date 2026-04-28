@@ -118,16 +118,20 @@ public static class SyncManager
             {
                 ItemSync.OnPacketReceived(type, reader, senderId);
             }
-            // Inventory visibility (20-24) — held item / raised / flashlight / actions / placements.
+            // Inventory visibility (20-27) — held item, stance, flashlight, actions,
+            // placements, give-to-NPC, NPC restrained / stunned.
             else if (type == PacketType.ItemHeld
                   || type == PacketType.ItemRaised
                   || type == PacketType.ItemFlashlight
                   || type == PacketType.ItemAction
-                  || type == PacketType.ItemPlaceVisual)
+                  || type == PacketType.ItemPlaceVisual
+                  || type == PacketType.ItemGive
+                  || type == PacketType.NpcRestrained
+                  || type == PacketType.NpcStunned)
             {
                 InventorySync.OnPacketReceived(type, reader, senderId);
             }
-            // Player Packets: 10-29 (excluding 14, 15, 20-24 handled above)
+            // Player Packets: 10-29 (excluding 14, 15, 20-27 handled above)
             else if ((int)type >= 10 && (int)type <= 29)
             {
                 PlayerSync?.OnPacketReceived(type, reader, senderId);

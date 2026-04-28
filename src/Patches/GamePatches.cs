@@ -972,6 +972,105 @@ public static class GamePatches
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Phase 3b — NPC state mutations & player-to-NPC item transfers.
+    //
+    //  We patch the LEAF state-changers (Human.TryGiveItem,
+    //  NewAIController.SetRestrained, NewAIController.SetStunned) instead of
+    //  the player-side actions (Give/Handcuff/Takedown). That way every code
+    //  path that reaches them — player input, scripted scenes, cop arrests —
+    //  is mirrored uniformly without us having to know all the call sites.
+    //
+    //  Filter: TryGiveItem is the only method that doesn't already imply
+    //  player intent (it's also called for NPC↔NPC trades). We restrict the
+    //  broadcast to "givenBy == local player" so deterministic NPC-NPC
+    //  scripted gives don't double-fire across machines.
+    //
+    //  SetRestrained / SetStunned are invariably triggered by player or by
+    //  NPC AI. NPC AI runs only on the host — clients have AI disabled — so
+    //  there's no double-fire risk; SenderId echo dedup on the receiver side
+    //  handles the rare race.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(Human), nameof(Human.TryGiveItem))]
+    public static class Human_TryGiveItem_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Human __instance, Interactable givenItem, Human givenBy,
+                                   bool defaultSuccess, bool enableSpeech, bool __result)
+        {
+            try
+            {
+                if (!__result) return;        // give failed — nothing changed
+                if (__instance == null || givenItem == null) return;
+                if (InventorySync.IsApplyingRemote) return;
+
+                // Only broadcast when the LOCAL player is the giver. NPC↔NPC
+                // gives are deterministic and don't need a packet.
+                var localPlayer = global::Player.Instance;
+                if (localPlayer == null || givenBy == null) return;
+                if (givenBy.Pointer != localPlayer.Pointer) return;
+
+                InventorySync.BroadcastGive(
+                    __instance.humanID, givenItem.id,
+                    defaultSuccess, enableSpeech);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"Human.TryGiveItem patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(NewAIController), nameof(NewAIController.SetRestrained))]
+    public static class NewAIController_SetRestrained_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(NewAIController __instance, bool val, float duration)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (InventorySync.IsApplyingRemote) return;
+
+                // Only broadcast for citizens, not the local player.
+                var human = __instance.human;
+                if (human == null) return;
+                if (global::Player.Instance != null && human.Pointer == global::Player.Instance.Pointer) return;
+
+                InventorySync.BroadcastRestrained(human.humanID, val, duration);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"NewAIController.SetRestrained patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(NewAIController), nameof(NewAIController.SetStunned))]
+    public static class NewAIController_SetStunned_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(NewAIController __instance, bool val)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (InventorySync.IsApplyingRemote) return;
+
+                var human = __instance.human;
+                if (human == null) return;
+                if (global::Player.Instance != null && human.Pointer == global::Player.Instance.Pointer) return;
+
+                InventorySync.BroadcastStunned(human.humanID, val);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"NewAIController.SetStunned patch: {ex.Message}");
+            }
+        }
+    }
+
     [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.PickUpItem))]
     public static class FPItemController_PickUpItem_Patch
     {
