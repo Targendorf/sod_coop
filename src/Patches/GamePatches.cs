@@ -1116,6 +1116,34 @@ public static class GamePatches
     // ─────────────────────────────────────────────────────────────────────────
 
     // ─────────────────────────────────────────────────────────────────────────
+    //  Evidence.AddDiscovery — propagate "this fact about this evidence is
+    //  now known" events between peers. Discovery is a simple enum, evidence
+    //  identified by stable evID, so the wire is tiny and idempotent on the
+    //  receiver (ApplyDiscovery dedups against discoveryProgress).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(Evidence), nameof(Evidence.AddDiscovery))]
+    public static class Evidence_AddDiscovery_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Evidence __instance, Evidence.Discovery disc)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (EvidenceSync.IsApplyingRemote) return;
+                string evId = __instance.evID;
+                if (string.IsNullOrEmpty(evId)) return;
+                EvidenceSync.BroadcastDiscovery(evId, (byte)disc);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"Evidence.AddDiscovery patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     //  Surveillance app — Save-to-Tape and Acquire-Name both end up calling
     //  EvidenceCreator.CreateEvidence to mint EvidenceSurveillance / lead
     //  evidence. Same diff-over-evidenceDictionary pattern as TakePicture

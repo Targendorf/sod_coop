@@ -132,18 +132,117 @@ public static class EvidenceSync
 
     public static void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
     {
-        if (type != PacketType.EvidenceCreate) return;
-
         try
         {
-            var p = new EvidenceCreatePacket();
-            p.Deserialize(reader);
-            if (p.SenderId == NetworkManager.LocalPlayerId) return;
-            ApplyCreate(p, senderId);
+            switch (type)
+            {
+                case PacketType.EvidenceCreate:
+                {
+                    var p = new EvidenceCreatePacket();
+                    p.Deserialize(reader);
+                    if (p.SenderId == NetworkManager.LocalPlayerId) return;
+                    ApplyCreate(p, senderId);
+                    break;
+                }
+                case PacketType.EvidenceDiscoveryAdd:
+                {
+                    var p = new EvidenceDiscoveryAddPacket();
+                    p.Deserialize(reader);
+                    if (p.SenderId == NetworkManager.LocalPlayerId) return;
+                    ApplyDiscovery(p);
+                    break;
+                }
+            }
         }
         catch (System.Exception ex)
         {
             Plugin.Log.LogError($"EvidenceSync.OnPacketReceived: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Called from the <c>Evidence.AddDiscovery</c> Harmony postfix on the
+    /// originating machine. Broadcasts the evID + Discovery enum byte so
+    /// peers can replay the same discovery on their copy of the evidence.
+    /// </summary>
+    public static void BroadcastDiscovery(string evId, byte discovery)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (IsApplyingRemote) return;
+        if (string.IsNullOrEmpty(evId)) return;
+
+        try
+        {
+            var packet = new EvidenceDiscoveryAddPacket
+            {
+                SenderId  = NetworkManager.LocalPlayerId,
+                EvId      = evId,
+                Discovery = discovery,
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.EvidenceDiscoveryAdd, _writer, DeliveryMethod.ReliableOrdered);
+
+            Plugin.Log.LogInfo($"[EvidenceSync] broadcast discovery evID=\"{evId}\" disc={discovery}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"EvidenceSync.BroadcastDiscovery: {ex.Message}");
+        }
+    }
+
+    private static void ApplyDiscovery(EvidenceDiscoveryAddPacket p)
+    {
+        if (string.IsNullOrEmpty(p.EvId)) return;
+
+        try
+        {
+            var dict = GameplayController.Instance?.evidenceDictionary;
+            if (dict == null) return;
+            if (!dict.TryGetValue(p.EvId, out var ev) || ev == null)
+            {
+                // Not always present — maybe the evidence was created via
+                // case generation that the host hasn't broadcast (case-gen
+                // pipeline runs deterministic per-seed and is silent).
+                Plugin.Log.LogInfo($"[EvidenceSync] ApplyDiscovery: evID=\"{p.EvId}\" not found locally — skipping.");
+                return;
+            }
+
+            // Skip if the same Discovery value is already in discoveryProgress
+            // (idempotency — SoD's AddDiscovery may also self-dedup, but
+            // checking here avoids a useless cross-machine roundtrip on
+            // redundant signals).
+            try
+            {
+                var prog = ev.discoveryProgress;
+                if (prog != null)
+                {
+                    var target = (Evidence.Discovery)p.Discovery;
+                    for (int i = 0; i < prog.Count; i++)
+                    {
+                        if (prog[i] == target)
+                        {
+                            return;
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            IsApplyingRemote = true;
+            try
+            {
+                ev.AddDiscovery((Evidence.Discovery)p.Discovery);
+                Plugin.Log.LogInfo($"[EvidenceSync] applied discovery evID=\"{p.EvId}\" disc={p.Discovery}");
+            }
+            finally
+            {
+                IsApplyingRemote = false;
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"EvidenceSync.ApplyDiscovery failed: {ex.Message}");
         }
     }
 

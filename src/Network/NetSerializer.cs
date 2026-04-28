@@ -1079,6 +1079,34 @@ public struct NpcDamagePacket : INetPacket
 }
 
 /// <summary>
+/// Evidence.AddDiscovery event. Carries the evID + the Discovery enum
+/// value as a byte. Receiver finds the evidence in the dictionary and
+/// replays AddDiscovery so the discovered-fact graph converges.
+/// </summary>
+public struct EvidenceDiscoveryAddPacket : INetPacket
+{
+    public PacketType Type => PacketType.EvidenceDiscoveryAdd;
+
+    public int    SenderId;
+    public string EvId;
+    public byte   Discovery;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(SenderId);
+        w.Put(EvId ?? "");
+        w.Put(Discovery);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        SenderId  = r.GetInt();
+        EvId      = r.GetString();
+        Discovery = r.GetByte();
+    }
+}
+
+/// <summary>
 /// Player outfit category. Client-only outbound: when the local player's
 /// <c>CitizenOutfitController.SetCurrentOutfit</c> is called, host applies
 /// the same category to the sender's twin so guard / co-worker checks see

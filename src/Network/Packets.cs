@@ -596,5 +596,16 @@ public enum PacketType : byte
     /// </summary>
     SideJobAcceptRequest = 108,
 
+    /// <summary>
+    /// Evidence discovery added. Mirrors <c>Evidence.AddDiscovery(Discovery)</c>
+    /// on the receiver. <c>Discovery</c> is a simple enum (livesAt /
+    /// jobDiscovery / phoneLocation / foundAt / ...) — wire payload is just
+    /// the evID + a byte for the enum value. Receiver looks up the
+    /// evidence in <c>GameplayController.Instance.evidenceDictionary</c>
+    /// and replays the AddDiscovery call so case-board / known-facts state
+    /// converges across machines.
+    /// </summary>
+    EvidenceDiscoveryAdd = 109,
+
     #endregion
 }

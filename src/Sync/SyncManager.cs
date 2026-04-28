@@ -159,6 +159,11 @@ public static class SyncManager
             {
                 EvidenceSync.OnPacketReceived(type, reader, senderId);
             }
+            // Evidence discovery added (109) — fact-knowledge graph propagation.
+            else if (type == PacketType.EvidenceDiscoveryAdd)
+            {
+                EvidenceSync.OnPacketReceived(type, reader, senderId);
+            }
             // Non-lethal NPC damage (31).
             else if (type == PacketType.NpcDamage)
             {
