@@ -41,6 +41,18 @@ public class CreateCharacterPanel : CoopPanelBase
         ClearStatus();
     }
 
+    /// <summary>
+    /// Called by <see cref="CoopMenuController"/> when the host sends back a
+    /// CharacterRejected packet. Surfaces the reason in red and re-arms the
+    /// Submit button (panel stays open).
+    /// </summary>
+    public void ShowRejection(string reason)
+    {
+        if (_statusLabel == null) return;
+        _statusLabel.text  = string.IsNullOrEmpty(reason) ? "Host rejected the name." : $"Host rejected: {reason}";
+        _statusLabel.color = CoopMenuTheme.LabelError;
+    }
+
     protected override void BuildBody()
     {
         _contextLabel = BodyLabel("Connecting…", CoopMenuTheme.FontSizeBody,

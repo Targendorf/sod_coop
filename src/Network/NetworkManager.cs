@@ -81,6 +81,13 @@ public static class NetworkManager
     /// hostSurname, cityName) for context UI.
     /// </summary>
     public static event Action<string, string, string> OnCharacterCreationRequired;
+
+    /// <summary>
+    /// Raised on the client when the host rejects a submitted character (e.g.
+    /// validation failed). Carries a human-readable reason so the creation
+    /// panel can surface it to the user.
+    /// </summary>
+    public static event Action<string> OnCharacterRejected;
     
     /// <summary>
     /// Connected peer (for client: the host; for host: null).
@@ -467,6 +474,18 @@ public static class NetworkManager
     }
 
     /// <summary>
+    /// Host-only. Sends a CharacterRejected packet with a human-readable
+    /// reason. The client's creation panel surfaces the reason in red and
+    /// stays open for re-submission.
+    /// </summary>
+    private static void SendCharacterRejected(NetPeer peer, string reason)
+    {
+        _writer.Reset();
+        _writer.Put(reason ?? "Character rejected by host.");
+        SendTo(peer, PacketType.CharacterRejected, _writer);
+    }
+
+    /// <summary>
     /// Host-only. Sends the CharacterCreationRequired packet to a peer that
     /// has no record yet for this world seed. Carries the host's own
     /// character name + city name as context for the creation UI.
@@ -630,6 +649,10 @@ public static class NetworkManager
                     HandleCharacterReset(peer);
                     break;
 
+                case PacketType.CharacterRejected:
+                    HandleCharacterRejected(reader);
+                    break;
+
                 default:
                     // Forward to registered handlers
                     OnPacketReceived?.Invoke(packetType, reader, senderId);
@@ -763,10 +786,7 @@ public static class NetworkManager
         if (err != null)
         {
             Plugin.Log.LogWarning($"[NetworkManager] rejected character submit: {err}");
-            // Re-prompt: just send another CharacterCreationRequired so the
-            // client's panel stays up. (Future: dedicated validation-error
-            // packet with the message.)
-            SendCharacterCreationRequired(peer);
+            SendCharacterRejected(peer, err);
             return;
         }
 
@@ -782,6 +802,18 @@ public static class NetworkManager
             Plugin.Log.LogInfo($"[NetworkManager] {firstName} {surName} → twin citizen humanID={twinHumanID}");
 
         AssignCharacterAndCompleteHandshake(peer, playerId, firstName, surName);
+    }
+
+    /// <summary>
+    /// Client-side. Host rejected our submitted character (validation failed).
+    /// Surfaces the reason via <see cref="OnCharacterRejected"/> so the
+    /// creation panel can show it in red.
+    /// </summary>
+    private static void HandleCharacterRejected(NetPacketReader reader)
+    {
+        string reason = reader.GetString();
+        Plugin.Log.LogWarning($"[NetworkManager] host rejected our character: {reason}");
+        OnCharacterRejected?.Invoke(reason);
     }
 
     /// <summary>

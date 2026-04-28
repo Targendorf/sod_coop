@@ -67,6 +67,15 @@ public enum PacketType : byte
     /// </summary>
     CharacterReset = 9,
 
+    /// <summary>
+    /// Host → client. Reply to <see cref="CharacterSubmit"/> when the
+    /// player-typed name fails server-side validation (empty, forbidden
+    /// chars, too long, name collision, etc.). Carries a single human-
+    /// readable reason string the client surfaces in the creation panel.
+    /// The panel stays open so the user can correct and re-submit.
+    /// </summary>
+    CharacterRejected = 10,
+
     #endregion
     
     #region Player Sync Packets (10-29)

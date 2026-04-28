@@ -64,8 +64,26 @@ public static class CoopMenuController
         _eventsHooked = true;
 
         NetworkManager.OnCharacterCreationRequired += OnCharacterCreationRequired;
+        NetworkManager.OnCharacterRejected += OnCharacterRejected;
         NetworkManager.OnConnected += OnNetworkConnected;
         NetworkManager.OnDisconnected += OnNetworkDisconnected;
+    }
+
+    private static void OnCharacterRejected(string reason)
+    {
+        try
+        {
+            if (_root == null) BuildCanvas();
+            // Make sure the panel is the visible one (host should have left it
+            // showing already, but defensively re-route anyway).
+            SetVisible(true);
+            ShowPanel(PanelKind.CreateCharacter);
+            _createCharacterPanel?.ShowRejection(reason);
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"OnCharacterRejected routing: {ex}");
+        }
     }
 
     private static void OnCharacterCreationRequired(string hostFirst, string hostSur, string cityName)
