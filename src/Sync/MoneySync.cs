@@ -5,24 +5,30 @@ using LiteNetLib.Utils;
 namespace SoDCoop.Sync;
 
 /// <summary>
-/// Mirrors <c>GameplayController.AddMoney</c> calls so every player ends up
-/// with the same balance shift — quest rewards, evidence sales, found cash,
-/// fees, and any other money flow that goes through the central credit API.
+/// Asymmetric money sharing: <b>credits flow to everyone, debits stay local</b>.
 ///
-/// The user requirement: when one player completes a job and earns 500 cred,
-/// BOTH players should receive 500 cred independently. We implement this by
-/// patching AddMoney postfix and re-invoking the same call (with identical
-/// amount + message + reason) on every other peer.
+/// Rationale (user requirement): inventories are private per-player, so
+/// purchases at shops / vendors / NPCs should drain only the buyer's wallet.
+/// Rewards on the other hand — quest hand-ins, evidence sales, found cash —
+/// should be received by both teammates so co-op cooperation isn't a
+/// zero-sum split.
+///
+/// Implementation:
+///   • <c>addVal &gt; 0</c>: broadcast. Receivers replay AddMoney with the
+///     same args; both wallets gain identically.
+///   • <c>addVal &lt; 0</c>: local only. No broadcast — only the spender
+///     loses money.
+///   • <c>addVal == 0</c>: no-op, dropped.
 ///
 /// Echo dedup via SenderId — if our own broadcast bounces back through the
 /// host's star topology, we ignore it.
 ///
-/// Caveat: if a future SoD code path triggers AddMoney from deterministic
-/// case generation (the same way both clients independently spawn
-/// procedural cases), each machine would call AddMoney AND broadcast,
+/// Caveat: if a future SoD code path triggers a positive AddMoney from
+/// deterministic case generation (the same way both clients independently
+/// spawn procedural cases), each machine would call AddMoney AND broadcast,
 /// leading to double-credit. Most current paths are player-action-driven
-/// (sell evidence, complete side-job), so this risk is low. If it shows up
-/// in testing, we'd need a per-event id tag to dedup.
+/// (sell evidence, complete side-job, pickup found cash), so this risk is
+/// low. If it shows up in testing, we'd need a per-event id tag to dedup.
 /// </summary>
 public static class MoneySync
 {
@@ -39,6 +45,15 @@ public static class MoneySync
         if (!NetworkManager.IsConnected) return;
         if (IsApplyingRemote) return;
         if (amount == 0) return;       // no-op transactions don't need network traffic
+
+        // Asymmetric policy: only credits propagate. Debits (purchases at
+        // shops, rent, fees) stay local — same wallet model as the
+        // separate-inventory design.
+        if (amount < 0)
+        {
+            Plugin.Log.LogInfo($"[MoneySync] local debit {amount} (reason=\"{reason}\") — not broadcast");
+            return;
+        }
 
         try
         {
@@ -88,11 +103,20 @@ public static class MoneySync
             var gc = GameplayController.Instance;
             if (gc == null) return;
 
+            // Defensive: only accept credits. A debit packet means the sender
+            // is on an older build that didn't enforce the credit-only policy
+            // — drop it so we don't double-charge a teammate's purchase.
+            if (p.Amount <= 0)
+            {
+                Plugin.Log.LogWarning($"[MoneySync] dropping debit packet ({p.Amount}) from player {p.SenderId}");
+                return;
+            }
+
             IsApplyingRemote = true;
             try
             {
                 gc.AddMoney(p.Amount, p.DisplayMessage, p.Reason ?? "");
-                Plugin.Log.LogInfo($"[MoneySync] applied {p.Amount:+#;-#} from player {p.SenderId} (reason=\"{p.Reason}\")");
+                Plugin.Log.LogInfo($"[MoneySync] applied +{p.Amount} from player {p.SenderId} (reason=\"{p.Reason}\")");
             }
             finally
             {
