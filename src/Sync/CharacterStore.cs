@@ -32,6 +32,14 @@ public static class CharacterStore
         public string FirstName;
         public string Surname;
         public long   CreatedAtUnix;
+
+        /// <summary>
+        /// Phase B: humanID of the city citizen this client has "claimed" as
+        /// their in-world identity (twin strategy). 0 = not yet assigned;
+        /// <see cref="TwinManager"/> picks one and stamps the name on first
+        /// use, then re-applies on every host startup.
+        /// </summary>
+        public int HumanID;
     }
 
     /// <summary>seed → (clientGuid → record). Lazily loaded on first access per seed.</summary>
@@ -81,6 +89,23 @@ public static class CharacterStore
     {
         var bucket = LoadSeed(seed);
         return bucket.TryGetValue(clientGuid, out var rec) ? rec : null;
+    }
+
+    /// <summary>All records currently persisted for the given seed.</summary>
+    public static IEnumerable<Record> AllForSeed(string seed)
+    {
+        return LoadSeed(seed).Values;
+    }
+
+    /// <summary>
+    /// Re-write the on-disk file for a seed from the in-memory bucket. Use
+    /// this after mutating a record in place (e.g. <see cref="Record.HumanID"/>
+    /// after <see cref="TwinManager"/> picks a citizen).
+    /// </summary>
+    public static void Persist(string seed)
+    {
+        var bucket = LoadSeed(seed);
+        WriteSeedFile(seed, bucket);
     }
 
     /// <summary>
@@ -137,6 +162,7 @@ public static class CharacterStore
                         FirstName     = parts[1],
                         Surname       = parts[2],
                         CreatedAtUnix = parts.Length > 3 && long.TryParse(parts[3], out var t) ? t : 0,
+                        HumanID       = parts.Length > 4 && int.TryParse(parts[4], out var h) ? h : 0,
                     };
                     if (!string.IsNullOrEmpty(rec.ClientGuid))
                         bucket[rec.ClientGuid] = rec;
@@ -160,9 +186,10 @@ public static class CharacterStore
         {
             using var sw = new StreamWriter(path, append: false);
             sw.WriteLine($"# SoDCoop characters for seed \"{seed}\"");
+            sw.WriteLine("# format: clientGuid|firstName|surName|createdAtUnix|humanID");
             foreach (var rec in bucket.Values)
             {
-                sw.WriteLine($"{rec.ClientGuid}|{rec.FirstName}|{rec.Surname}|{rec.CreatedAtUnix}");
+                sw.WriteLine($"{rec.ClientGuid}|{rec.FirstName}|{rec.Surname}|{rec.CreatedAtUnix}|{rec.HumanID}");
             }
         }
         catch (Exception ex)

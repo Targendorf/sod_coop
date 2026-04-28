@@ -222,6 +222,13 @@ public static class NetworkManager
                 IsHost = true,
                 CharacterAssigned = true,
             };
+
+            // Phase B.1: re-stamp every previously-assigned client twin's
+            // name onto its citizen. SoD reloads citizens from the save with
+            // their original procedurally-generated names; we have to
+            // re-apply our overrides every host startup.
+            try { TwinManager.ReapplyAll(CharacterStore.CurrentSeed()); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"TwinManager.ReapplyAll: {ex.Message}"); }
             
             Plugin.Log.LogInfo($"Hosting on port {port}. Waiting for players...");
             OnConnected?.Invoke();
@@ -760,7 +767,16 @@ public static class NetworkManager
         }
 
         string seed = CharacterStore.CurrentSeed();
-        CharacterStore.Save(seed, info.ClientGuid, firstName, surName);
+        var saved = CharacterStore.Save(seed, info.ClientGuid, firstName, surName);
+
+        // Phase B.1: pick (or re-confirm) a city citizen as this client's
+        // in-world identity, and stamp the chosen name onto that Human so
+        // SoD's NPC dialog / IDs / banking see them as a real person. The
+        // resulting humanID is persisted into the same record.
+        int twinHumanID = TwinManager.EnsureTwinAssigned(seed, saved);
+        if (twinHumanID > 0)
+            Plugin.Log.LogInfo($"[NetworkManager] {firstName} {surName} → twin citizen humanID={twinHumanID}");
+
         AssignCharacterAndCompleteHandshake(peer, playerId, firstName, surName);
     }
 
