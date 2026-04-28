@@ -177,6 +177,14 @@ public enum PacketType : byte
     /// </summary>
     NpcDamage = 31,
 
+    /// <summary>
+    /// Player pressed an elevator floor button. Receiver looks up the
+    /// matching <c>Elevator</c> by (buildingID, bottomTile.globalTileCoord)
+    /// and replays <c>CallElevator(newFloor, upButton)</c> so the lift moves
+    /// in lockstep on every machine.
+    /// </summary>
+    ElevatorCall = 32,
+
     #endregion
     
     #region World Sync Packets (30-59)

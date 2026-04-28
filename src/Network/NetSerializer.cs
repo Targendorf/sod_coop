@@ -1026,6 +1026,45 @@ public struct NpcDamagePacket : INetPacket
 }
 
 /// <summary>
+/// Player pressed an elevator floor button. Cross-machine elevator identity
+/// is the pair (<c>building.buildingID</c>, <c>bottom.globalTileCoord</c>) —
+/// both are deterministic from the world seed. Receiver iterates
+/// <c>SessionData.Instance.activeElevators</c> and replays
+/// <c>CallElevator(newFloor, upButton)</c> on the match.
+/// </summary>
+public struct ElevatorCallPacket : INetPacket
+{
+    public PacketType Type => PacketType.ElevatorCall;
+
+    public int        SenderId;
+    public int        BuildingId;
+    public Vector3Int BottomTileCoord;
+    public int        NewFloor;
+    public bool       UpButton;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(SenderId);
+        w.Put(BuildingId);
+        w.Put(BottomTileCoord.x);
+        w.Put(BottomTileCoord.y);
+        w.Put(BottomTileCoord.z);
+        w.Put(NewFloor);
+        w.Put(UpButton);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        SenderId        = r.GetInt();
+        BuildingId      = r.GetInt();
+        int x = r.GetInt(), y = r.GetInt(), z = r.GetInt();
+        BottomTileCoord = new Vector3Int(x, y, z);
+        NewFloor        = r.GetInt();
+        UpButton        = r.GetBool();
+    }
+}
+
+/// <summary>
 /// Citizen death — broadcast when <c>Human.Murder</c> fires on a non-player.
 /// Receiver finds the victim via CityData.citizenDictionary[humanID] and mirrors
 /// the dead state (isDead flag + CitizenAnimationController.SetDead(true) +

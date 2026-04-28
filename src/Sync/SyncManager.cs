@@ -148,6 +148,11 @@ public static class SyncManager
             {
                 DamageSync.OnPacketReceived(type, reader, senderId);
             }
+            // Elevator floor call (32).
+            else if (type == PacketType.ElevatorCall)
+            {
+                ElevatorSync.OnPacketReceived(type, reader, senderId);
+            }
             // Doors + lights + switches (50-59) — go to WorldStateSync, not WorldSync.
             else if (type == PacketType.DoorState
                   || type == PacketType.LightState

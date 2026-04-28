@@ -1087,6 +1087,34 @@ public static class GamePatches
     //  related ShouldSuppressBroadcast cascades.
     // ─────────────────────────────────────────────────────────────────────────
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Elevator.CallElevator — player pressed a floor button.
+    //
+    //  SoD elevators are physical objects (currentSpeed/desiredY) that both
+    //  machines simulate independently. Once both replay the same
+    //  CallElevator(newFloor, upButton), their physics march in lockstep —
+    //  no need to stream per-frame Y positions. Echo dedup via SenderId.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(Elevator), nameof(Elevator.CallElevator))]
+    public static class Elevator_CallElevator_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Elevator __instance, int newFloor, bool upButton)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (ElevatorSync.IsApplyingRemote) return;
+                ElevatorSync.BroadcastCall(__instance, newFloor, upButton);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"Elevator.CallElevator patch: {ex.Message}");
+            }
+        }
+    }
+
     [HarmonyPatch(typeof(Actor), nameof(Actor.RecieveDamage))]
     public static class Actor_RecieveDamage_Patch
     {
