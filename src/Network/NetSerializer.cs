@@ -916,6 +916,116 @@ public struct CaseBoardFactNamePacket : INetPacket
 }
 
 /// <summary>
+/// A new <c>Evidence</c> was created on the originator's machine. Sent so
+/// receivers can call <c>EvidenceCreator.CreateEvidence</c> with the same
+/// <c>evID</c>, keeping cross-machine references aligned (case-board pin
+/// targets, FactLink resolution, etc). Texture / photo content is NOT in
+/// this packet — receivers regenerate visuals locally as needed.
+/// </summary>
+public struct EvidenceCreatePacket : INetPacket
+{
+    public PacketType Type => PacketType.EvidenceCreate;
+
+    public string EvId;             // evID — also stable across machines
+    public string PresetName;       // EvidencePreset.name
+    public string ParentEvId;       // empty if no parent evidence
+    public int    OwnerHumanId;     // -1 if none
+    public int    WriterHumanId;    // -1 if none
+    public int    ReceiverHumanId;  // -1 if none
+    public bool   ForceDiscovery;
+    public int    SenderId;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(EvId ?? "");
+        w.Put(PresetName ?? "");
+        w.Put(ParentEvId ?? "");
+        w.Put(OwnerHumanId);
+        w.Put(WriterHumanId);
+        w.Put(ReceiverHumanId);
+        w.Put(ForceDiscovery);
+        w.Put(SenderId);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        EvId            = r.GetString();
+        PresetName      = r.GetString();
+        ParentEvId      = r.GetString();
+        OwnerHumanId    = r.GetInt();
+        WriterHumanId   = r.GetInt();
+        ReceiverHumanId = r.GetInt();
+        ForceDiscovery  = r.GetBool();
+        SenderId        = r.GetInt();
+    }
+}
+
+/// <summary>
+/// Non-lethal NPC damage. Mirrors every meaningful parameter of
+/// <c>Actor.RecieveDamage</c> so receivers replay the same hit. Spatter
+/// preset references travel as Unity asset names (resolved via the
+/// SpatterSync preset registry on receivers).
+/// </summary>
+public struct NpcDamagePacket : INetPacket
+{
+    public PacketType Type => PacketType.NpcDamage;
+
+    public int     SenderId;
+    public int     VictimHumanId;
+    public int     AttackerHumanId;          // -1 if attacker unknown / null
+    public float   Amount;
+    public Vector3 HitPosition;
+    public Vector3 HitDirection;
+    public string  ForwardSpatterPreset;     // empty = null
+    public string  BackSpatterPreset;        // empty = null
+    public byte    EraseMode;
+    public bool    ForceRagdoll;
+    public float   RagdollDuration;
+    public float   ShockMP;
+    public bool    EnableKill;
+    public bool    AllowRecoil;
+    public float   RagdollForceMP;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(SenderId);
+        w.Put(VictimHumanId);
+        w.Put(AttackerHumanId);
+        w.Put(Amount);
+        w.Put(HitPosition);
+        w.Put(HitDirection);
+        w.Put(ForwardSpatterPreset ?? "");
+        w.Put(BackSpatterPreset ?? "");
+        w.Put(EraseMode);
+        w.Put(ForceRagdoll);
+        w.Put(RagdollDuration);
+        w.Put(ShockMP);
+        w.Put(EnableKill);
+        w.Put(AllowRecoil);
+        w.Put(RagdollForceMP);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        SenderId             = r.GetInt();
+        VictimHumanId        = r.GetInt();
+        AttackerHumanId      = r.GetInt();
+        Amount               = r.GetFloat();
+        HitPosition          = r.GetVector3();
+        HitDirection         = r.GetVector3();
+        ForwardSpatterPreset = r.GetString();
+        BackSpatterPreset    = r.GetString();
+        EraseMode            = r.GetByte();
+        ForceRagdoll         = r.GetBool();
+        RagdollDuration      = r.GetFloat();
+        ShockMP              = r.GetFloat();
+        EnableKill           = r.GetBool();
+        AllowRecoil          = r.GetBool();
+        RagdollForceMP       = r.GetFloat();
+    }
+}
+
+/// <summary>
 /// Citizen death — broadcast when <c>Human.Murder</c> fires on a non-player.
 /// Receiver finds the victim via CityData.citizenDictionary[humanID] and mirrors
 /// the dead state (isDead flag + CitizenAnimationController.SetDead(true) +

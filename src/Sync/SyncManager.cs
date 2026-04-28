@@ -138,6 +138,16 @@ public static class SyncManager
             {
                 PlayerSync?.OnPacketReceived(type, reader, senderId);
             }
+            // Evidence object creation (30) — generic Evidence sync.
+            else if (type == PacketType.EvidenceCreate)
+            {
+                EvidenceSync.OnPacketReceived(type, reader, senderId);
+            }
+            // Non-lethal NPC damage (31).
+            else if (type == PacketType.NpcDamage)
+            {
+                DamageSync.OnPacketReceived(type, reader, senderId);
+            }
             // Doors + lights + switches (50-59) — go to WorldStateSync, not WorldSync.
             else if (type == PacketType.DoorState
                   || type == PacketType.LightState

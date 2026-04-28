@@ -38,7 +38,9 @@ public static class SpatterSync
         || CitizenDeathSync.IsApplyingRemote
         || CaseBoardSync.IsApplyingRemote
         || FingerprintSync.IsApplyingRemote
-        || FootprintSync.IsApplyingRemote;
+        || FootprintSync.IsApplyingRemote
+        || DamageSync.IsApplyingRemote
+        || EvidenceSync.IsApplyingRemote;
 
     private static readonly NetDataWriter _writer = new();
 

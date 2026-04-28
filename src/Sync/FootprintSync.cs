@@ -42,7 +42,9 @@ public static class FootprintSync
         || ItemSync.IsApplyingRemote
         || CitizenDeathSync.IsApplyingRemote
         || CaseBoardSync.IsApplyingRemote
-        || FingerprintSync.IsApplyingRemote;
+        || FingerprintSync.IsApplyingRemote
+        || DamageSync.IsApplyingRemote
+        || EvidenceSync.IsApplyingRemote;
 
     private static readonly NetDataWriter _writer = new();
 

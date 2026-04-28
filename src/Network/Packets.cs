@@ -161,6 +161,22 @@ public enum PacketType : byte
     /// </summary>
     ItemThrow = 29,
 
+    /// <summary>
+    /// A new Evidence object was created on the originator's machine
+    /// (typically by a player action like TakePicture). Carries enough info
+    /// for the receiver to call EvidenceCreator.CreateEvidence with the same
+    /// evID so cross-machine references match (case-board pinning, etc).
+    /// </summary>
+    EvidenceCreate = 30,
+
+    /// <summary>
+    /// Non-lethal damage applied to an NPC. Mirrors Actor.RecieveDamage on
+    /// the receiver so the citizen ragdolls / bleeds / takes the same hit
+    /// state on every machine. Player victims are NOT synced — health is
+    /// per-machine local state.
+    /// </summary>
+    NpcDamage = 31,
+
     #endregion
     
     #region World Sync Packets (30-59)

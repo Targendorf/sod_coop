@@ -456,6 +456,10 @@ public static class GamePatches
             {
                 if (__instance == null) return;
                 if (CitizenDeathSync.IsApplyingRemote) return;
+                // Damage with enableKill=true ends up here. If we're applying
+                // a remote damage event, the originator already broadcast the
+                // CitizenDeath that will follow — don't echo.
+                if (DamageSync.IsApplyingRemote) return;
                 // Don't broadcast deaths of the local player — there is no shared
                 // identity for "the local player" across machines.
                 if (global::Player.Instance != null && __instance.Pointer == global::Player.Instance.Pointer)
@@ -1039,6 +1043,108 @@ public static class GamePatches
             catch (System.Exception ex)
             {
                 Plugin.Log.LogWarning($"FPItemController.ThrowGrenade patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  TakePicture — diff over evidenceDictionary so any new Evidence created
+    //  by this player action (the photo + any sub-evidence the engine spawns
+    //  alongside it) gets broadcast with stable evIDs.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.TakePicture))]
+    public static class FPItemController_TakePicture_Patch
+    {
+        [HarmonyPrefix]
+        public static void Prefix(out System.Collections.Generic.HashSet<string> __state)
+            => __state = EvidenceSync.SnapshotEvidenceKeys();
+
+        [HarmonyPostfix]
+        public static void Postfix(System.Collections.Generic.HashSet<string> __state)
+        {
+            try
+            {
+                if (EvidenceSync.IsApplyingRemote) return;
+                EvidenceSync.BroadcastNewEvidenceSince(__state);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"FPItemController.TakePicture patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Actor.RecieveDamage — non-lethal NPC hits.
+    //
+    //  Patches the virtual base method which fires for every Actor subtype
+    //  (Citizen, Player). We filter out Player victims at broadcast time —
+    //  player health is per-machine local state.
+    //
+    //  Spatter / footprint side-effects of the replayed call on receivers
+    //  are suppressed via DamageSync.IsApplyingRemote being checked in the
+    //  related ShouldSuppressBroadcast cascades.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(Actor), nameof(Actor.RecieveDamage))]
+    public static class Actor_RecieveDamage_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(
+            Actor __instance,
+            float amount,
+            Actor fromWho,
+            Vector3 damagePosition,
+            Vector3 damageDirection,
+            SpatterPatternPreset forwardSpatter,
+            SpatterPatternPreset backSpatter,
+            SpatterSimulation.EraseMode spatterErase,
+            bool forceRagdoll,
+            float forcedRagdollDuration,
+            float shockMP,
+            bool enableKill,
+            bool allowRecoil,
+            float ragdollForceMP)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (DamageSync.IsApplyingRemote) return;
+
+                // Skip Player victims — health is local per-machine.
+                if (global::Player.Instance != null && __instance.Pointer == global::Player.Instance.Pointer)
+                    return;
+
+                // Look up victim humanID via Human cast.
+                var victimHuman = __instance.TryCast<Human>();
+                if (victimHuman == null) return;
+
+                int attackerHumanId = -1;
+                if (fromWho != null)
+                {
+                    try { attackerHumanId = fromWho.TryCast<Human>()?.humanID ?? -1; } catch { }
+                }
+
+                DamageSync.BroadcastDamage(
+                    victimHuman.humanID,
+                    attackerHumanId,
+                    amount,
+                    damagePosition,
+                    damageDirection,
+                    forwardSpatter,
+                    backSpatter,
+                    spatterErase,
+                    forceRagdoll,
+                    forcedRagdollDuration,
+                    shockMP,
+                    enableKill,
+                    allowRecoil,
+                    ragdollForceMP);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"Actor.RecieveDamage patch: {ex.Message}");
             }
         }
     }
