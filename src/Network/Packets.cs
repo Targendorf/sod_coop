@@ -607,5 +607,20 @@ public enum PacketType : byte
     /// </summary>
     EvidenceDiscoveryAdd = 109,
 
+    /// <summary>
+    /// Player-written note on an Evidence. Mirrors
+    /// <c>Evidence.SetNote(List&lt;DataKey&gt; keys, string str)</c>.
+    /// Wire: evID, list of DataKey bytes, the text.
+    /// </summary>
+    EvidenceSetNote = 110,
+
+    /// <summary>
+    /// Player-set custom name on an Evidence DataKey (per-key label
+    /// override, separate from the case-board Fact custom-name path
+    /// already covered by <see cref="CaseBoardFactName"/>). Mirrors
+    /// <c>Evidence.AddOrSetCustomName(DataKey, string)</c>.
+    /// </summary>
+    EvidenceCustomName = 111,
+
     #endregion
 }

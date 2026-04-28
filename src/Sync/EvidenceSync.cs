@@ -152,6 +152,22 @@ public static class EvidenceSync
                     ApplyDiscovery(p);
                     break;
                 }
+                case PacketType.EvidenceSetNote:
+                {
+                    var p = new EvidenceSetNotePacket();
+                    p.Deserialize(reader);
+                    if (p.SenderId == NetworkManager.LocalPlayerId) return;
+                    ApplySetNote(p);
+                    break;
+                }
+                case PacketType.EvidenceCustomName:
+                {
+                    var p = new EvidenceCustomNamePacket();
+                    p.Deserialize(reader);
+                    if (p.SenderId == NetworkManager.LocalPlayerId) return;
+                    ApplyCustomName(p);
+                    break;
+                }
             }
         }
         catch (System.Exception ex)
@@ -188,6 +204,132 @@ public static class EvidenceSync
         catch (System.Exception ex)
         {
             Plugin.Log.LogWarning($"EvidenceSync.BroadcastDiscovery: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Called from <c>Evidence.SetNote</c> Harmony postfix. Broadcasts the
+    /// note text + the list of DataKey bytes so receivers can replay the
+    /// per-key note.
+    /// </summary>
+    public static void BroadcastSetNote(string evId, Il2CppSystem.Collections.Generic.List<Evidence.DataKey> keys, string text)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (IsApplyingRemote) return;
+        if (string.IsNullOrEmpty(evId)) return;
+
+        try
+        {
+            byte[] keyBytes;
+            if (keys != null && keys.Count > 0)
+            {
+                keyBytes = new byte[keys.Count];
+                for (int i = 0; i < keys.Count; i++) keyBytes[i] = (byte)keys[i];
+            }
+            else
+            {
+                keyBytes = System.Array.Empty<byte>();
+            }
+
+            var packet = new EvidenceSetNotePacket
+            {
+                SenderId = NetworkManager.LocalPlayerId,
+                EvId     = evId,
+                DataKeys = keyBytes,
+                Text     = text ?? "",
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.EvidenceSetNote, _writer, DeliveryMethod.ReliableOrdered);
+            Plugin.Log.LogInfo($"[EvidenceSync] broadcast SetNote evID=\"{evId}\" keys={keyBytes.Length} text.Len={text?.Length ?? 0}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"EvidenceSync.BroadcastSetNote: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Called from <c>Evidence.AddOrSetCustomName</c> Harmony postfix
+    /// (single-DataKey overload). Broadcasts evID + DataKey byte + the
+    /// custom name string.
+    /// </summary>
+    public static void BroadcastCustomName(string evId, Evidence.DataKey dk, string customName)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (IsApplyingRemote) return;
+        if (string.IsNullOrEmpty(evId)) return;
+
+        try
+        {
+            var packet = new EvidenceCustomNamePacket
+            {
+                SenderId   = NetworkManager.LocalPlayerId,
+                EvId       = evId,
+                DataKey    = (byte)dk,
+                CustomName = customName ?? "",
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.EvidenceCustomName, _writer, DeliveryMethod.ReliableOrdered);
+            Plugin.Log.LogInfo($"[EvidenceSync] broadcast CustomName evID=\"{evId}\" dk={dk} name=\"{customName}\"");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"EvidenceSync.BroadcastCustomName: {ex.Message}");
+        }
+    }
+
+    private static void ApplySetNote(EvidenceSetNotePacket p)
+    {
+        if (string.IsNullOrEmpty(p.EvId)) return;
+        try
+        {
+            var dict = GameplayController.Instance?.evidenceDictionary;
+            if (dict == null) return;
+            if (!dict.TryGetValue(p.EvId, out var ev) || ev == null) return;
+
+            var keyList = new Il2CppSystem.Collections.Generic.List<Evidence.DataKey>();
+            if (p.DataKeys != null)
+            {
+                for (int i = 0; i < p.DataKeys.Length; i++)
+                    keyList.Add((Evidence.DataKey)p.DataKeys[i]);
+            }
+
+            IsApplyingRemote = true;
+            try
+            {
+                ev.SetNote(keyList, p.Text ?? "");
+                Plugin.Log.LogInfo($"[EvidenceSync] applied SetNote evID=\"{p.EvId}\" keys={p.DataKeys?.Length ?? 0}");
+            }
+            finally { IsApplyingRemote = false; }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"EvidenceSync.ApplySetNote failed: {ex.Message}");
+        }
+    }
+
+    private static void ApplyCustomName(EvidenceCustomNamePacket p)
+    {
+        if (string.IsNullOrEmpty(p.EvId)) return;
+        try
+        {
+            var dict = GameplayController.Instance?.evidenceDictionary;
+            if (dict == null) return;
+            if (!dict.TryGetValue(p.EvId, out var ev) || ev == null) return;
+
+            IsApplyingRemote = true;
+            try
+            {
+                ev.AddOrSetCustomName((Evidence.DataKey)p.DataKey, p.CustomName ?? "");
+                Plugin.Log.LogInfo($"[EvidenceSync] applied CustomName evID=\"{p.EvId}\" dk={p.DataKey}");
+            }
+            finally { IsApplyingRemote = false; }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"EvidenceSync.ApplyCustomName failed: {ex.Message}");
         }
     }
 

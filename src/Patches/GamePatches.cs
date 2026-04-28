@@ -1143,6 +1143,51 @@ public static class GamePatches
         }
     }
 
+    [HarmonyPatch(typeof(Evidence), nameof(Evidence.SetNote))]
+    public static class Evidence_SetNote_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Evidence __instance,
+                                   Il2CppSystem.Collections.Generic.List<Evidence.DataKey> keys,
+                                   string str)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (EvidenceSync.IsApplyingRemote) return;
+                string evId = __instance.evID;
+                if (string.IsNullOrEmpty(evId)) return;
+                EvidenceSync.BroadcastSetNote(evId, keys, str);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"Evidence.SetNote patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(Evidence), nameof(Evidence.AddOrSetCustomName),
+                  typeof(Evidence.DataKey), typeof(string))]
+    public static class Evidence_AddOrSetCustomName_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Evidence __instance, Evidence.DataKey dk, string newCustomName)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (EvidenceSync.IsApplyingRemote) return;
+                string evId = __instance.evID;
+                if (string.IsNullOrEmpty(evId)) return;
+                EvidenceSync.BroadcastCustomName(evId, dk, newCustomName);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"Evidence.AddOrSetCustomName patch: {ex.Message}");
+            }
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     //  Surveillance app — Save-to-Tape and Acquire-Name both end up calling
     //  EvidenceCreator.CreateEvidence to mint EvidenceSurveillance / lead

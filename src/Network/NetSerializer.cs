@@ -1079,6 +1079,71 @@ public struct NpcDamagePacket : INetPacket
 }
 
 /// <summary>
+/// Player-written note on an Evidence. Carries evID + a packed list of
+/// DataKey bytes + the note text. Receiver replays Evidence.SetNote with
+/// a freshly-built Il2Cpp DataKey list.
+/// </summary>
+public struct EvidenceSetNotePacket : INetPacket
+{
+    public PacketType Type => PacketType.EvidenceSetNote;
+
+    public int    SenderId;
+    public string EvId;
+    public byte[] DataKeys;
+    public string Text;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(SenderId);
+        w.Put(EvId ?? "");
+        int n = DataKeys?.Length ?? 0;
+        w.Put(n);
+        for (int i = 0; i < n; i++) w.Put(DataKeys[i]);
+        w.Put(Text ?? "");
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        SenderId = r.GetInt();
+        EvId     = r.GetString();
+        int n = r.GetInt();
+        DataKeys = new byte[n];
+        for (int i = 0; i < n; i++) DataKeys[i] = r.GetByte();
+        Text = r.GetString();
+    }
+}
+
+/// <summary>
+/// Player-set custom name on a single Evidence DataKey. Receiver replays
+/// Evidence.AddOrSetCustomName(DataKey, string).
+/// </summary>
+public struct EvidenceCustomNamePacket : INetPacket
+{
+    public PacketType Type => PacketType.EvidenceCustomName;
+
+    public int    SenderId;
+    public string EvId;
+    public byte   DataKey;
+    public string CustomName;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(SenderId);
+        w.Put(EvId ?? "");
+        w.Put(DataKey);
+        w.Put(CustomName ?? "");
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        SenderId   = r.GetInt();
+        EvId       = r.GetString();
+        DataKey    = r.GetByte();
+        CustomName = r.GetString();
+    }
+}
+
+/// <summary>
 /// Evidence.AddDiscovery event. Carries the evID + the Discovery enum
 /// value as a byte. Receiver finds the evidence in the dictionary and
 /// replays AddDiscovery so the discovered-fact graph converges.

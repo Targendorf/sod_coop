@@ -160,7 +160,9 @@ public static class SyncManager
                 EvidenceSync.OnPacketReceived(type, reader, senderId);
             }
             // Evidence discovery added (109) — fact-knowledge graph propagation.
-            else if (type == PacketType.EvidenceDiscoveryAdd)
+            else if (type == PacketType.EvidenceDiscoveryAdd
+                  || type == PacketType.EvidenceSetNote
+                  || type == PacketType.EvidenceCustomName)
             {
                 EvidenceSync.OnPacketReceived(type, reader, senderId);
             }
