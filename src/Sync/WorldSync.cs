@@ -35,7 +35,14 @@ public class WorldSync
 
     private const float COMMAND_SCAN_RATE    = 0.1f;   // s — host scans for destination changes (10 Hz)
     private const float CORRECTION_INTERVAL  = 3.0f;   // s — authoritative position correction
-    private const float NPC_SYNC_RANGE       = 50f;    // m around any player
+    // 1e6 = effectively no gate. NPCs sync across the entire map regardless of
+    // distance to any player. SoD's tiered tick-rate system handles host-side
+    // CPU cost; what kept the bandwidth bounded was the deadband in destination/
+    // speed deltas (NPCs only emit when their target actually changes), so
+    // dropping the range gate doesn't flood the wire — idle NPCs still don't
+    // send. See PromoteRemoteTickRates for the companion fix that prevents
+    // tick-rate divergence between host and clients in different parts of town.
+    private const float NPC_SYNC_RANGE       = 1_000_000f;
     private const int   MAX_CMDS_PER_BATCH   = 30;
     private const int   MAX_CORR_PER_BATCH   = 30;
     private const float MIN_DEST_DELTA       = 0.3f;   // m — resend if destination moved more than this
@@ -117,6 +124,12 @@ public class WorldSync
                 _lastCorrectionScan = now;
                 HostSendCorrections(now);
             }
+
+            // Throttled per-frame promotion of NPC tick rates to match the
+            // closest peer's needs. Without this, an NPC far from the host but
+            // close to a client would tick rarely on the host (low rate ⇒
+            // rare destination updates ⇒ stale movement on the client).
+            PromoteRemoteTickRates();
         }
         else
         {
@@ -918,6 +931,118 @@ public class WorldSync
         for (int i = 0; i < anchors.Count; i++)
             if (Vector3.Distance(pos, anchors[i]) <= NPC_SYNC_RANGE) return true;
         return false;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Tick-rate promotion for remote players.
+    //
+    //  SoD's NewAIController.UpdateTickRate computes desiredTickRate from the
+    //  distance to the LOCAL Player.Instance. In a co-op scenario where the
+    //  host's local player is far from an NPC but a client's player is right
+    //  next to it, the host would keep the NPC at veryLow tick rate — meaning
+    //  destination updates fire rarely and the client sees the NPC stutter or
+    //  freeze.
+    //
+    //  Fix: each frame, walk a window of the citizen dictionary and compare
+    //  every NPC's distance to ALL remote players. If any peer is closer than
+    //  the bracket the host's local distance assigned, force-promote
+    //  desiredTickRate. We never demote — SoD's own logic already handles
+    //  demotion via UpdateTickRate. Throttle to NPCS_PER_PROMOTE_FRAME per
+    //  frame to keep CPU bounded; full coverage of ~1500 NPCs at 50/frame
+    //  takes ~30 frames (~0.5 s at 60fps).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private const int   NPCS_PER_PROMOTE_FRAME = 50;
+    private const float TICK_HIGH_DIST    = 15f;
+    private const float TICK_MED_DIST     = 35f;
+    private const float TICK_LOW_DIST     = 80f;
+    private const float TICK_VLOW_DIST    = 200f;
+    private static int  _promoteCursor;
+    private static readonly List<int> _citizenKeyCache = new();
+    private static int _citizenKeyCacheStamp;
+
+    private static void PromoteRemoteTickRates()
+    {
+        try
+        {
+            // Gather remote-player positions once per frame.
+            var remoteCount = 0;
+            // Stack-allocated mini-buffer would be nicer; List allocation per
+            // call is fine, only one list of ≤4 entries.
+            var remotePositions = new List<Vector3>(4);
+            foreach (var rp in Player.RemotePlayerManager.GetAllPlayers())
+            {
+                if (rp == null || rp.gameObject == null) continue;
+                remotePositions.Add(rp.transform.position);
+                remoteCount++;
+            }
+            if (remoteCount == 0) return;
+
+            var dict = CityData.Instance?.citizenDictionary;
+            if (dict == null || dict.Count == 0) return;
+
+            // Refresh the key cache periodically so we iterate stable keys
+            // even if the dict gets churned (NPCs spawn/despawn).
+            if (_citizenKeyCacheStamp != dict.Count)
+            {
+                _citizenKeyCache.Clear();
+                foreach (var kv in dict) _citizenKeyCache.Add(kv.Key);
+                _citizenKeyCacheStamp = dict.Count;
+                _promoteCursor = 0;
+            }
+            if (_citizenKeyCache.Count == 0) return;
+
+            int processed = 0;
+            while (processed < NPCS_PER_PROMOTE_FRAME)
+            {
+                if (_promoteCursor >= _citizenKeyCache.Count) _promoteCursor = 0;
+                int humanId = _citizenKeyCache[_promoteCursor++];
+                processed++;
+
+                if (!dict.TryGetValue(humanId, out var human) || human == null) continue;
+                if (human.transform == null) continue;
+                if (SafeIsDead(human)) continue;
+                if (IsLocalPlayerHuman(human)) continue;
+
+                var aic = GetNewAIController(human);
+                if (aic == null) continue;
+
+                // Min distance from this NPC to any peer.
+                Vector3 npcPos = human.transform.position;
+                float minDist = float.MaxValue;
+                for (int i = 0; i < remotePositions.Count; i++)
+                {
+                    float d = Vector3.Distance(npcPos, remotePositions[i]);
+                    if (d < minDist) minDist = d;
+                }
+
+                NewAIController.AITickRate target;
+                if      (minDist < TICK_HIGH_DIST)  target = NewAIController.AITickRate.veryHigh;
+                else if (minDist < TICK_MED_DIST)   target = NewAIController.AITickRate.high;
+                else if (minDist < TICK_LOW_DIST)   target = NewAIController.AITickRate.medium;
+                else if (minDist < TICK_VLOW_DIST)  target = NewAIController.AITickRate.low;
+                else                                target = NewAIController.AITickRate.veryLow;
+
+                // Only promote (never demote — host's own UpdateTickRate
+                // handles that on its tick from local Player distance).
+                if ((int)target > (int)aic.desiredTickRate)
+                {
+                    try
+                    {
+                        aic.desiredTickRate = target;
+                        // forceUpdate=true re-buckets the controller into the
+                        // appropriate CitizenBehaviour list so it actually
+                        // ticks at the new cadence on the host's next frame.
+                        aic.UpdateTickRate(true);
+                    }
+                    catch { /* SetTickRate quirks — non-fatal */ }
+                }
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"WorldSync.PromoteRemoteTickRates: {ex.Message}");
+        }
     }
 
     private static bool IsLocalPlayerHuman(Human human)
