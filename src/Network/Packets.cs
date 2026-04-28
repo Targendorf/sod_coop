@@ -230,6 +230,14 @@ public enum PacketType : byte
     /// </summary>
     PlayerAsleep = 39,
 
+    /// <summary>
+    /// Money was added to (or removed from) the player's wallet via
+    /// <c>GameplayController.AddMoney</c>. Quest rewards, evidence sales,
+    /// found cash. Both players receive the same amount independently —
+    /// the receiver replays AddMoney locally with identical args.
+    /// </summary>
+    MoneyAdded = 40,
+
     #endregion
     
     #region World Sync Packets (30-59)

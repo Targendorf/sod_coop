@@ -1195,6 +1195,38 @@ public struct PlayerAsleepPacket : INetPacket
 }
 
 /// <summary>
+/// Money credit / debit on the local player. Quest rewards, evidence sales,
+/// found cash, fees. Receiver re-invokes
+/// <c>GameplayController.AddMoney(amount, displayMessage, reason)</c> so
+/// every player ends up with the same balance shift.
+/// </summary>
+public struct MoneyAddedPacket : INetPacket
+{
+    public PacketType Type => PacketType.MoneyAdded;
+
+    public int    SenderId;
+    public int    Amount;          // signed — positive credit, negative debit
+    public bool   DisplayMessage;
+    public string Reason;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(SenderId);
+        w.Put(Amount);
+        w.Put(DisplayMessage);
+        w.Put(Reason ?? "");
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        SenderId       = r.GetInt();
+        Amount         = r.GetInt();
+        DisplayMessage = r.GetBool();
+        Reason         = r.GetString();
+    }
+}
+
+/// <summary>
 /// Player-to-player item handoff. Sender empties their slot under suppression
 /// (no ItemDrop packet flies); recipient calls PickUpItem on the same
 /// Interactable.id and slots it into their first free spot.

@@ -1221,6 +1221,31 @@ public static class GamePatches
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    //  GameplayController.AddMoney — quest rewards, sales, fees.
+    //  Both players receive the same amount: when player A's machine fires
+    //  AddMoney(500, ...), broadcast → player B's machine replays the same
+    //  AddMoney call → B's wallet also gains 500.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(GameplayController), nameof(GameplayController.AddMoney))]
+    public static class GameplayController_AddMoney_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(int addVal, bool displayMessage, string reason)
+        {
+            try
+            {
+                if (MoneySync.IsApplyingRemote) return;
+                MoneySync.BroadcastAddMoney(addVal, displayMessage, reason);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"GameplayController.AddMoney patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     //  Toolbox.NewVmailThread — voicemail thread creation.
     //
     //  Most vmails are deterministic from world seed (case generation runs

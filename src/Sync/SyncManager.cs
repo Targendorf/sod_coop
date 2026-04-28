@@ -139,6 +139,11 @@ public static class SyncManager
             {
                 PlayerStateSync.OnPacketReceived(type, reader, senderId);
             }
+            // Money add/remove (40).
+            else if (type == PacketType.MoneyAdded)
+            {
+                MoneySync.OnPacketReceived(type, reader, senderId);
+            }
             // Player Packets: 10-29 (excluding 14, 15, 20-29 handled above)
             else if ((int)type >= 10 && (int)type <= 29)
             {
