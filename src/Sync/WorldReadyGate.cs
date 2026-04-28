@@ -83,6 +83,7 @@ public static class WorldReadyGate
         {
             WorldReadyAt = 0f;
             Plugin.Log.LogInfo("WorldReadyGate: world UNLOADED (returned to menu / between saves).");
+            BroadcastBudget.Reset();
             try { OnWorldUnready?.Invoke(); }
             catch (Exception ex) { Plugin.Log.LogError($"OnWorldUnready handler threw: {ex}"); }
         }

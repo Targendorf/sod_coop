@@ -34,6 +34,7 @@ public static class VmailSync
         if (WorldReadyGate.IsInInitGrace) return;
         if (IsApplyingRemote) return;
         if (thread == null) return;
+        if (!BroadcastBudget.TryConsume("vmail.created")) return;
 
         try
         {

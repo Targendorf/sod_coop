@@ -189,6 +189,7 @@ public static class EvidenceSync
         if (WorldReadyGate.IsInInitGrace) return;
         if (IsApplyingRemote) return;
         if (string.IsNullOrEmpty(evId)) return;
+        if (!BroadcastBudget.TryConsume("evidence.discovery")) return;
 
         try
         {
@@ -222,6 +223,7 @@ public static class EvidenceSync
         if (WorldReadyGate.IsInInitGrace) return;
         if (IsApplyingRemote) return;
         if (string.IsNullOrEmpty(evId)) return;
+        if (!BroadcastBudget.TryConsume("evidence.note")) return;
 
         try
         {
@@ -266,6 +268,7 @@ public static class EvidenceSync
         if (WorldReadyGate.IsInInitGrace) return;
         if (IsApplyingRemote) return;
         if (string.IsNullOrEmpty(evId)) return;
+        if (!BroadcastBudget.TryConsume("evidence.customname")) return;
 
         try
         {
