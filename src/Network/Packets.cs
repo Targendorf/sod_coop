@@ -117,6 +117,13 @@ public enum PacketType : byte
     /// </summary>
     ItemFlashlight = 22,
 
+    /// <summary>
+    /// One-shot combat / interaction action: MeleeAttack, Block, CounterAttack.
+    /// Cosmetic broadcast — actual NPC state changes (damage, death) flow
+    /// through the existing CitizenDeathSync / RecieveDamage paths.
+    /// </summary>
+    ItemAction = 23,
+
     #endregion
     
     #region World Sync Packets (30-59)

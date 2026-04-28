@@ -145,6 +145,29 @@ public static class InventorySync
         }
     }
 
+    public static void BroadcastAction(ItemActionKind action)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (IsApplyingRemote) return;
+
+        try
+        {
+            var packet = new ItemActionPacket
+            {
+                PlayerId = NetworkManager.LocalPlayerId,
+                Action   = (byte)action,
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            // Sequenced — late attack frames can be dropped, the next one stomps anyway.
+            NetworkManager.SendToAll(PacketType.ItemAction, _writer, DeliveryMethod.Sequenced);
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"InventorySync.BroadcastAction({action}): {ex.Message}");
+        }
+    }
+
     public static void BroadcastFlashlight(bool isOn)
     {
         if (!NetworkManager.IsConnected) return;
@@ -209,6 +232,17 @@ public static class InventorySync
                 if (rp == null) return;
                 IsApplyingRemote = true;
                 try { rp.ApplyFlashlight(p.IsOn); }
+                finally { IsApplyingRemote = false; }
+            }
+            else if (type == PacketType.ItemAction)
+            {
+                var p = new ItemActionPacket();
+                p.Deserialize(reader);
+                if (p.PlayerId == NetworkManager.LocalPlayerId) return;
+                var rp = RemotePlayerManager.GetPlayer(p.PlayerId);
+                if (rp == null) return;
+                IsApplyingRemote = true;
+                try { rp.ApplyAction(p.Action); }
                 finally { IsApplyingRemote = false; }
             }
         }

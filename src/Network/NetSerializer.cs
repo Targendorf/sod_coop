@@ -1257,6 +1257,29 @@ public struct ItemFlashlightPacket : INetPacket
 }
 
 /// <summary>
+/// One-shot combat action by a remote player. Cosmetic — actual NPC damage
+/// flows via CitizenDeathSync. Receiver fires a best-effort animator trigger
+/// matching the action kind.
+/// </summary>
+public enum ItemActionKind : byte
+{
+    MeleeAttack    = 0,
+    Block          = 1,
+    CounterAttack  = 2,
+}
+
+public struct ItemActionPacket : INetPacket
+{
+    public PacketType Type => PacketType.ItemAction;
+
+    public int  PlayerId;
+    public byte Action;        // ItemActionKind
+
+    public void Serialize(NetDataWriter w)   { w.Put(PlayerId); w.Put(Action); }
+    public void Deserialize(NetDataReader r) { PlayerId = r.GetInt(); Action = r.GetByte(); }
+}
+
+/// <summary>
 /// Item pickup event — keyed by Interactable.id.
 /// Sent after a successful FirstPersonItemController.PickUpItem so peers can
 /// hide the in-world object (it's now in the picker's inventory).

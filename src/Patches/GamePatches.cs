@@ -812,6 +812,66 @@ public static class GamePatches
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  One-shot combat actions (cosmetic broadcast).
+    //  Damage and death already flow via CitizenDeathSync; these patches just
+    //  let the OTHER player see your animation when you swing / block / counter.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.MeleeAttack))]
+    public static class FPItemController_MeleeAttack_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix()
+        {
+            try
+            {
+                if (InventorySync.IsApplyingRemote) return;
+                InventorySync.BroadcastAction(ItemActionKind.MeleeAttack);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"FPItemController.MeleeAttack patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.Block))]
+    public static class FPItemController_Block_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix()
+        {
+            try
+            {
+                if (InventorySync.IsApplyingRemote) return;
+                InventorySync.BroadcastAction(ItemActionKind.Block);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"FPItemController.Block patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.CounterAttack))]
+    public static class FPItemController_CounterAttack_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix()
+        {
+            try
+            {
+                if (InventorySync.IsApplyingRemote) return;
+                InventorySync.BroadcastAction(ItemActionKind.CounterAttack);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"FPItemController.CounterAttack patch: {ex.Message}");
+            }
+        }
+    }
+
     [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.PickUpItem))]
     public static class FPItemController_PickUpItem_Patch
     {

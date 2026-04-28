@@ -357,6 +357,52 @@ public class RemotePlayer : MonoBehaviour
         catch { /* animator quirks — non-fatal */ }
     }
 
+    /// <summary>
+    /// Fire a one-shot combat action animation. Walks the citizen animator's
+    /// parameters for a likely-matching trigger or bool — if none, logs once
+    /// and gives up (the wire event still went through; animation is cosmetic).
+    /// </summary>
+    [HideFromIl2Cpp]
+    public void ApplyAction(byte actionKind)
+    {
+        try
+        {
+            if (_animator == null) _animator = GetComponentInChildren<Animator>();
+            if (_animator == null) return;
+
+            // Candidate parameter names per action.
+            string[] candidates = actionKind switch
+            {
+                0 => new[] { "MeleeAttack", "Attack", "Swing", "Punch", "Strike", "Hit" },
+                1 => new[] { "Block", "Blocking", "Guard", "Defend" },
+                2 => new[] { "CounterAttack", "Counter", "Riposte" },
+                _ => System.Array.Empty<string>(),
+            };
+
+            var pars = _animator.parameters;
+            if (pars == null) return;
+            for (int i = 0; i < pars.Length; i++)
+            {
+                var p = pars[i];
+                if (p == null || string.IsNullOrEmpty(p.name)) continue;
+                for (int j = 0; j < candidates.Length; j++)
+                {
+                    if (!string.Equals(p.name, candidates[j], System.StringComparison.OrdinalIgnoreCase)) continue;
+                    if (p.type == AnimatorControllerParameterType.Trigger)
+                        _animator.SetTrigger(p.nameHash);
+                    else if (p.type == AnimatorControllerParameterType.Bool)
+                    {
+                        // Bool: pulse on / schedule off via flag-only. Simpler:
+                        // set true, leave it; SoD's animator state should clear it.
+                        _animator.SetBool(p.nameHash, true);
+                    }
+                    return;
+                }
+            }
+        }
+        catch { /* animator quirks — non-fatal */ }
+    }
+
     /// <summary>Apply remote flashlight on / off.</summary>
     [HideFromIl2Cpp]
     public void ApplyFlashlight(bool isOn)
