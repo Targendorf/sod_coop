@@ -1079,6 +1079,32 @@ public struct NpcDamagePacket : INetPacket
 }
 
 /// <summary>
+/// Player outfit category. Client-only outbound: when the local player's
+/// <c>CitizenOutfitController.SetCurrentOutfit</c> is called, host applies
+/// the same category to the sender's twin so guard / co-worker checks see
+/// the disguise.
+/// </summary>
+public struct PlayerOutfitPacket : INetPacket
+{
+    public PacketType Type => PacketType.PlayerOutfit;
+
+    public int  PlayerId;
+    public byte Category; // ClothesPreset.OutfitCategory enum
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(PlayerId);
+        w.Put(Category);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        PlayerId = r.GetInt();
+        Category = r.GetByte();
+    }
+}
+
+/// <summary>
 /// Player suspicion / trespass flags. Client-only outbound: each client
 /// polls its own <c>Player.Instance</c> Actor-level flags every tick, and
 /// when any change broadcasts this packet. Host applies the flags to the

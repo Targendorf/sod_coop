@@ -576,5 +576,14 @@ public enum PacketType : byte
     /// </summary>
     PlayerSuspicion = 106,
 
+    /// <summary>
+    /// Player outfit / disguise change (client → host). When a player
+    /// changes their <c>currentOutfit</c> via <c>CitizenOutfitController.SetCurrentOutfit</c>
+    /// — putting on a guard uniform, taking off work clothes, etc. —
+    /// host applies the same outfit category to the sender's twin citizen
+    /// so SoD's guard / co-worker recognition logic treats them correctly.
+    /// </summary>
+    PlayerOutfit = 107,
+
     #endregion
 }

@@ -1565,6 +1565,43 @@ public static class GamePatches
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    //  Outfit / disguise — when the LOCAL player's CitizenOutfitController
+    //  switches outfit category (security uniform on, work-issue off, etc.)
+    //  broadcast to the host so the twin citizen wears the same. Host-side
+    //  guard / co-worker checks then see the disguise.
+    //
+    //  NPC outfit changes (work shift / sleep clothes) are skipped — they
+    //  fire on the host's AI tick and we don't want to round-trip them.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(CitizenOutfitController), nameof(CitizenOutfitController.SetCurrentOutfit))]
+    public static class CitizenOutfitController_SetCurrentOutfit_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(CitizenOutfitController __instance, ClothesPreset.OutfitCategory category)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (PlayerOutfitSync.IsApplyingRemote) return;
+
+                // Fire only when the patched controller is the LOCAL player's.
+                var local = global::Player.Instance;
+                if (local == null) return;
+                var localCtrl = local.outfitController;
+                if (localCtrl == null) return;
+                if (__instance.Pointer != localCtrl.Pointer) return;
+
+                PlayerOutfitSync.BroadcastSetOutfit((byte)category);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"CitizenOutfitController.SetCurrentOutfit patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     //  Phase SJ.1 — Side-job awareness sync.
     //
     //  Three patches:

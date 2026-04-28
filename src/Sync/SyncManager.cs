@@ -179,6 +179,11 @@ public static class SyncManager
             {
                 PlayerSuspicionSync.OnPacketReceived(type, reader, senderId);
             }
+            // Outfit / disguise category (107) — client → host, applied to twin.
+            else if (type == PacketType.PlayerOutfit)
+            {
+                PlayerOutfitSync.OnPacketReceived(type, reader, senderId);
+            }
             // Elevator floor call (32).
             else if (type == PacketType.ElevatorCall)
             {
