@@ -103,13 +103,14 @@ public static class CoopMenuController
 
     private static void OnNetworkConnected()
     {
-        // Handshake complete (host: from StartHost; client: after handshake or
-        // post-character-submit). Jump straight into the lobby panel.
+        // Client: handshake complete → jump to Lobby so they see host status.
+        // Host: stay on HostPanel so the join code stays visible / copyable.
+        // (StartHost fires OnConnected synchronously; switching here would
+        // hide HostPanel before the user ever sees the rendered code.)
         try
         {
             if (_root == null) BuildCanvas();
-            // Don't auto-pop the menu open if user has it closed — only switch
-            // panel state so when they reopen they're in the right place.
+            if (NetworkManager.IsHost) return;
             ShowPanel(PanelKind.Lobby);
         }
         catch (System.Exception ex)
