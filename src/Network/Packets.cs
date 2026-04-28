@@ -148,6 +148,19 @@ public enum PacketType : byte
     /// </summary>
     NpcStunned = 27,
 
+    /// <summary>
+    /// Placer picked up / removed a previously-placed item. Receivers destroy
+    /// the mirrored local Interactable so the visual goes away.
+    /// </summary>
+    ItemPlaceRemove = 28,
+
+    /// <summary>
+    /// Player threw a coin / food / grenade / mug. Carries the same diff-style
+    /// payload as placements: the spawned projectile Interactable's preset +
+    /// world transform, so receivers can spawn an identical physics object.
+    /// </summary>
+    ItemThrow = 29,
+
     #endregion
     
     #region World Sync Packets (30-59)

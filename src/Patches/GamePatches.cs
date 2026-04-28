@@ -973,6 +973,77 @@ public static class GamePatches
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    //  Throws — ThrowCoin, ThrowFood, ThrowGrenade.  Diff-snapshot approach:
+    //  the throw method spawns a projectile Interactable; we capture the new
+    //  entries via interactableDirectory.Count delta and broadcast preset +
+    //  initial transform + Rigidbody velocities. Receivers spawn an identical
+    //  physics object on their machine.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.ThrowCoin))]
+    public static class FPItemController_ThrowCoin_Patch
+    {
+        [HarmonyPrefix]
+        public static void Prefix(out int __state) => __state = InventorySync.SnapshotForThrow();
+
+        [HarmonyPostfix]
+        public static void Postfix(int __state)
+        {
+            try
+            {
+                if (InventorySync.IsApplyingRemote) return;
+                InventorySync.BroadcastThrownSince(__state);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"FPItemController.ThrowCoin patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.ThrowFood))]
+    public static class FPItemController_ThrowFood_Patch
+    {
+        [HarmonyPrefix]
+        public static void Prefix(out int __state) => __state = InventorySync.SnapshotForThrow();
+
+        [HarmonyPostfix]
+        public static void Postfix(int __state)
+        {
+            try
+            {
+                if (InventorySync.IsApplyingRemote) return;
+                InventorySync.BroadcastThrownSince(__state);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"FPItemController.ThrowFood patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.ThrowGrenade))]
+    public static class FPItemController_ThrowGrenade_Patch
+    {
+        [HarmonyPrefix]
+        public static void Prefix(out int __state) => __state = InventorySync.SnapshotForThrow();
+
+        [HarmonyPostfix]
+        public static void Postfix(int __state)
+        {
+            try
+            {
+                if (InventorySync.IsApplyingRemote) return;
+                InventorySync.BroadcastThrownSince(__state);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"FPItemController.ThrowGrenade patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     //  Phase 3b — NPC state mutations & player-to-NPC item transfers.
     //
     //  We patch the LEAF state-changers (Human.TryGiveItem,
@@ -1083,6 +1154,13 @@ public static class GamePatches
                 if (pickUpThis == null) return;
                 if (ItemSync.IsApplyingRemote) return;
                 ItemSync.BroadcastPickup(pickUpThis.id);
+
+                // If we picked up one of our OWN previously placed items
+                // (codebreaker, doorwedge, etc), tell peers to nuke their
+                // mirror as well. ItemSync's pickup packet alone wouldn't
+                // help them because their Interactable has a different local id.
+                if (InventorySync.IsLocalPlacement(pickUpThis.id))
+                    InventorySync.BroadcastPlaceRemove(pickUpThis.id);
             }
             catch (System.Exception ex)
             {

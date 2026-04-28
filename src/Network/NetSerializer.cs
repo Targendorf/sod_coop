@@ -1367,6 +1367,64 @@ public struct NpcStunnedPacket : INetPacket
 }
 
 /// <summary>
+/// Placer removed (picked up / destroyed) a previously placed item.
+/// Receiver looks up its mirrored local Interactable via
+/// (PlayerId, PlacerSourceId) and destroys it.
+/// </summary>
+public struct ItemPlaceRemovePacket : INetPacket
+{
+    public PacketType Type => PacketType.ItemPlaceRemove;
+
+    public int PlayerId;          // who placed it originally
+    public int PlacerSourceId;    // the placement's id on placer's machine
+
+    public void Serialize(NetDataWriter w)   { w.Put(PlayerId); w.Put(PlacerSourceId); }
+    public void Deserialize(NetDataReader r) { PlayerId = r.GetInt(); PlacerSourceId = r.GetInt(); }
+}
+
+/// <summary>
+/// Player threw an item (coin, food, grenade, mug). Diff approach as
+/// placements: prefix snapshots the directory count, postfix walks every
+/// new Interactable and broadcasts a packet with preset name + world
+/// transform + linear/angular velocity so receivers can spawn an identical
+/// physics-driven projectile.
+/// </summary>
+public struct ItemThrowPacket : INetPacket
+{
+    public PacketType Type => PacketType.ItemThrow;
+
+    public int     PlayerId;
+    public int     PlacerSourceId;     // for cross-machine cleanup if needed
+    public string  PresetName;
+    public Vector3 Position;
+    public Vector3 EulerRotation;
+    public Vector3 LinearVelocity;
+    public Vector3 AngularVelocity;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(PlayerId);
+        w.Put(PlacerSourceId);
+        w.Put(PresetName ?? "");
+        w.Put(Position);
+        w.Put(EulerRotation);
+        w.Put(LinearVelocity);
+        w.Put(AngularVelocity);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        PlayerId        = r.GetInt();
+        PlacerSourceId  = r.GetInt();
+        PresetName      = r.GetString();
+        Position        = r.GetVector3();
+        EulerRotation   = r.GetVector3();
+        LinearVelocity  = r.GetVector3();
+        AngularVelocity = r.GetVector3();
+    }
+}
+
+/// <summary>
 /// Visual mock of a tactical placement (codebreaker, doorwedge, tracker, mine).
 /// The placer's machine has the real Interactable; receivers spawn a stripped
 /// copy of the preset prefab as decoration. PlacerSourceId is the placer's

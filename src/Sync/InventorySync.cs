@@ -158,11 +158,22 @@ public static class InventorySync
     // ─────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// All mock visuals we've spawned for remote-placed items, keyed by
-    /// (placerPlayerId, placerInteractableId). Tracked so we could later
-    /// support a "placement removed" packet that nukes the mock.
+    /// On the receiver side: maps (placerPlayerId, placerInteractableId) →
+    /// the local <c>Interactable</c> we created to mirror their placement.
+    /// Used to translate placer-side ids when they later destroy / pick up
+    /// the placement.
     /// </summary>
-    private static readonly Dictionary<long, GameObject> _placedMocks = new();
+    private static readonly Dictionary<long, Interactable> _remotePlacements = new();
+
+    /// <summary>
+    /// On the placer side: ids of Interactables we ourselves placed. When a
+    /// pickup / destruction patch fires for one of these, we broadcast an
+    /// <see cref="ItemPlaceRemovePacket"/> so peers can clean up their mirror.
+    /// </summary>
+    private static readonly HashSet<int> _myPlacements = new();
+
+    public static bool IsLocalPlacement(int interactableId)
+        => _myPlacements.Contains(interactableId);
 
     /// <summary>Lazy InteractablePreset name → preset registry.</summary>
     private static Dictionary<string, InteractablePreset> _presetByName;
@@ -243,6 +254,10 @@ public static class InventorySync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.ItemPlaceVisual, _writer, DeliveryMethod.ReliableOrdered);
+
+            // Remember we placed this so a future pickup/destruction can
+            // emit a paired ItemPlaceRemovePacket.
+            _myPlacements.Add(item.id);
             Plugin.Log.LogInfo($"[InventorySync] place broadcast preset=\"{preset.name}\" id={item.id} pos={pos}");
         }
         catch (System.Exception ex)
@@ -251,33 +266,98 @@ public static class InventorySync
         }
     }
 
+    /// <summary>
+    /// Emit a placement-removed packet so peers tear down their mirror.
+    /// Called from the pickup patch (PickUpItem postfix) when the picked-up
+    /// item is one of our tracked placements.
+    /// </summary>
+    public static void BroadcastPlaceRemove(int sourceId)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (!_myPlacements.Contains(sourceId)) return;
+        _myPlacements.Remove(sourceId);
+
+        try
+        {
+            var packet = new ItemPlaceRemovePacket
+            {
+                PlayerId       = NetworkManager.LocalPlayerId,
+                PlacerSourceId = sourceId,
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.ItemPlaceRemove, _writer, DeliveryMethod.ReliableOrdered);
+            Plugin.Log.LogInfo($"[InventorySync] place-remove broadcast id={sourceId}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"InventorySync.BroadcastPlaceRemove: {ex.Message}");
+        }
+    }
+
     private static void ApplyPlace(ItemPlaceVisualPacket p)
     {
         try
         {
             var preset = ResolvePreset(p.PresetName);
-            if (preset == null || preset.prefab == null)
+            if (preset == null)
             {
                 Plugin.Log.LogWarning($"[InventorySync] ApplyPlace: preset \"{p.PresetName}\" not found");
                 return;
             }
 
-            // Don't double-spawn if we somehow already have a mock for this id.
             long key = MockKey(p.PlayerId, p.PlacerSourceId);
-            if (_placedMocks.TryGetValue(key, out var existing) && existing != null) return;
+            if (_remotePlacements.TryGetValue(key, out var existing) && existing != null) return;
 
-            var go = Object.Instantiate(preset.prefab);
-            if (go == null) return;
+            // Spawn a REAL, registered Interactable via the same factory SoD
+            // uses internally. This means receivers can scan a remote-placed
+            // codebreaker, walk past a remote-placed wedge to keep a door
+            // open, etc. — full functionality, not just a visual mock.
+            //
+            // belongsTo / writer / recipient are passed as null because each
+            // machine has its own local Player and humanIDs don't align.
+            // Falls back to a stripped visual instantiation if the factory
+            // refuses (preset incompatible, missing context, etc.).
+            Interactable created = null;
+            try
+            {
+                var creator = InteractableCreator.Instance;
+                if (creator != null)
+                {
+                    created = creator.CreateWorldInteractable(
+                        preset,
+                        belongsTo:  null,
+                        writer:     null,
+                        recevier:   null,
+                        worldPos:   p.Position,
+                        worldEuler: p.EulerRotation,
+                        passedVars: null,
+                        passedObject: null,
+                        ddsOverride:  "");
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[InventorySync] CreateWorldInteractable failed for \"{p.PresetName}\": {ex.Message} — falling back to visual mock");
+            }
 
-            go.name = $"CoopPlaceMock_{p.PlayerId}_{p.PlacerSourceId}_{p.PresetName}";
-            go.transform.position    = p.Position;
-            go.transform.eulerAngles = p.EulerRotation;
+            if (created == null)
+            {
+                // Visual-mock fallback (legacy path for presets the factory rejects).
+                if (preset.prefab == null) return;
+                var go = Object.Instantiate(preset.prefab);
+                if (go == null) return;
+                go.name = $"CoopPlaceMock_{p.PlayerId}_{p.PlacerSourceId}_{p.PresetName}";
+                go.transform.position    = p.Position;
+                go.transform.eulerAngles = p.EulerRotation;
+                StripPlacementMockComponents(go);
+                Plugin.Log.LogInfo($"[InventorySync] applied place (mock fallback) preset=\"{p.PresetName}\" pos={p.Position}");
+                // No mapping stored for fallback mocks — they go away on disconnect via ClearAllMocks.
+                return;
+            }
 
-            // Strip behaviour components — visual only.
-            StripPlacementMockComponents(go);
-
-            _placedMocks[key] = go;
-            Plugin.Log.LogInfo($"[InventorySync] applied place mock preset=\"{p.PresetName}\" pos={p.Position}");
+            _remotePlacements[key] = created;
+            Plugin.Log.LogInfo($"[InventorySync] applied place (real Interactable id={created.id}) preset=\"{p.PresetName}\" pos={p.Position}");
         }
         catch (System.Exception ex)
         {
@@ -285,10 +365,40 @@ public static class InventorySync
         }
     }
 
+    private static void ApplyPlaceRemove(ItemPlaceRemovePacket p)
+    {
+        long key = MockKey(p.PlayerId, p.PlacerSourceId);
+        try
+        {
+            if (_remotePlacements.TryGetValue(key, out var inter) && inter != null)
+            {
+                // Destroy spawnedObject + drop from interactableDirectory.
+                try
+                {
+                    var go = inter.spawnedObject;
+                    if (go != null) Object.Destroy(go);
+                }
+                catch { }
+                try
+                {
+                    var dir = CityData.Instance?.interactableDirectory;
+                    if (dir != null) dir.Remove(inter);
+                }
+                catch { }
+                _remotePlacements.Remove(key);
+                Plugin.Log.LogInfo($"[InventorySync] applied place-remove placerId={p.PlayerId} sourceId={p.PlacerSourceId}");
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"InventorySync.ApplyPlaceRemove failed: {ex.Message}");
+        }
+    }
+
     /// <summary>
     /// Strip components that would re-run game logic on the placement mock
     /// (Interactable, Collider, Rigidbody, AudioSource, …). Leave only the
-    /// visual rendering hierarchy.
+    /// visual rendering hierarchy. Used only by the visual-mock fallback path.
     /// </summary>
     private static void StripPlacementMockComponents(GameObject go)
     {
@@ -351,21 +461,186 @@ public static class InventorySync
     }
 
     /// <summary>
-    /// Tear down all mock visuals — called when network disconnects so we
-    /// don't leave dangling decoration in the world.
+    /// Tear down every remote-mirrored placement on disconnect so we don't
+    /// leave dangling Interactables in the world.
     /// </summary>
     public static void ClearAllMocks()
     {
         try
         {
-            foreach (var kv in _placedMocks)
+            foreach (var kv in _remotePlacements)
             {
-                if (kv.Value != null) Object.Destroy(kv.Value);
+                var inter = kv.Value;
+                if (inter == null) continue;
+                try
+                {
+                    var go = inter.spawnedObject;
+                    if (go != null) Object.Destroy(go);
+                }
+                catch { }
+                try
+                {
+                    var dir = CityData.Instance?.interactableDirectory;
+                    if (dir != null) dir.Remove(inter);
+                }
+                catch { }
             }
         }
         catch { }
-        _placedMocks.Clear();
+        _remotePlacements.Clear();
+        _myPlacements.Clear();
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Throws (coin / food / grenade / mug / consumables)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Same diff approach as placements — patches snapshot interactableDirectory
+    /// count before the throw and walk new entries after. For each new
+    /// projectile, capture its preset + transform + Rigidbody velocities and
+    /// broadcast so receivers can spawn an identical physics object.
+    /// </summary>
+    public static void BroadcastThrownSince(int snapshotCount)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (IsApplyingRemote) return;
+
+        try
+        {
+            var dir = CityData.Instance?.interactableDirectory;
+            if (dir == null) return;
+            if (dir.Count <= snapshotCount) return;
+
+            for (int i = snapshotCount; i < dir.Count; i++)
+            {
+                var item = dir[i];
+                if (item == null) continue;
+                BroadcastThrow(item);
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"InventorySync.BroadcastThrownSince: {ex.Message}");
+        }
+    }
+
+    private static void BroadcastThrow(Interactable item)
+    {
+        try
+        {
+            var preset = item.preset;
+            if (preset == null || string.IsNullOrEmpty(preset.name)) return;
+
+            Vector3 pos     = item.wPos;
+            Vector3 euler   = Vector3.zero;
+            Vector3 linVel  = Vector3.zero;
+            Vector3 angVel  = Vector3.zero;
+            try
+            {
+                var go = item.spawnedObject;
+                if (go != null && go.transform != null)
+                {
+                    pos   = go.transform.position;
+                    euler = go.transform.eulerAngles;
+                    var rb = go.GetComponent<Rigidbody>();
+                    if (rb != null)
+                    {
+                        linVel = rb.velocity;
+                        angVel = rb.angularVelocity;
+                    }
+                }
+            }
+            catch { }
+
+            var packet = new ItemThrowPacket
+            {
+                PlayerId        = NetworkManager.LocalPlayerId,
+                PlacerSourceId  = item.id,
+                PresetName      = preset.name,
+                Position        = pos,
+                EulerRotation   = euler,
+                LinearVelocity  = linVel,
+                AngularVelocity = angVel,
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.ItemThrow, _writer, DeliveryMethod.ReliableOrdered);
+
+            // Throws can also be later picked up — track for symmetry with
+            // placements (a thrown coin a player walks over is a pickup that
+            // should clean the mirror on peers).
+            _myPlacements.Add(item.id);
+            Plugin.Log.LogInfo($"[InventorySync] throw broadcast preset=\"{preset.name}\" id={item.id} v={linVel.magnitude:F1}m/s");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"InventorySync.BroadcastThrow: {ex.Message}");
+        }
+    }
+
+    private static void ApplyThrow(ItemThrowPacket p)
+    {
+        try
+        {
+            var preset = ResolvePreset(p.PresetName);
+            if (preset == null)
+            {
+                Plugin.Log.LogWarning($"[InventorySync] ApplyThrow: preset \"{p.PresetName}\" not found");
+                return;
+            }
+
+            long key = MockKey(p.PlayerId, p.PlacerSourceId);
+            if (_remotePlacements.TryGetValue(key, out var existing) && existing != null) return;
+
+            Interactable created = null;
+            try
+            {
+                var creator = InteractableCreator.Instance;
+                if (creator != null)
+                {
+                    created = creator.CreateWorldInteractable(
+                        preset, null, null, null,
+                        p.Position, p.EulerRotation,
+                        null, null, "");
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"[InventorySync] ApplyThrow CreateWorldInteractable: {ex.Message}");
+            }
+
+            if (created == null) return;
+
+            // Apply linear/angular velocity to give the projectile its proper
+            // arc. SoD prefabs use Rigidbody for thrown objects; if absent
+            // the throw becomes static which is acceptable degradation.
+            try
+            {
+                var rb = created.spawnedObject?.GetComponent<Rigidbody>();
+                if (rb != null)
+                {
+                    rb.velocity        = p.LinearVelocity;
+                    rb.angularVelocity = p.AngularVelocity;
+                }
+            }
+            catch { }
+
+            _remotePlacements[key] = created;
+            Plugin.Log.LogInfo($"[InventorySync] applied throw (real id={created.id}) preset=\"{p.PresetName}\"");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"InventorySync.ApplyThrow failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Diff snapshot helper for the four <c>Throw*</c> patches. Identical to
+    /// <see cref="SnapshotInteractableCount"/> — kept under a separate name
+    /// for code readability at call sites.
+    /// </summary>
+    public static int SnapshotForThrow() => SnapshotInteractableCount();
 
     // ─────────────────────────────────────────────────────────────────────────
     //  Phase 3b — NPC state mutations & player-to-NPC item transfer.
@@ -708,6 +983,24 @@ public static class InventorySync
                 p.Deserialize(reader);
                 if (p.SenderId == NetworkManager.LocalPlayerId) return;
                 ApplyStunned(p);
+            }
+            else if (type == PacketType.ItemPlaceRemove)
+            {
+                var p = new ItemPlaceRemovePacket();
+                p.Deserialize(reader);
+                if (p.PlayerId == NetworkManager.LocalPlayerId) return;
+                IsApplyingRemote = true;
+                try { ApplyPlaceRemove(p); }
+                finally { IsApplyingRemote = false; }
+            }
+            else if (type == PacketType.ItemThrow)
+            {
+                var p = new ItemThrowPacket();
+                p.Deserialize(reader);
+                if (p.PlayerId == NetworkManager.LocalPlayerId) return;
+                IsApplyingRemote = true;
+                try { ApplyThrow(p); }
+                finally { IsApplyingRemote = false; }
             }
         }
         catch (System.Exception ex)
