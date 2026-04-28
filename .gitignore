@@ -27,5 +27,6 @@ packages/
 Directory.Build.user.props
 appsettings.Development.json
 
-# Decompiled game source — reference only, large, not for the repo
-Assembly-CSharp_Dump/
+# Decompiled game source — kept in the repo so AI assistants and
+# contributors can grep IL2CPP-generated wrappers without needing
+# the game installed locally. Reference only, do not edit.
