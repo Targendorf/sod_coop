@@ -637,6 +637,54 @@ public static class GamePatches
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Interactable.AddNewDynamicFingerprint — player or NPC leaves a print.
+    //  Interactable.RemoveManuallyCreatedFingerprints — bulk-clear of manual prints.
+    //
+    //  Each side broadcasts its own contact events; the host also forwards
+    //  NPC-driven events (clients have AI disabled so NPC contact never fires
+    //  on them locally). Receivers replay the same call under
+    //  FingerprintSync.IsApplyingRemote to suppress echo.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(Interactable), nameof(Interactable.AddNewDynamicFingerprint))]
+    public static class Interactable_AddNewDynamicFingerprint_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Interactable __instance, Human from, Interactable.PrintLife life)
+        {
+            try
+            {
+                if (__instance == null || from == null) return;
+                if (FingerprintSync.IsApplyingRemote) return;
+                FingerprintSync.BroadcastAdd(__instance.id, from.humanID, (byte)life);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"Interactable.AddNewDynamicFingerprint patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(Interactable), nameof(Interactable.RemoveManuallyCreatedFingerprints))]
+    public static class Interactable_RemoveManuallyCreatedFingerprints_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Interactable __instance)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (FingerprintSync.IsApplyingRemote) return;
+                FingerprintSync.BroadcastClearManual(__instance.id);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"Interactable.RemoveManuallyCreatedFingerprints patch: {ex.Message}");
+            }
+        }
+    }
+
     [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.PickUpItem))]
     public static class FPItemController_PickUpItem_Patch
     {

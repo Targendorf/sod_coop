@@ -193,6 +193,20 @@ public enum PacketType : byte
     /// </summary>
     SwitchState = 52,
 
+    /// <summary>
+    /// Add a dynamic fingerprint on an Interactable. Replays
+    /// Interactable.AddNewDynamicFingerprint(human, life). Each side may
+    /// generate its own internal print id/seed — gameplay queries prints by
+    /// (interactable, human) pair, so identical id is not required.
+    /// </summary>
+    FingerprintAdd = 53,
+
+    /// <summary>
+    /// Clear all manually-removed fingerprints on an Interactable.
+    /// Replays Interactable.RemoveManuallyCreatedFingerprints.
+    /// </summary>
+    FingerprintClearManual = 54,
+
     #endregion
     
     #region Case/Investigation Sync Packets (60-79)

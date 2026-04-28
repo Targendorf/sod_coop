@@ -1029,6 +1029,55 @@ public struct WeatherStatePacket : INetPacket
 }
 
 /// <summary>
+/// Player or NPC left a dynamic fingerprint on an Interactable.
+/// Replays <c>Interactable.AddNewDynamicFingerprint(human, life)</c> on the
+/// receiver. SenderId is included for echo dedup (host reflects packets back
+/// in star topology). The receiver's local print object will have a different
+/// internal id/seed from ours — that's fine, gameplay matches prints by
+/// (interactable, human) pair.
+/// </summary>
+public struct FingerprintAddPacket : INetPacket
+{
+    public PacketType Type => PacketType.FingerprintAdd;
+
+    public int  InteractableId;
+    public int  HumanId;
+    public byte Life;       // Interactable.PrintLife enum value
+    public int  SenderId;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(InteractableId);
+        w.Put(HumanId);
+        w.Put(Life);
+        w.Put(SenderId);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        InteractableId = r.GetInt();
+        HumanId        = r.GetInt();
+        Life           = r.GetByte();
+        SenderId       = r.GetInt();
+    }
+}
+
+/// <summary>
+/// All manually-placed fingerprints on an Interactable were cleared.
+/// Receiver re-invokes <c>RemoveManuallyCreatedFingerprints</c> locally.
+/// </summary>
+public struct FingerprintClearManualPacket : INetPacket
+{
+    public PacketType Type => PacketType.FingerprintClearManual;
+
+    public int InteractableId;
+    public int SenderId;
+
+    public void Serialize(NetDataWriter w)   { w.Put(InteractableId); w.Put(SenderId); }
+    public void Deserialize(NetDataReader r) { InteractableId = r.GetInt(); SenderId = r.GetInt(); }
+}
+
+/// <summary>
 /// Generic switch toggle (drawer, cabinet, fridge door, safe, etc.) — keyed by
 /// Interactable.id, mirrors the sw0 bool. Receivers call Interactable.SetSwitchState
 /// locally with interactor=null so SoD treats it as an unattributed change.

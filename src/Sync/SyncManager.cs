@@ -127,6 +127,13 @@ public static class SyncManager
             {
                 WorldStateSync.OnPacketReceived(type, reader, senderId);
             }
+            // Fingerprint events (53, 54) — own handler, captured before
+            // generic 30-49 dispatch so WorldSync doesn't grab them.
+            else if (type == PacketType.FingerprintAdd
+                  || type == PacketType.FingerprintClearManual)
+            {
+                FingerprintSync.OnPacketReceived(type, reader, senderId);
+            }
             // Weather (34) — host-authoritative, dedicated handler.
             else if (type == PacketType.WeatherSync)
             {
