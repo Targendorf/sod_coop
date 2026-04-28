@@ -563,6 +563,59 @@ public struct DoorStatePacket : INetPacket
     public void Deserialize(NetDataReader r) { InteractableId = r.GetInt(); IsClosed = r.GetBool(); }
 }
 
+/// <summary>
+/// Door locked / unlocked. Same id model as DoorStatePacket (open/close).
+/// Mirrors NewDoor.SetLocked on the receiver. Actor reference is passed as
+/// null because we don't carry attribution across the wire.
+/// </summary>
+public struct DoorLockStatePacket : INetPacket
+{
+    public PacketType Type => PacketType.DoorLockState;
+
+    public int  InteractableId;
+    public bool IsLocked;
+    public bool PlaySound;
+
+    public void Serialize(NetDataWriter w)   { w.Put(InteractableId); w.Put(IsLocked); w.Put(PlaySound); }
+    public void Deserialize(NetDataReader r) { InteractableId = r.GetInt(); IsLocked = r.GetBool(); PlaySound = r.GetBool(); }
+}
+
+/// <summary>Computer login / logout — Mirrors ComputerController.SetLoggedIn.</summary>
+public struct ComputerLoginPacket : INetPacket
+{
+    public PacketType Type => PacketType.ComputerLogin;
+
+    public int InteractableId;     // computer's interactable.id
+    public int HumanId;            // -1 = logged out
+
+    public void Serialize(NetDataWriter w)   { w.Put(InteractableId); w.Put(HumanId); }
+    public void Deserialize(NetDataReader r) { InteractableId = r.GetInt(); HumanId = r.GetInt(); }
+}
+
+/// <summary>Computer foreground app — Mirrors ComputerController.SetComputerApp.</summary>
+public struct ComputerAppPacket : INetPacket
+{
+    public PacketType Type => PacketType.ComputerApp;
+
+    public int    InteractableId;
+    public string PresetName;      // CruncherAppPreset.name (empty = null app, returns to OS)
+    public bool   ForceUpdate;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(InteractableId);
+        w.Put(PresetName ?? "");
+        w.Put(ForceUpdate);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        InteractableId = r.GetInt();
+        PresetName     = r.GetString();
+        ForceUpdate    = r.GetBool();
+    }
+}
+
 /// <summary>Light on/off — keyed by Interactable.id of the light's controller.</summary>
 public struct LightStatePacket : INetPacket
 {

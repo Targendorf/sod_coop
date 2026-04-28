@@ -44,6 +44,33 @@ public static class WorldStateSync
         }
     }
 
+    /// <summary>
+    /// Door locked / unlocked. Used by lockpicking, key use, scripted unlock —
+    /// any path that calls NewDoor.SetLocked.
+    /// </summary>
+    public static void BroadcastDoorLockState(int interactableId, bool isLocked, bool playSound)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (IsApplyingRemote) return;
+
+        try
+        {
+            var packet = new DoorLockStatePacket
+            {
+                InteractableId = interactableId,
+                IsLocked       = isLocked,
+                PlaySound      = playSound,
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.DoorLockState, _writer, DeliveryMethod.ReliableOrdered);
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"BroadcastDoorLockState({interactableId}): {ex.Message}");
+        }
+    }
+
     public static void BroadcastLightState(int interactableId, bool isOn)
     {
         if (!NetworkManager.IsConnected) return;
@@ -111,6 +138,12 @@ public static class WorldStateSync
                 p.Deserialize(reader);
                 ApplySwitchState(p);
             }
+            else if (type == PacketType.DoorLockState)
+            {
+                var p = new DoorLockStatePacket();
+                p.Deserialize(reader);
+                ApplyDoorLockState(p);
+            }
         }
         catch (System.Exception ex)
         {
@@ -161,6 +194,29 @@ public static class WorldStateSync
         catch (System.Exception ex)
         {
             Plugin.Log.LogWarning($"ApplySwitchState({p.InteractableId}): {ex.Message}");
+        }
+        finally
+        {
+            IsApplyingRemote = false;
+        }
+    }
+
+    private static void ApplyDoorLockState(DoorLockStatePacket p)
+    {
+        var door = FindDoorByInteractableId(p.InteractableId);
+        if (door == null) return;
+        if (door.isLocked == p.IsLocked) return;
+
+        IsApplyingRemote = true;
+        try
+        {
+            // SetLocked(val, actor, playSound). Actor=null is fine, it's only
+            // used for sound attribution / awareness propagation.
+            door.SetLocked(p.IsLocked, null, p.PlaySound);
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"ApplyDoorLockState({p.InteractableId}): {ex.Message}");
         }
         finally
         {

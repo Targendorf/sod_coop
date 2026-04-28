@@ -185,6 +185,24 @@ public enum PacketType : byte
     /// </summary>
     ElevatorCall = 32,
 
+    /// <summary>
+    /// Door locked / unlocked state changed. Mirrors NewDoor.SetLocked.
+    /// Covers lockpicking completion, key use, scripted unlock.
+    /// </summary>
+    DoorLockState = 33,
+
+    /// <summary>
+    /// A Human logged in / out of a computer. Mirrors
+    /// ComputerController.SetLoggedIn(Human).
+    /// </summary>
+    ComputerLogin = 34,
+
+    /// <summary>
+    /// Computer's foreground app changed. Mirrors
+    /// ComputerController.SetComputerApp(CruncherAppPreset, forceUpdate).
+    /// </summary>
+    ComputerApp = 35,
+
     #endregion
     
     #region World Sync Packets (30-59)

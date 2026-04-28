@@ -1088,6 +1088,80 @@ public static class GamePatches
     // ─────────────────────────────────────────────────────────────────────────
 
     // ─────────────────────────────────────────────────────────────────────────
+    //  NewDoor.SetLocked — covers lockpicking, key use, scripted unlock.
+    //  Patches the leaf state changer; every code path that flips door's
+    //  locked state goes through here.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(NewDoor), nameof(NewDoor.SetLocked))]
+    public static class NewDoor_SetLocked_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(NewDoor __instance, bool val, bool playSound)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (WorldStateSync.IsApplyingRemote) return;
+                var inter = __instance.doorInteractable;
+                if (inter == null) return;
+                WorldStateSync.BroadcastDoorLockState(inter.id, val, playSound);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"NewDoor.SetLocked patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  ComputerController state — login + foreground app.
+    //  Power on/off already covered by Interactable.SetSwitchState patch.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(ComputerController), nameof(ComputerController.SetLoggedIn))]
+    public static class ComputerController_SetLoggedIn_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(ComputerController __instance, Human newLogIn)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (ComputerSync.IsApplyingRemote) return;
+                var inter = __instance.ic?.interactable;
+                if (inter == null) return;
+                ComputerSync.BroadcastLogin(inter.id, newLogIn != null ? newLogIn.humanID : -1);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"ComputerController.SetLoggedIn patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(ComputerController), nameof(ComputerController.SetComputerApp))]
+    public static class ComputerController_SetComputerApp_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(ComputerController __instance, CruncherAppPreset newApp, bool forceUpdate)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (ComputerSync.IsApplyingRemote) return;
+                var inter = __instance.ic?.interactable;
+                if (inter == null) return;
+                ComputerSync.BroadcastApp(inter.id, newApp != null ? newApp.name : "", forceUpdate);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"ComputerController.SetComputerApp patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     //  Elevator.CallElevator — player pressed a floor button.
     //
     //  SoD elevators are physical objects (currentSpeed/desiredY) that both

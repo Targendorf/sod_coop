@@ -153,10 +153,17 @@ public static class SyncManager
             {
                 ElevatorSync.OnPacketReceived(type, reader, senderId);
             }
+            // Computer login + foreground app (34, 35). DoorLockState=33 is
+            // routed above via the WorldStateSync 50-range cluster.
+            else if (type == PacketType.ComputerLogin || type == PacketType.ComputerApp)
+            {
+                ComputerSync.OnPacketReceived(type, reader, senderId);
+            }
             // Doors + lights + switches (50-59) — go to WorldStateSync, not WorldSync.
             else if (type == PacketType.DoorState
                   || type == PacketType.LightState
-                  || type == PacketType.SwitchState)
+                  || type == PacketType.SwitchState
+                  || type == PacketType.DoorLockState)
             {
                 WorldStateSync.OnPacketReceived(type, reader, senderId);
             }
