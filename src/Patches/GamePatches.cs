@@ -1115,6 +1115,63 @@ public static class GamePatches
     //  alongside it) gets broadcast with stable evIDs.
     // ─────────────────────────────────────────────────────────────────────────
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Surveillance app — Save-to-Tape and Acquire-Name both end up calling
+    //  EvidenceCreator.CreateEvidence to mint EvidenceSurveillance / lead
+    //  evidence. Same diff-over-evidenceDictionary pattern as TakePicture
+    //  catches whatever the engine spawns and broadcasts it with stable evIDs.
+    //
+    //  Most of the surveillance flow comes for free in coop: SceneRecorder on
+    //  each machine independently observes synced NPC positions, so playback
+    //  content matches across peers. Only the "I saved this footage to tape"
+    //  / "I identified this actor" decisions create new evidence that needs
+    //  to be mirrored.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(SurveillanceApp), nameof(SurveillanceApp.SaveToTapeButton))]
+    public static class SurveillanceApp_SaveToTape_Patch
+    {
+        [HarmonyPrefix]
+        public static void Prefix(out System.Collections.Generic.HashSet<string> __state)
+            => __state = EvidenceSync.SnapshotEvidenceKeys();
+
+        [HarmonyPostfix]
+        public static void Postfix(System.Collections.Generic.HashSet<string> __state)
+        {
+            try
+            {
+                if (EvidenceSync.IsApplyingRemote) return;
+                EvidenceSync.BroadcastNewEvidenceSince(__state);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"SurveillanceApp.SaveToTape patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(SurveillanceApp), nameof(SurveillanceApp.AcquireNameButton))]
+    public static class SurveillanceApp_AcquireName_Patch
+    {
+        [HarmonyPrefix]
+        public static void Prefix(out System.Collections.Generic.HashSet<string> __state)
+            => __state = EvidenceSync.SnapshotEvidenceKeys();
+
+        [HarmonyPostfix]
+        public static void Postfix(System.Collections.Generic.HashSet<string> __state)
+        {
+            try
+            {
+                if (EvidenceSync.IsApplyingRemote) return;
+                EvidenceSync.BroadcastNewEvidenceSince(__state);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"SurveillanceApp.AcquireName patch: {ex.Message}");
+            }
+        }
+    }
+
     [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.TakePicture))]
     public static class FPItemController_TakePicture_Patch
     {
