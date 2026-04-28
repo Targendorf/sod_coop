@@ -173,6 +173,132 @@ public static class RemotePlayerManager
     }
 
     /// <summary>
+    /// Detach the player's current visual from the RemotePlayer wrapper,
+    /// add a single Rigidbody + CapsuleCollider, and apply a hit impulse so
+    /// the body falls like a sack. The detached corpse becomes a free-
+    /// floating GameObject; the wrapper transform keeps following snapshot
+    /// updates (with the nametag label hovering at the player's "current"
+    /// position — usually frozen since dead players don't move).
+    ///
+    /// <para>Returns the detached corpse GameObject so the caller can hold
+    /// onto it and pass it back to <see cref="DestroyCorpseAndRespawnVisual"/>
+    /// on revive. Returns null if no visual is currently attached.</para>
+    /// </summary>
+    public static GameObject DetachVisualAsCorpse(int playerId, Vector3 hitDirection)
+    {
+        try
+        {
+            if (!_citizenVisuals.TryGetValue(playerId, out var visual) || visual == null)
+            {
+                // Player is on capsule fallback — detach the capsule instead.
+                if (!_players.TryGetValue(playerId, out var rp) || rp == null) return null;
+                visual = FindCapsuleChild(rp.gameObject);
+                if (visual == null) return null;
+            }
+
+            // Capture world pose before reparenting so the corpse stays put.
+            Vector3 worldPos = visual.transform.position;
+            Quaternion worldRot = visual.transform.rotation;
+            visual.transform.SetParent(null, false);
+            visual.transform.position = worldPos;
+            visual.transform.rotation = worldRot;
+            visual.name = $"RemotePlayer_{playerId}_corpse";
+
+            // Freeze any animator so the body doesn't keep playing idle/walk
+            // while flopping.
+            try
+            {
+                foreach (var anim in visual.GetComponentsInChildren<Animator>(true))
+                    if (anim != null) anim.enabled = false;
+            }
+            catch { }
+
+            // Add basic rigidbody + capsule collider so it drops and lies on
+            // the floor. CitizenVisualCloner stripped the original ragdoll
+            // bones, so this is a single-rigidbody fake — visually reads as
+            // "a body fell over" without true bone-level ragdoll.
+            var rb = visual.GetComponent<Rigidbody>();
+            if (rb == null) rb = visual.AddComponent<Rigidbody>();
+            rb.isKinematic = false;
+            rb.useGravity  = true;
+            rb.mass        = 70f;
+            try { rb.drag = 0.5f; rb.angularDrag = 1.5f; } catch { }
+
+            var col = visual.GetComponent<Collider>();
+            if (col == null)
+            {
+                var cap = visual.AddComponent<CapsuleCollider>();
+                cap.height    = 1.7f;
+                cap.radius    = 0.32f;
+                cap.center    = new Vector3(0f, 0.85f, 0f);
+                cap.direction = 1; // Y-axis
+            }
+            else
+            {
+                col.enabled = true;
+            }
+
+            // Hit impulse: push slightly back-and-up plus a random tumble.
+            Vector3 dir = hitDirection.sqrMagnitude > 0.0001f ? hitDirection.normalized : -visual.transform.forward;
+            Vector3 impulse = dir * 4.5f + Vector3.up * 2.5f;
+            rb.AddForce(impulse, ForceMode.Impulse);
+            rb.AddTorque(Random.insideUnitSphere * 4f, ForceMode.Impulse);
+
+            // Stop tracking — the visual is no longer "the player's avatar".
+            _citizenVisuals.Remove(playerId);
+
+            return visual;
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"DetachVisualAsCorpse({playerId}): {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Destroys a previously-detached corpse and re-attaches a fresh visual
+    /// to the RemotePlayer wrapper. Called on revive (PlayerVitals.IsDead
+    /// transition true→false).
+    /// </summary>
+    public static void DestroyCorpseAndRespawnVisual(int playerId, GameObject corpse)
+    {
+        try
+        {
+            if (corpse != null)
+            {
+                Object.Destroy(corpse);
+            }
+            // Re-show capsule fallback in case the upgrade can't run yet.
+            if (_players.TryGetValue(playerId, out var rp) && rp != null && rp.gameObject != null)
+            {
+                SetCapsuleActive(rp.gameObject, true);
+            }
+            // If the world is still loaded, re-clone a fresh body.
+            if (WorldReadyGate.IsWorldReady)
+            {
+                TryUpgradeVisual(playerId);
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"DestroyCorpseAndRespawnVisual({playerId}): {ex.Message}");
+        }
+    }
+
+    private static GameObject FindCapsuleChild(GameObject root)
+    {
+        if (root == null) return null;
+        for (int i = 0; i < root.transform.childCount; i++)
+        {
+            var child = root.transform.GetChild(i);
+            if (child != null && child.name == "CapsuleVisual" && child.gameObject.activeSelf)
+                return child.gameObject;
+        }
+        return null;
+    }
+
+    /// <summary>
     /// Try to clone a citizen body and parent it under the remote player. Hides the capsule
     /// fallback on success. Idempotent — does nothing if already upgraded.
     /// </summary>

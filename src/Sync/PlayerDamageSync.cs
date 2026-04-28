@@ -117,7 +117,7 @@ public static class PlayerDamageSync
             if (rp != null && p.IsLethal)
             {
                 IsApplyingRemote = true;
-                try { rp.SetDown(true); } finally { IsApplyingRemote = false; }
+                try { rp.SetDown(true, p.HitDirection); } finally { IsApplyingRemote = false; }
             }
         }
         catch (System.Exception ex)

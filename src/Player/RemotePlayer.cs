@@ -76,45 +76,44 @@ public class RemotePlayer : MonoBehaviour
     private bool _initialized;
 
     /// <summary>
-    /// True when this remote player is downed (lethal damage / dead). Visual
-    /// hook: Update() tilts the avatar 90° so they appear to be lying on the
-    /// ground, and animator updates are skipped so they freeze in place.
-    /// Cleared via SetDown(false), e.g. when a fresh PlayerVitals packet
-    /// reports IsDead=false (player respawned / woke up).
+    /// True when this remote player is downed (lethal damage / dead). On
+    /// entry, the visual body is detached from this wrapper, given a single
+    /// Rigidbody + CapsuleCollider, and an impulse in the hit direction so
+    /// it falls like a sack. The wrapper transform keeps following snapshot
+    /// updates (the nametag label hovers wherever the live player position
+    /// reports — usually frozen for the dead).
     /// </summary>
     public bool IsDown { get; private set; }
 
-    /// <summary>Avatar visual tilt applied when IsDown is true. Local-space, around forward axis.</summary>
-    private static readonly Quaternion DOWN_TILT = Quaternion.Euler(90f, 0f, 0f);
+    /// <summary>Detached corpse, kept so we can destroy it on revive.</summary>
+    private GameObject _corpse;
 
     /// <summary>
-    /// Toggle the downed state. When entering down, captures all child
-    /// transforms' local rotations so we can restore them. Idempotent.
+    /// Toggle the downed state. <paramref name="hitDirection"/> sets the
+    /// initial impulse direction (zero vector → fall straight forward).
+    /// Idempotent.
     /// </summary>
     [HideFromIl2Cpp]
-    public void SetDown(bool isDown)
+    public void SetDown(bool isDown, Vector3 hitDirection = default)
     {
         if (IsDown == isDown) return;
         IsDown = isDown;
 
         try
         {
-            // Apply local tilt to direct child visuals (capsule / cloned
-            // citizen body). The parent transform keeps being driven by
-            // snapshot interpolation in Update() — we only rotate children.
-            for (int i = 0; i < transform.childCount; i++)
+            if (isDown)
             {
-                var child = transform.GetChild(i);
-                if (child == null) continue;
-                // Skip the BillboardLabel nametag (it has its own behaviour).
-                if (child.name != null && child.name.StartsWith("Label", System.StringComparison.Ordinal)) continue;
-
-                child.localRotation = isDown ? DOWN_TILT : Quaternion.identity;
+                _corpse = RemotePlayerManager.DetachVisualAsCorpse(PlayerId, hitDirection);
+                Plugin.Log.LogInfo($"[RemotePlayer] {PlayerName} down — detached visual as corpse.");
             }
-
-            if (_animator != null)
+            else
             {
-                try { _animator.enabled = !isDown; } catch { }
+                RemotePlayerManager.DestroyCorpseAndRespawnVisual(PlayerId, _corpse);
+                _corpse = null;
+                // Re-resolve animator on the freshly attached visual.
+                _animator = null;
+                _animatorParamsScanned = false;
+                Plugin.Log.LogInfo($"[RemotePlayer] {PlayerName} revived — corpse cleared, visual respawned.");
             }
         }
         catch (System.Exception ex)
