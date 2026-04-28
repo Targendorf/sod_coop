@@ -129,7 +129,8 @@ public static class SyncManager
                   || type == PacketType.NpcRestrained
                   || type == PacketType.NpcStunned
                   || type == PacketType.ItemPlaceRemove
-                  || type == PacketType.ItemThrow)
+                  || type == PacketType.ItemThrow
+                  || type == PacketType.PlayerHandoff)
             {
                 InventorySync.OnPacketReceived(type, reader, senderId);
             }
@@ -158,6 +159,11 @@ public static class SyncManager
             else if (type == PacketType.ComputerLogin || type == PacketType.ComputerApp)
             {
                 ComputerSync.OnPacketReceived(type, reader, senderId);
+            }
+            // Voicemail thread created (36).
+            else if (type == PacketType.VmailCreated)
+            {
+                VmailSync.OnPacketReceived(type, reader, senderId);
             }
             // Doors + lights + switches (50-59) — go to WorldStateSync, not WorldSync.
             else if (type == PacketType.DoorState

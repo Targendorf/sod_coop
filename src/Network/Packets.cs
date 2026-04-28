@@ -203,6 +203,20 @@ public enum PacketType : byte
     /// </summary>
     ComputerApp = 35,
 
+    /// <summary>
+    /// New voicemail thread created. Mirrors Toolbox.NewVmailThread so a
+    /// player-driven trigger that creates a vmail propagates. Idempotent on
+    /// receive: skipped if threadID already exists in messageThreads dict.
+    /// </summary>
+    VmailCreated = 36,
+
+    /// <summary>
+    /// Player-to-player item handoff. Sender's machine empties the slot
+    /// silently and emits this packet; the recipient's machine drops the
+    /// item directly into their first available slot via PickUpItem.
+    /// </summary>
+    PlayerHandoff = 37,
+
     #endregion
     
     #region World Sync Packets (30-59)

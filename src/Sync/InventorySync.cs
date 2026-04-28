@@ -854,6 +854,185 @@ public static class InventorySync
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Player ↔ player item handoff
+    //
+    //  When the local player presses Give while looking at a RemotePlayer
+    //  avatar, instead of letting SoD's NPC give-logic run (which would
+    //  no-op since RemotePlayer isn't a Human), we:
+    //    1. Empty the holding slot under ItemSync suppression (no
+    //       ItemDrop packet broadcast).
+    //    2. Hide the now-loose Interactable's spawnedObject locally so it
+    //       doesn't briefly appear at our feet.
+    //    3. Broadcast a PlayerHandoffPacket(senderId, recipientId, itemId).
+    //
+    //  Receiver picks up the same Interactable.id into their first free
+    //  slot under suppression. Held-item visuals transition smoothly via
+    //  the existing InventorySync poll: sender's currentItem becomes null
+    //  (hand empties on remote views) and recipient's becomes the new item
+    //  (their avatar shows the held visual).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    public static void BroadcastHandoff(int recipientId, int interactableId)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (recipientId < 0 || interactableId < 0) return;
+
+        try
+        {
+            var packet = new PlayerHandoffPacket
+            {
+                SenderId       = NetworkManager.LocalPlayerId,
+                RecipientId    = recipientId,
+                InteractableId = interactableId,
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.PlayerHandoff, _writer, DeliveryMethod.ReliableOrdered);
+            Plugin.Log.LogInfo($"[InventorySync] handoff broadcast → player {recipientId}, item {interactableId}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"InventorySync.BroadcastHandoff: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Try to perform a player-to-player handoff. Detection layer (the
+    /// FPItemController.Give patch) calls this when raycast finds a remote
+    /// player avatar. Returns true if the handoff fired (caller should skip
+    /// original Give logic).
+    /// </summary>
+    public static bool TryHandoffToRemotePlayer(int recipientPlayerId)
+    {
+        try
+        {
+            var fpc = FirstPersonItemController.Instance;
+            if (fpc == null) return false;
+
+            var fpi = fpc.currentItem;
+            if (fpi == null) return false;
+
+            // Find the slot + interactable of what's in hand.
+            FirstPersonItemController.InventorySlot heldSlot = null;
+            int heldId = -1;
+            try
+            {
+                var slots = fpc.slots;
+                if (slots != null)
+                {
+                    for (int i = 0; i < slots.Count; i++)
+                    {
+                        var s = slots[i];
+                        if (s == null) continue;
+                        FirstPersonItem item = null;
+                        try { item = s.GetFirstPersonItem(); } catch { }
+                        if (item != null && item.Pointer == fpi.Pointer)
+                        {
+                            heldSlot = s;
+                            heldId   = s.interactableID;
+                            break;
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            if (heldSlot == null || heldId <= 0) return false;
+
+            // 1) Empty the slot silently.
+            ItemSync.BeginSuppression();
+            try
+            {
+                fpc.EmptySlot(heldSlot, /*throwObject*/false, /*destroyObject*/false,
+                              /*removeStolenFine*/true, /*playSound*/false);
+            }
+            finally
+            {
+                ItemSync.EndSuppression();
+            }
+
+            // 2) Hide the now-loose Interactable locally so we don't see it
+            // appear at our feet for a frame.
+            try
+            {
+                var dir = CityData.Instance?.interactableDirectory;
+                if (dir != null && heldId >= 0 && heldId < dir.Count)
+                {
+                    var inter = dir[heldId];
+                    if (inter != null && inter.id == heldId)
+                    {
+                        var go = inter.spawnedObject;
+                        if (go != null) go.SetActive(false);
+                    }
+                }
+            }
+            catch { }
+
+            // 3) Broadcast the handoff event.
+            BroadcastHandoff(recipientPlayerId, heldId);
+            return true;
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"InventorySync.TryHandoffToRemotePlayer: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static void ApplyHandoff(PlayerHandoffPacket p)
+    {
+        // Only the recipient picks the item up; everyone else just lets the
+        // held-item poll on the recipient handle the visual update.
+        if (p.RecipientId != NetworkManager.LocalPlayerId) return;
+
+        try
+        {
+            var dir = CityData.Instance?.interactableDirectory;
+            if (dir == null) return;
+            Interactable inter = null;
+            if (p.InteractableId >= 0 && p.InteractableId < dir.Count)
+            {
+                var c = dir[p.InteractableId];
+                if (c != null && c.id == p.InteractableId) inter = c;
+            }
+            if (inter == null)
+            {
+                for (int i = 0; i < dir.Count; i++)
+                {
+                    var c = dir[i];
+                    if (c != null && c.id == p.InteractableId) { inter = c; break; }
+                }
+            }
+            if (inter == null)
+            {
+                Plugin.Log.LogWarning($"[InventorySync] ApplyHandoff: item {p.InteractableId} not found");
+                return;
+            }
+
+            var fpc = FirstPersonItemController.Instance;
+            if (fpc == null) return;
+
+            ItemSync.BeginSuppression();
+            try
+            {
+                fpc.PickUpItem(inter, /*switchToNew*/false, /*allowSwap*/true,
+                               /*enableFullMessage*/true, /*enablePickupMessage*/true,
+                               /*playSound*/true);
+            }
+            finally
+            {
+                ItemSync.EndSuppression();
+            }
+
+            Plugin.Log.LogInfo($"[InventorySync] applied handoff item={p.InteractableId} from player {p.SenderId}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"InventorySync.ApplyHandoff failed: {ex.Message}");
+        }
+    }
+
     public static void BroadcastAction(ItemActionKind action)
     {
         if (!NetworkManager.IsConnected) return;
@@ -1000,6 +1179,15 @@ public static class InventorySync
                 if (p.PlayerId == NetworkManager.LocalPlayerId) return;
                 IsApplyingRemote = true;
                 try { ApplyThrow(p); }
+                finally { IsApplyingRemote = false; }
+            }
+            else if (type == PacketType.PlayerHandoff)
+            {
+                var p = new PlayerHandoffPacket();
+                p.Deserialize(reader);
+                if (p.SenderId == NetworkManager.LocalPlayerId) return;
+                IsApplyingRemote = true;
+                try { ApplyHandoff(p); }
                 finally { IsApplyingRemote = false; }
             }
         }

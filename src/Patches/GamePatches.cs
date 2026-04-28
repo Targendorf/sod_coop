@@ -1088,6 +1088,86 @@ public static class GamePatches
     // ─────────────────────────────────────────────────────────────────────────
 
     // ─────────────────────────────────────────────────────────────────────────
+    //  Toolbox.NewVmailThread — voicemail thread creation.
+    //
+    //  Most vmails are deterministic from world seed (case generation runs
+    //  identically on each machine), but defensive sync covers any
+    //  player-action-driven creation. Receiver's apply path is idempotent
+    //  (skip if threadID already in messageThreads dict).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(Toolbox), nameof(Toolbox.NewVmailThread),
+        new System.Type[]
+        {
+            typeof(Human), typeof(Human), typeof(Human), typeof(Human),
+            typeof(Il2CppSystem.Collections.Generic.List<Human>),
+            typeof(string), typeof(float), typeof(int),
+            typeof(StateSaveData.CustomDataSource), typeof(int),
+        })]
+    public static class Toolbox_NewVmailThread_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(StateSaveData.MessageThreadSave __result)
+        {
+            try
+            {
+                if (__result == null) return;
+                if (VmailSync.IsApplyingRemote) return;
+                VmailSync.BroadcastCreated(__result);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"Toolbox.NewVmailThread patch: {ex.Message}");
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  FirstPersonItemController.Give — detect remote-player target for
+    //  player↔player handoff. If raycast hits a RemotePlayer avatar, run
+    //  our handoff path and skip the original NPC-targeted Give logic.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.Give))]
+    public static class FPItemController_Give_Patch
+    {
+        [HarmonyPrefix]
+        public static bool Prefix()
+        {
+            try
+            {
+                if (InventorySync.IsApplyingRemote) return true;
+                if (!NetworkManager.IsConnected)   return true;
+
+                var cam = Camera.main;
+                if (cam == null) return true;
+
+                if (!Physics.Raycast(cam.transform.position, cam.transform.forward,
+                                     out var hit, 3.5f, ~0, QueryTriggerInteraction.Collide))
+                    return true;
+
+                // Walk up looking for a RemotePlayer component.
+                var rp = hit.transform != null
+                    ? hit.transform.GetComponentInParent<SoDCoop.Player.RemotePlayer>()
+                    : null;
+                if (rp == null) return true;       // not a remote player → let SoD handle
+
+                // Initiate handoff. If it succeeds, suppress the original Give
+                // (NPC-only logic would no-op anyway since RemotePlayer isn't a Human).
+                if (InventorySync.TryHandoffToRemotePlayer(rp.PlayerId))
+                    return false;
+
+                return true;
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"FPItemController.Give patch: {ex.Message}");
+                return true;
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     //  NewDoor.SetLocked — covers lockpicking, key use, scripted unlock.
     //  Patches the leaf state changer; every code path that flips door's
     //  locked state goes through here.

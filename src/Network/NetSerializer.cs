@@ -1118,6 +1118,75 @@ public struct ElevatorCallPacket : INetPacket
 }
 
 /// <summary>
+/// New voicemail thread created. Mirrors the parameters of
+/// <c>Toolbox.NewVmailThread</c>. Idempotent — receivers skip if
+/// <c>messageThreads[ThreadId]</c> already exists.
+/// </summary>
+public struct VmailCreatedPacket : INetPacket
+{
+    public PacketType Type => PacketType.VmailCreated;
+
+    public int    SenderId;
+    public int    ThreadId;
+    public string TreeId;
+    public int    FromHumanId;       // -1 if anonymous
+    public int    ToAHumanId;        // -1 if not present
+    public int    ToBHumanId;
+    public int    ToCHumanId;
+    public float  TimeStamp;
+    public int    Progress;
+    public byte   DataSource;        // CustomDataSource enum
+    public int    DataSourceId;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(SenderId);
+        w.Put(ThreadId);
+        w.Put(TreeId ?? "");
+        w.Put(FromHumanId);
+        w.Put(ToAHumanId);
+        w.Put(ToBHumanId);
+        w.Put(ToCHumanId);
+        w.Put(TimeStamp);
+        w.Put(Progress);
+        w.Put(DataSource);
+        w.Put(DataSourceId);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        SenderId      = r.GetInt();
+        ThreadId      = r.GetInt();
+        TreeId        = r.GetString();
+        FromHumanId   = r.GetInt();
+        ToAHumanId    = r.GetInt();
+        ToBHumanId    = r.GetInt();
+        ToCHumanId    = r.GetInt();
+        TimeStamp     = r.GetFloat();
+        Progress      = r.GetInt();
+        DataSource    = r.GetByte();
+        DataSourceId  = r.GetInt();
+    }
+}
+
+/// <summary>
+/// Player-to-player item handoff. Sender empties their slot under suppression
+/// (no ItemDrop packet flies); recipient calls PickUpItem on the same
+/// Interactable.id and slots it into their first free spot.
+/// </summary>
+public struct PlayerHandoffPacket : INetPacket
+{
+    public PacketType Type => PacketType.PlayerHandoff;
+
+    public int SenderId;
+    public int RecipientId;
+    public int InteractableId;
+
+    public void Serialize(NetDataWriter w)   { w.Put(SenderId); w.Put(RecipientId); w.Put(InteractableId); }
+    public void Deserialize(NetDataReader r) { SenderId = r.GetInt(); RecipientId = r.GetInt(); InteractableId = r.GetInt(); }
+}
+
+/// <summary>
 /// Citizen death — broadcast when <c>Human.Murder</c> fires on a non-player.
 /// Receiver finds the victim via CityData.citizenDictionary[humanID] and mirrors
 /// the dead state (isDead flag + CitizenAnimationController.SetDead(true) +

@@ -36,6 +36,15 @@ public static class ItemSync
     /// </summary>
     public static bool IsApplyingRemote { get; private set; }
 
+    /// <summary>
+    /// Cooperative scope for systems that need to manipulate inventory slots
+    /// without ItemSync's pickup / drop patches re-broadcasting (e.g. the
+    /// player-to-player handoff path in <see cref="InventorySync"/>).
+    /// Calls must be balanced.
+    /// </summary>
+    public static void BeginSuppression() => IsApplyingRemote = true;
+    public static void EndSuppression()   => IsApplyingRemote = false;
+
     private static readonly NetDataWriter _writer = new();
 
     // ─────────────────────────────────────────────────────────────────────────
