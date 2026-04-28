@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using SoDCoop.Network;
 using SoDCoop.Player;
 using LiteNetLib;
@@ -145,6 +146,227 @@ public static class InventorySync
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Placement visual mocks (Phase 2)
+    //
+    //  Real Interactable lives only on the placer's machine. Other peers
+    //  receive a stripped visual copy parented at the same world position so
+    //  they can SEE that a codebreaker / wedge / tracker / mine is attached
+    //  somewhere — they just can't interact with it. Placer-only functionality
+    //  (e.g. codebreaker code reveal) stays single-machine, which is fine
+    //  because only the placer's investigation needs that data.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// All mock visuals we've spawned for remote-placed items, keyed by
+    /// (placerPlayerId, placerInteractableId). Tracked so we could later
+    /// support a "placement removed" packet that nukes the mock.
+    /// </summary>
+    private static readonly Dictionary<long, GameObject> _placedMocks = new();
+
+    /// <summary>Lazy InteractablePreset name → preset registry.</summary>
+    private static Dictionary<string, InteractablePreset> _presetByName;
+
+    /// <summary>Compose a stable key from (playerId, sourceInteractableId).</summary>
+    private static long MockKey(int playerId, int sourceInteractableId)
+        => ((long)playerId << 32) | (uint)sourceInteractableId;
+
+    /// <summary>
+    /// Diff helper for placement patches: snapshot
+    /// <c>CityData.interactableDirectory.Count</c> in the prefix, then walk
+    /// new entries in the postfix to find what got placed.
+    /// </summary>
+    public static int SnapshotInteractableCount()
+    {
+        try { return CityData.Instance?.interactableDirectory?.Count ?? 0; }
+        catch { return 0; }
+    }
+
+    /// <summary>
+    /// Walk all interactables added to the directory after <paramref name="snapshotCount"/>
+    /// and broadcast a placement-visual packet for each.
+    /// </summary>
+    public static void BroadcastPlacedSince(int snapshotCount)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (IsApplyingRemote) return;
+
+        try
+        {
+            var dir = CityData.Instance?.interactableDirectory;
+            if (dir == null) return;
+            if (dir.Count <= snapshotCount) return;
+
+            for (int i = snapshotCount; i < dir.Count; i++)
+            {
+                var item = dir[i];
+                if (item == null) continue;
+                BroadcastPlace(item);
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"InventorySync.BroadcastPlacedSince: {ex.Message}");
+        }
+    }
+
+    private static void BroadcastPlace(Interactable item)
+    {
+        try
+        {
+            var preset = item.preset;
+            if (preset == null || string.IsNullOrEmpty(preset.name)) return;
+
+            // Pull the world transform from the spawnedObject if it exists,
+            // else fall back to the interactable's own wPos/eulerAngles.
+            Vector3 pos    = item.wPos;
+            Vector3 euler  = Vector3.zero;
+            try
+            {
+                var go = item.spawnedObject;
+                if (go != null && go.transform != null)
+                {
+                    pos   = go.transform.position;
+                    euler = go.transform.eulerAngles;
+                }
+            }
+            catch { }
+
+            var packet = new ItemPlaceVisualPacket
+            {
+                PlayerId        = NetworkManager.LocalPlayerId,
+                PlacerSourceId  = item.id,
+                PresetName      = preset.name,
+                Position        = pos,
+                EulerRotation   = euler,
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.ItemPlaceVisual, _writer, DeliveryMethod.ReliableOrdered);
+            Plugin.Log.LogInfo($"[InventorySync] place broadcast preset=\"{preset.name}\" id={item.id} pos={pos}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"InventorySync.BroadcastPlace: {ex.Message}");
+        }
+    }
+
+    private static void ApplyPlace(ItemPlaceVisualPacket p)
+    {
+        try
+        {
+            var preset = ResolvePreset(p.PresetName);
+            if (preset == null || preset.prefab == null)
+            {
+                Plugin.Log.LogWarning($"[InventorySync] ApplyPlace: preset \"{p.PresetName}\" not found");
+                return;
+            }
+
+            // Don't double-spawn if we somehow already have a mock for this id.
+            long key = MockKey(p.PlayerId, p.PlacerSourceId);
+            if (_placedMocks.TryGetValue(key, out var existing) && existing != null) return;
+
+            var go = Object.Instantiate(preset.prefab);
+            if (go == null) return;
+
+            go.name = $"CoopPlaceMock_{p.PlayerId}_{p.PlacerSourceId}_{p.PresetName}";
+            go.transform.position    = p.Position;
+            go.transform.eulerAngles = p.EulerRotation;
+
+            // Strip behaviour components — visual only.
+            StripPlacementMockComponents(go);
+
+            _placedMocks[key] = go;
+            Plugin.Log.LogInfo($"[InventorySync] applied place mock preset=\"{p.PresetName}\" pos={p.Position}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"InventorySync.ApplyPlace failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Strip components that would re-run game logic on the placement mock
+    /// (Interactable, Collider, Rigidbody, AudioSource, …). Leave only the
+    /// visual rendering hierarchy.
+    /// </summary>
+    private static void StripPlacementMockComponents(GameObject go)
+    {
+        try
+        {
+            var comps = go.GetComponentsInChildren<Component>(true);
+            for (int i = 0; i < comps.Length; i++)
+            {
+                var c = comps[i];
+                if (c == null) continue;
+                string typeName = null;
+                try { typeName = c.GetIl2CppType()?.Name; } catch { }
+                if (typeName == null) continue;
+                // Keep transforms + visual renderers.
+                if (typeName == "Transform" || typeName == "MeshFilter" ||
+                    typeName == "MeshRenderer" || typeName == "SkinnedMeshRenderer" ||
+                    typeName == "Light" || typeName == "LineRenderer" ||
+                    typeName == "ParticleSystem" || typeName == "ParticleSystemRenderer")
+                    continue;
+                try { Object.Destroy(c); } catch { }
+            }
+        }
+        catch { /* best-effort */ }
+    }
+
+    /// <summary>
+    /// Resolve <c>InteractablePreset.name</c> to the actual preset asset.
+    /// Mirrors SpatterSync.ResolvePreset — lazy
+    /// <c>Resources.FindObjectsOfTypeAll</c> registry, rebuilt on cache miss.
+    /// </summary>
+    private static InteractablePreset ResolvePreset(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return null;
+
+        if (_presetByName != null && _presetByName.TryGetValue(name, out var cached))
+            return cached;
+
+        try
+        {
+            _presetByName = new Dictionary<string, InteractablePreset>();
+            var all = Resources.FindObjectsOfTypeAll<InteractablePreset>();
+            if (all == null) return null;
+            for (int i = 0; i < all.Length; i++)
+            {
+                var pr = all[i];
+                if (pr == null) continue;
+                var n = pr.name;
+                if (string.IsNullOrEmpty(n)) continue;
+                _presetByName[n] = pr;
+            }
+            Plugin.Log.LogInfo($"[InventorySync] indexed {_presetByName.Count} InteractablePreset assets");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"InventorySync.ResolvePreset: {ex.Message}");
+            return null;
+        }
+
+        return _presetByName.TryGetValue(name, out var fresh) ? fresh : null;
+    }
+
+    /// <summary>
+    /// Tear down all mock visuals — called when network disconnects so we
+    /// don't leave dangling decoration in the world.
+    /// </summary>
+    public static void ClearAllMocks()
+    {
+        try
+        {
+            foreach (var kv in _placedMocks)
+            {
+                if (kv.Value != null) Object.Destroy(kv.Value);
+            }
+        }
+        catch { }
+        _placedMocks.Clear();
+    }
+
     public static void BroadcastAction(ItemActionKind action)
     {
         if (!NetworkManager.IsConnected) return;
@@ -243,6 +465,15 @@ public static class InventorySync
                 if (rp == null) return;
                 IsApplyingRemote = true;
                 try { rp.ApplyAction(p.Action); }
+                finally { IsApplyingRemote = false; }
+            }
+            else if (type == PacketType.ItemPlaceVisual)
+            {
+                var p = new ItemPlaceVisualPacket();
+                p.Deserialize(reader);
+                if (p.PlayerId == NetworkManager.LocalPlayerId) return;
+                IsApplyingRemote = true;
+                try { ApplyPlace(p); }
                 finally { IsApplyingRemote = false; }
             }
         }

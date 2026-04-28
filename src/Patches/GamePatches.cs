@@ -872,6 +872,106 @@ public static class GamePatches
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Tactical placements — codebreaker / wedge / tracker / grenade-mine.
+    //
+    //  Strategy: snapshot CityData.interactableDirectory.Count in the prefix,
+    //  then in the postfix walk new entries to find what got created and
+    //  broadcast a visual-mock packet for each. This works without knowing
+    //  exactly what each Place method spawns and adapts naturally to SoD
+    //  versions / mods that change placement details.
+    //
+    //  IMPORTANT: this is host-authority-LITE — only the placer's machine has
+    //  the real, functional Interactable; remote peers see a stripped visual.
+    //  Functional gameplay (e.g. codebreaker scanning a door's code) only runs
+    //  for the placer, which is acceptable since investigating a placed device
+    //  is the placer's task anyway.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.PlaceCodebreaker))]
+    public static class FPItemController_PlaceCodebreaker_Patch
+    {
+        [HarmonyPrefix]
+        public static void Prefix(out int __state) => __state = InventorySync.SnapshotInteractableCount();
+
+        [HarmonyPostfix]
+        public static void Postfix(int __state)
+        {
+            try
+            {
+                if (InventorySync.IsApplyingRemote) return;
+                InventorySync.BroadcastPlacedSince(__state);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"FPItemController.PlaceCodebreaker patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.PlaceDoorWedge))]
+    public static class FPItemController_PlaceDoorWedge_Patch
+    {
+        [HarmonyPrefix]
+        public static void Prefix(out int __state) => __state = InventorySync.SnapshotInteractableCount();
+
+        [HarmonyPostfix]
+        public static void Postfix(int __state)
+        {
+            try
+            {
+                if (InventorySync.IsApplyingRemote) return;
+                InventorySync.BroadcastPlacedSince(__state);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"FPItemController.PlaceDoorWedge patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.PlaceTracker))]
+    public static class FPItemController_PlaceTracker_Patch
+    {
+        [HarmonyPrefix]
+        public static void Prefix(out int __state) => __state = InventorySync.SnapshotInteractableCount();
+
+        [HarmonyPostfix]
+        public static void Postfix(int __state)
+        {
+            try
+            {
+                if (InventorySync.IsApplyingRemote) return;
+                InventorySync.BroadcastPlacedSince(__state);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"FPItemController.PlaceTracker patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.PlaceGrenade))]
+    public static class FPItemController_PlaceGrenade_Patch
+    {
+        [HarmonyPrefix]
+        public static void Prefix(out int __state) => __state = InventorySync.SnapshotInteractableCount();
+
+        [HarmonyPostfix]
+        public static void Postfix(int __state)
+        {
+            try
+            {
+                if (InventorySync.IsApplyingRemote) return;
+                InventorySync.BroadcastPlacedSince(__state);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"FPItemController.PlaceGrenade patch: {ex.Message}");
+            }
+        }
+    }
+
     [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.PickUpItem))]
     public static class FPItemController_PickUpItem_Patch
     {

@@ -124,6 +124,14 @@ public enum PacketType : byte
     /// </summary>
     ItemAction = 23,
 
+    /// <summary>
+    /// Player placed a tactical item (codebreaker, doorwedge, tracker, grenade
+    /// mine). Carries the preset name + position + rotation so the other peers
+    /// can spawn a stripped visual mock at the same spot. Functional gameplay
+    /// (e.g. codebreaker scanning) only runs on the placer's machine.
+    /// </summary>
+    ItemPlaceVisual = 24,
+
     #endregion
     
     #region World Sync Packets (30-59)

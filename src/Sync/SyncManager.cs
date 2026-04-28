@@ -99,6 +99,9 @@ public static class SyncManager
     private static void OnDisconnected(string reason)
     {
         IsActive = false;
+        // Drop all placement-mock visuals so they don't dangle in the world
+        // after we lose the connection.
+        try { InventorySync.ClearAllMocks(); } catch { }
         Plugin.Log.LogInfo($"SyncManager deactivated: {reason}");
     }
     
@@ -115,15 +118,16 @@ public static class SyncManager
             {
                 ItemSync.OnPacketReceived(type, reader, senderId);
             }
-            // Inventory visibility (20-23) — held item / raised / flashlight / actions.
+            // Inventory visibility (20-24) — held item / raised / flashlight / actions / placements.
             else if (type == PacketType.ItemHeld
                   || type == PacketType.ItemRaised
                   || type == PacketType.ItemFlashlight
-                  || type == PacketType.ItemAction)
+                  || type == PacketType.ItemAction
+                  || type == PacketType.ItemPlaceVisual)
             {
                 InventorySync.OnPacketReceived(type, reader, senderId);
             }
-            // Player Packets: 10-29 (excluding 14, 15, 20-23 handled above)
+            // Player Packets: 10-29 (excluding 14, 15, 20-24 handled above)
             else if ((int)type >= 10 && (int)type <= 29)
             {
                 PlayerSync?.OnPacketReceived(type, reader, senderId);

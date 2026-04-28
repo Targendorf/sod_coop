@@ -1280,6 +1280,42 @@ public struct ItemActionPacket : INetPacket
 }
 
 /// <summary>
+/// Visual mock of a tactical placement (codebreaker, doorwedge, tracker, mine).
+/// The placer's machine has the real Interactable; receivers spawn a stripped
+/// copy of the preset prefab as decoration. PlacerSourceId is the placer's
+/// local Interactable.id, used to clean up the mock if the placer later
+/// destroys/picks up the placement (future RemoveVisual packet).
+/// </summary>
+public struct ItemPlaceVisualPacket : INetPacket
+{
+    public PacketType Type => PacketType.ItemPlaceVisual;
+
+    public int     PlayerId;          // who placed it
+    public int     PlacerSourceId;    // Interactable.id on the placer's side (for future cleanup)
+    public string  PresetName;        // InteractablePreset.name
+    public Vector3 Position;
+    public Vector3 EulerRotation;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(PlayerId);
+        w.Put(PlacerSourceId);
+        w.Put(PresetName ?? "");
+        w.Put(Position);
+        w.Put(EulerRotation);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        PlayerId       = r.GetInt();
+        PlacerSourceId = r.GetInt();
+        PresetName     = r.GetString();
+        Position       = r.GetVector3();
+        EulerRotation  = r.GetVector3();
+    }
+}
+
+/// <summary>
 /// Item pickup event — keyed by Interactable.id.
 /// Sent after a successful FirstPersonItemController.PickUpItem so peers can
 /// hide the in-world object (it's now in the picker's inventory).
