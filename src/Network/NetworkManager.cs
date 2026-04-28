@@ -651,6 +651,7 @@ public static class NetworkManager
             case PacketType.HostStatus:                 // host originates, already SendToAll
             case PacketType.SideJobNotification:        // host originates
             case PacketType.SideJobAcceptRequest:       // client→host only; host re-broadcasts upsert
+            case PacketType.SideJobHandInRequest:       // client→host only; host re-broadcasts upsert
                 return false;
             default:
                 return true;

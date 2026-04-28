@@ -622,5 +622,17 @@ public enum PacketType : byte
     /// </summary>
     EvidenceCustomName = 111,
 
+    /// <summary>
+    /// Side-job hand-in request (client → host). Phase SJ.3: when a
+    /// client triggers <c>SideJob.OnRewarded</c> on its skeleton SideJob
+    /// (final reward delivery — money, sync disk, state→ended), the
+    /// client suppresses local invocation and ships the jobID to host.
+    /// Host runs vanilla OnRewarded on its real SideJob: MoneyAdded
+    /// auto-syncs, sync-disk reward (if any) creates Evidence which
+    /// auto-syncs, SetJobState(ended) broadcasts. We then send a fresh
+    /// upsert with KIND_ENDED so peers re-stamp accepted/state.
+    /// </summary>
+    SideJobHandInRequest = 112,
+
     #endregion
 }

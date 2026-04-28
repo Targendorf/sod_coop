@@ -1770,6 +1770,39 @@ public static class GamePatches
         }
     }
 
+    /// <summary>
+    /// Phase SJ.3 — hand-in. <c>SideJob.OnRewarded</c> is the final reward
+    /// dispatch (money + sync-disk + ended-state). Same pattern as accept:
+    /// client suppresses local invocation, ships jobID to host, host runs
+    /// vanilla which broadcasts back via existing per-system syncs.
+    /// </summary>
+    [HarmonyPatch(typeof(SideJob), nameof(SideJob.OnRewarded))]
+    public static class SideJob_OnRewarded_Patch
+    {
+        [HarmonyPrefix]
+        public static bool Prefix(SideJob __instance)
+        {
+            try
+            {
+                if (__instance == null) return true;
+                if (SideJobSync.IsApplyingRemote) return true;
+                if (!NetworkManager.IsConnected) return true;
+                if (NetworkManager.IsHost) return true;
+
+                int jobID = __instance.jobID;
+                SideJobSync.RequestHandIn(jobID);
+
+                Plugin.Log.LogInfo($"[SideJob.OnRewarded] client suppressed local invocation for jobID={jobID}; hand-in-request sent to host.");
+                return false;
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"SideJob.OnRewarded patch: {ex.Message}");
+            }
+            return true;
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     //  Phase 3b — NPC state mutations & player-to-NPC item transfers.
     //

@@ -182,7 +182,8 @@ public static class SyncManager
                 SideJobSync.OnPacketReceived(type, reader, senderId);
             }
             // Side-job accept request (108) — client → host, runs OnPlayerCall and re-broadcasts upsert.
-            else if (type == PacketType.SideJobAcceptRequest)
+            else if (type == PacketType.SideJobAcceptRequest
+                  || type == PacketType.SideJobHandInRequest)
             {
                 SideJobSync.OnPacketReceived(type, reader, senderId);
             }

@@ -211,6 +211,12 @@ public static class SideJobSync
                     HandleAcceptRequest(jobID, senderId);
                     break;
                 }
+                case PacketType.SideJobHandInRequest:
+                {
+                    int jobID = reader.GetInt();
+                    HandleHandInRequest(jobID, senderId);
+                    break;
+                }
             }
         }
         catch (Exception ex)
@@ -238,6 +244,75 @@ public static class SideJobSync
         catch (Exception ex)
         {
             Plugin.Log.LogWarning($"SideJobSync.RequestAccept: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Client → host. Sent from the client's <c>SideJob.OnRewarded</c>
+    /// Harmony prefix. Host runs vanilla OnRewarded on the real job,
+    /// which dispatches reward via paths that already self-sync (money,
+    /// evidence creation, SetJobState transition).
+    /// </summary>
+    public static void RequestHandIn(int jobID)
+    {
+        if (NetworkManager.IsHost) return;
+        if (!NetworkManager.IsConnected) return;
+
+        try
+        {
+            _writer.Reset();
+            _writer.Put(jobID);
+            NetworkManager.SendToHost(PacketType.SideJobHandInRequest, _writer, DeliveryMethod.ReliableOrdered);
+            Plugin.Log.LogInfo($"[SideJobSync] sent hand-in-request for jobID={jobID}");
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"SideJobSync.RequestHandIn: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Host-side. Run vanilla <c>OnRewarded</c> on the real SideJob. Reward
+    /// dispatch runs natively: money via <c>GameplayController.AddMoney</c>
+    /// (synced by MoneySync), sync-disk reward as Evidence (synced by
+    /// EvidenceSync's diff path), and the typical SetJobState(ended)
+    /// transition (synced by our existing patch). We also broadcast a
+    /// fresh upsert at the end with KIND_ENDED so peers re-stamp scalar
+    /// fields belt-and-braces.
+    /// </summary>
+    private static void HandleHandInRequest(int jobID, int senderId)
+    {
+        if (!NetworkManager.IsHost) return;
+
+        try
+        {
+            var ctrl = global::SideJobController.Instance;
+            if (ctrl == null) { Plugin.Log.LogWarning($"[SideJobSync] handin-request jobID={jobID}: no SideJobController.Instance"); return; }
+            var dict = ctrl.allJobsDictionary;
+            if (dict == null || !dict.TryGetValue(jobID, out var job) || job == null)
+            {
+                Plugin.Log.LogWarning($"[SideJobSync] handin-request: jobID={jobID} not in allJobsDictionary on host.");
+                return;
+            }
+
+            IsApplyingRemote = true;
+            try
+            {
+                job.OnRewarded();
+                Plugin.Log.LogInfo($"[SideJobSync] applied hand-in for jobID={jobID} from playerId={senderId}; state={TryReadInt(() => (int)job.state)}");
+            }
+            finally
+            {
+                IsApplyingRemote = false;
+            }
+
+            // Final upsert to peers — OnRewarded internals may flip fields
+            // that aren't already covered by SetJobState's existing patch.
+            Broadcast(KIND_ENDED, job, peer: null);
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogError($"SideJobSync.HandleHandInRequest: {ex.Message}");
         }
     }
 
