@@ -41,7 +41,23 @@ public enum PacketType : byte
     /// Game start signal from host.
     /// </summary>
     GameStart = 6,
-    
+
+    /// <summary>
+    /// Host → single client. Sent during connection handshake when the host
+    /// has no stored character record for (worldSeed, clientGuid). Tells the
+    /// client to open the Create Character panel and reply with
+    /// <see cref="CharacterSubmit"/>. Carries the host's own character name
+    /// + city name for context ("You're joining John Smith in New Babylon").
+    /// </summary>
+    CharacterCreationRequired = 7,
+
+    /// <summary>
+    /// Client → host. Reply to <see cref="CharacterCreationRequired"/> with
+    /// the player-typed first name + surname. Host validates, persists to its
+    /// per-seed character store, then proceeds with the normal handshake flow.
+    /// </summary>
+    CharacterSubmit = 8,
+
     #endregion
     
     #region Player Sync Packets (10-29)

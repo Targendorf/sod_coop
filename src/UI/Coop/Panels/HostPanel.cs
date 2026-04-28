@@ -13,8 +13,8 @@ public class HostPanel : CoopPanelBase
 {
     protected override string Title => "Host a session";
 
-    private InputField _nicknameInput;
     private InputField _portInput;
+    private Text       _identityLabel;
     private Text       _statusLabel;
     private Text       _joinCodeLabel;
     private Button     _startBtn;
@@ -23,15 +23,15 @@ public class HostPanel : CoopPanelBase
 
     protected override void BuildBody()
     {
-        BodyLabel("Choose a nickname and port, then start hosting.",
+        BodyLabel("You'll host as your existing in-game character. Your name is read from the loaded save — make sure you're in-game before starting.",
             CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelMuted);
         Spacer(8f);
 
-        BodyLabel("Nickname", CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
-        _nicknameInput = CoopMenuFactory.TextInput("NicknameInput", Body,
-            NetworkManager.LocalPlayerName ?? "Host", "Your in-game name",
-            CoopMenuTheme.PanelWidth - CoopMenuTheme.Padding * 2);
-        AddLayoutHeight(_nicknameInput.gameObject, 36f);
+        BodyLabel("Playing as", CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
+        _identityLabel = BodyLabel("(reading from game…)",
+            CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelOk, TextAnchor.MiddleLeft, FontStyle.Bold);
+
+        Spacer(6f);
 
         BodyLabel("Port", CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
         _portInput = CoopMenuFactory.TextInput("PortInput", Body, "9050", "9050",
@@ -86,6 +86,34 @@ public class HostPanel : CoopPanelBase
         if (_stopBtn  != null) _stopBtn .gameObject.SetActive(hosting);
         if (_copyBtn  != null) _copyBtn .gameObject.SetActive(hosting);
 
+        // Identity preview: read live from Game.Instance pre-host (so user sees
+        // the name they'll be hosting as), then mirror what's in NetworkManager
+        // once hosting is live (in case it differed for any reason).
+        if (_identityLabel != null)
+        {
+            string display;
+            if (hosting)
+            {
+                display = string.IsNullOrEmpty(NetworkManager.LocalPlayerName) ? "Host" : NetworkManager.LocalPlayerName;
+                _identityLabel.color = CoopMenuTheme.LabelOk;
+            }
+            else
+            {
+                var (fn, sn) = SoDCoop.Sync.CharacterStore.ReadHostCharacter();
+                if (string.IsNullOrEmpty(fn) && string.IsNullOrEmpty(sn))
+                {
+                    display = "(no save loaded — will host as 'Host')";
+                    _identityLabel.color = CoopMenuTheme.LabelWarn;
+                }
+                else
+                {
+                    display = string.IsNullOrEmpty(sn) ? fn : $"{fn} {sn}";
+                    _identityLabel.color = CoopMenuTheme.LabelOk;
+                }
+            }
+            _identityLabel.text = display;
+        }
+
         if (_statusLabel != null)
         {
             if (hosting)
@@ -135,7 +163,6 @@ public class HostPanel : CoopPanelBase
     {
         try
         {
-            NetworkManager.LocalPlayerName = string.IsNullOrWhiteSpace(_nicknameInput?.text) ? "Host" : _nicknameInput.text;
             int port = int.TryParse(_portInput?.text ?? "9050", out var p) ? p : 9050;
             if (NetworkManager.StartHost(port))
             {

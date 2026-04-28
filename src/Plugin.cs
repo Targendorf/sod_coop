@@ -130,6 +130,8 @@ public class Plugin : BasePlugin
 
     private void InitializeSystems()
     {
+        Log.LogInfo($"Stable client GUID: {SoDCoop.Player.CharacterIdentity.ClientGuid}");
+
         Log.LogInfo("Initializing network manager...");
         NetworkManager.Initialize();
         

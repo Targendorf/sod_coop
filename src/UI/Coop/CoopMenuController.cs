@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using SoDCoop.Network;
 using SoDCoop.UI.Coop.Panels;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -28,15 +29,18 @@ public static class CoopMenuController
     private static GameObject _panelContainer;
     private static EventSystem _ownEventSystem;
 
-    private static MainPanel    _mainPanel;
-    private static HostPanel    _hostPanel;
-    private static JoinPanel    _joinPanel;
-    private static LobbyPanel   _lobbyPanel;
-    private static IpInfoPanel  _ipPanel;
+    private static MainPanel              _mainPanel;
+    private static HostPanel              _hostPanel;
+    private static JoinPanel              _joinPanel;
+    private static LobbyPanel             _lobbyPanel;
+    private static IpInfoPanel            _ipPanel;
+    private static CreateCharacterPanel   _createCharacterPanel;
 
     /// <summary>Current visible panel, or null when menu is hidden.</summary>
-    public enum PanelKind { None, Main, Host, Join, Lobby, IpInfo }
+    public enum PanelKind { None, Main, Host, Join, Lobby, IpInfo, CreateCharacter }
     private static PanelKind _current = PanelKind.None;
+
+    private static bool _eventsHooked;
 
     public static bool IsVisible { get; private set; }
 
@@ -48,6 +52,65 @@ public static class CoopMenuController
     {
         // Defer canvas build until first Toggle — avoids Awake / Start order
         // conflicts in IL2CPP (some required components may not be ready yet).
+
+        // Subscribe to network events ASAP so we can route panels even before
+        // the user opens the menu (e.g. force-show on CharacterCreationRequired).
+        HookNetworkEvents();
+    }
+
+    private static void HookNetworkEvents()
+    {
+        if (_eventsHooked) return;
+        _eventsHooked = true;
+
+        NetworkManager.OnCharacterCreationRequired += OnCharacterCreationRequired;
+        NetworkManager.OnConnected += OnNetworkConnected;
+        NetworkManager.OnDisconnected += OnNetworkDisconnected;
+    }
+
+    private static void OnCharacterCreationRequired(string hostFirst, string hostSur, string cityName)
+    {
+        try
+        {
+            if (_root == null) BuildCanvas();
+            _createCharacterPanel?.Configure(hostFirst, hostSur, cityName);
+            SetVisible(true);
+            ShowPanel(PanelKind.CreateCharacter);
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"OnCharacterCreationRequired routing: {ex}");
+        }
+    }
+
+    private static void OnNetworkConnected()
+    {
+        // Handshake complete (host: from StartHost; client: after handshake or
+        // post-character-submit). Jump straight into the lobby panel.
+        try
+        {
+            if (_root == null) BuildCanvas();
+            // Don't auto-pop the menu open if user has it closed — only switch
+            // panel state so when they reopen they're in the right place.
+            ShowPanel(PanelKind.Lobby);
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"OnNetworkConnected routing: {ex.Message}");
+        }
+    }
+
+    private static void OnNetworkDisconnected(string reason)
+    {
+        try
+        {
+            if (_root == null) return;
+            ShowPanel(PanelKind.Main);
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"OnNetworkDisconnected routing: {ex.Message}");
+        }
     }
 
     public static void Toggle()
@@ -142,11 +205,12 @@ public static class CoopMenuController
             pcRt.sizeDelta = new Vector2(CoopMenuTheme.PanelWidth, CoopMenuTheme.PanelHeightMain);
 
             // Panels — built once, hidden until requested.
-            _mainPanel  = new MainPanel();   _mainPanel.Build(_panelContainer.transform);
-            _hostPanel  = new HostPanel();   _hostPanel.Build(_panelContainer.transform);
-            _joinPanel  = new JoinPanel();   _joinPanel.Build(_panelContainer.transform);
-            _lobbyPanel = new LobbyPanel();  _lobbyPanel.Build(_panelContainer.transform);
-            _ipPanel    = new IpInfoPanel(); _ipPanel.Build(_panelContainer.transform);
+            _mainPanel            = new MainPanel();             _mainPanel.Build(_panelContainer.transform);
+            _hostPanel            = new HostPanel();             _hostPanel.Build(_panelContainer.transform);
+            _joinPanel            = new JoinPanel();             _joinPanel.Build(_panelContainer.transform);
+            _lobbyPanel           = new LobbyPanel();            _lobbyPanel.Build(_panelContainer.transform);
+            _ipPanel              = new IpInfoPanel();           _ipPanel.Build(_panelContainer.transform);
+            _createCharacterPanel = new CreateCharacterPanel();  _createCharacterPanel.Build(_panelContainer.transform);
 
             HideAllPanels();
             Plugin.Log.LogInfo("[CoopMenu] canvas built");
@@ -167,11 +231,12 @@ public static class CoopMenuController
         _current = kind;
         switch (kind)
         {
-            case PanelKind.Main:   _mainPanel?.Show();  break;
-            case PanelKind.Host:   _hostPanel?.Show();  break;
-            case PanelKind.Join:   _joinPanel?.Show();  break;
-            case PanelKind.Lobby:  _lobbyPanel?.Show(); break;
-            case PanelKind.IpInfo: _ipPanel?.Show();    break;
+            case PanelKind.Main:            _mainPanel?.Show();             break;
+            case PanelKind.Host:            _hostPanel?.Show();             break;
+            case PanelKind.Join:            _joinPanel?.Show();             break;
+            case PanelKind.Lobby:           _lobbyPanel?.Show();            break;
+            case PanelKind.IpInfo:          _ipPanel?.Show();               break;
+            case PanelKind.CreateCharacter: _createCharacterPanel?.Show();  break;
         }
     }
 
@@ -182,5 +247,6 @@ public static class CoopMenuController
         _joinPanel?.Hide();
         _lobbyPanel?.Hide();
         _ipPanel?.Hide();
+        _createCharacterPanel?.Hide();
     }
 }

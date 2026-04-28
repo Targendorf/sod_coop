@@ -13,7 +13,6 @@ public class JoinPanel : CoopPanelBase
 {
     protected override string Title => "Join a session";
 
-    private InputField _nicknameInput;
     private InputField _codeInput;
     private InputField _ipInput;
     private InputField _portInput;
@@ -22,17 +21,10 @@ public class JoinPanel : CoopPanelBase
 
     protected override void BuildBody()
     {
-        BodyLabel("Paste a join code, or enter the host's IP and port manually.",
+        BodyLabel("Paste a join code, or enter the host's IP and port manually. " +
+                  "If this is your first time on the host's world, you'll be asked to create your character after connecting.",
             CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelMuted);
         Spacer(8f);
-
-        BodyLabel("Nickname", CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
-        _nicknameInput = CoopMenuFactory.TextInput("Nickname", Body,
-            NetworkManager.LocalPlayerName ?? "Player", "Your in-game name",
-            CoopMenuTheme.PanelWidth - CoopMenuTheme.Padding * 2);
-        AddLayoutHeight(_nicknameInput.gameObject, 36f);
-
-        Spacer(6f);
 
         BodyLabel("Join code (recommended)", CoopMenuTheme.FontSizeSmall,
             CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
@@ -111,8 +103,6 @@ public class JoinPanel : CoopPanelBase
     {
         try
         {
-            NetworkManager.LocalPlayerName = string.IsNullOrWhiteSpace(_nicknameInput?.text)
-                ? "Player" : _nicknameInput.text;
             string ip = _ipInput?.text ?? "127.0.0.1";
             int port = int.TryParse(_portInput?.text ?? "9050", out var p) ? p : 9050;
 
@@ -122,15 +112,18 @@ public class JoinPanel : CoopPanelBase
                 _statusLabel.color = CoopMenuTheme.LabelWarn;
             }
 
-            if (NetworkManager.Connect(ip, port))
-            {
-                Plugin.Log.LogInfo($"[CoopMenu] connect-attempt to {ip}:{port}");
-                CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Lobby);
-            }
-            else if (_statusLabel != null)
+            // Note: we deliberately do NOT switch to the Lobby panel here.
+            // The host may need us to create a character first; the menu
+            // controller subscribes to OnCharacterCreationRequired and OnConnected
+            // and routes us to the right panel when the host responds.
+            if (!NetworkManager.Connect(ip, port) && _statusLabel != null)
             {
                 _statusLabel.text = "Connect failed — check IP / port.";
                 _statusLabel.color = CoopMenuTheme.LabelError;
+            }
+            else
+            {
+                Plugin.Log.LogInfo($"[CoopMenu] connect-attempt to {ip}:{port}");
             }
         }
         catch (System.Exception ex)
