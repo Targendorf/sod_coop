@@ -556,6 +556,13 @@ public static class NetworkManager
 
         Plugin.Log.LogInfo($"Player '{info.PlayerName}' (ID: {playerId}) fully joined. Total: {_clients.Count + 1}");
         OnPlayerJoined?.Invoke(playerId, info.PlayerName);
+
+        // Phase SJ.2: push current side-job state to the freshly-joined peer
+        // so they see all jobs that already exist (we only broadcast on
+        // create / state-change otherwise — mid-session joiners would miss
+        // everything generated before they connected).
+        try { SoDCoop.Sync.SideJobSync.SendSnapshotTo(peer); }
+        catch (Exception ex) { Plugin.Log.LogWarning($"SideJobSync.SendSnapshotTo: {ex.Message}"); }
     }
     
     private static void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)

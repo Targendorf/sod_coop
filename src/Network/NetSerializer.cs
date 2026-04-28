@@ -1079,38 +1079,95 @@ public struct NpcDamagePacket : INetPacket
 }
 
 /// <summary>
-/// Side-job lifecycle notification. Host-authoritative; clients render as
-/// chat banners only. <see cref="Kind"/> values:
+/// Side-job upsert (host → all). Carries full scalar state of a SideJob so
+/// the receiver can either (a) reconstruct a skeleton SideJob in its own
+/// SideJobController.allJobsDictionary, or (b) at minimum surface a chat
+/// banner about the lifecycle event. <see cref="Kind"/>:
 ///   0 = Created  (SideJob ctor finished — first generation)
 ///   1 = Posted   (SetJobState → posted — visible on poster's corkboard)
 ///   2 = Ended    (SetJobState → ended — completed / failed / expired)
+///   3 = Snapshot (host pushes existing jobs to a freshly-joined client)
 /// </summary>
-public struct SideJobNotificationPacket : INetPacket
+public struct SideJobUpsertPacket : INetPacket
 {
     public PacketType Type => PacketType.SideJobNotification;
 
     public byte   Kind;
     public int    JobId;
     public string PresetName;
-    public string PosterName;
+    public string MotiveStr;
+    public byte   State;             // SideJob.JobState: 0=generated 1=posted 2=ended
+    public bool   Accepted;
+    public int    CaseId;
+    public int    Phase;
+    public int    PostId;
+    public int    PosterHumanId;
+    public int    PurpHumanId;
     public int    Reward;
+    public string RewardSyncDisk;
+    public string JobInfoDialogMsg;
+    public string PosterName;        // pre-resolved on host for the banner text
+    public string Intro;
+    public string HandIn;
+    public bool   PostImmediately;
+    public int    FakeNumber;
+    public string FakeNumberStr;
+    public int    GooseChasePhone;
+    public int    GooseChaseFromPhone;
+    public bool   TriggerHandIn;
 
     public void Serialize(NetDataWriter w)
     {
         w.Put(Kind);
         w.Put(JobId);
         w.Put(PresetName ?? "");
-        w.Put(PosterName ?? "");
+        w.Put(MotiveStr ?? "");
+        w.Put(State);
+        w.Put(Accepted);
+        w.Put(CaseId);
+        w.Put(Phase);
+        w.Put(PostId);
+        w.Put(PosterHumanId);
+        w.Put(PurpHumanId);
         w.Put(Reward);
+        w.Put(RewardSyncDisk ?? "");
+        w.Put(JobInfoDialogMsg ?? "");
+        w.Put(PosterName ?? "");
+        w.Put(Intro ?? "");
+        w.Put(HandIn ?? "");
+        w.Put(PostImmediately);
+        w.Put(FakeNumber);
+        w.Put(FakeNumberStr ?? "");
+        w.Put(GooseChasePhone);
+        w.Put(GooseChaseFromPhone);
+        w.Put(TriggerHandIn);
     }
 
     public void Deserialize(NetDataReader r)
     {
-        Kind       = r.GetByte();
-        JobId      = r.GetInt();
-        PresetName = r.GetString();
-        PosterName = r.GetString();
-        Reward     = r.GetInt();
+        Kind                = r.GetByte();
+        JobId               = r.GetInt();
+        PresetName          = r.GetString();
+        MotiveStr           = r.GetString();
+        State               = r.GetByte();
+        Accepted            = r.GetBool();
+        CaseId              = r.GetInt();
+        Phase               = r.GetInt();
+        PostId              = r.GetInt();
+        PosterHumanId       = r.GetInt();
+        PurpHumanId         = r.GetInt();
+        Reward              = r.GetInt();
+        RewardSyncDisk      = r.GetString();
+        JobInfoDialogMsg    = r.GetString();
+        PosterName          = r.GetString();
+        Intro               = r.GetString();
+        HandIn              = r.GetString();
+        PostImmediately     = r.GetBool();
+        FakeNumber          = r.GetInt();
+        FakeNumberStr       = r.GetString();
+        GooseChasePhone     = r.GetInt();
+        GooseChaseFromPhone = r.GetInt();
+        TriggerHandIn       = r.GetBool();
     }
 }
 
