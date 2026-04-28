@@ -403,6 +403,58 @@ public class RemotePlayer : MonoBehaviour
         catch { /* animator quirks — non-fatal */ }
     }
 
+    /// <summary>Apply remote in-bed state. Best-effort animator pulse.</summary>
+    [HideFromIl2Cpp]
+    public void ApplyInBed(bool isInBed, bool isLowBed)
+    {
+        try
+        {
+            if (_animator == null) _animator = GetComponentInChildren<Animator>();
+            if (_animator == null) return;
+            var pars = _animator.parameters;
+            if (pars == null) return;
+            for (int i = 0; i < pars.Length; i++)
+            {
+                var p = pars[i];
+                if (p == null || string.IsNullOrEmpty(p.name)) continue;
+                var n = p.name.ToLowerInvariant();
+                if ((n == "isinbed" || n == "inbed" || n == "islayingdown") &&
+                    p.type == AnimatorControllerParameterType.Bool)
+                    _animator.SetBool(p.nameHash, isInBed);
+                else if ((n == "islowbed" || n == "lowbed") &&
+                    p.type == AnimatorControllerParameterType.Bool)
+                    _animator.SetBool(p.nameHash, isLowBed);
+            }
+        }
+        catch { /* animator quirks — non-fatal */ }
+    }
+
+    /// <summary>Apply remote asleep state.</summary>
+    [HideFromIl2Cpp]
+    public void ApplyAsleep(bool isAsleep)
+    {
+        try
+        {
+            if (_animator == null) _animator = GetComponentInChildren<Animator>();
+            if (_animator == null) return;
+            var pars = _animator.parameters;
+            if (pars == null) return;
+            for (int i = 0; i < pars.Length; i++)
+            {
+                var p = pars[i];
+                if (p == null || string.IsNullOrEmpty(p.name)) continue;
+                var n = p.name.ToLowerInvariant();
+                if ((n == "isasleep" || n == "asleep" || n == "sleeping" || n == "issleeping") &&
+                    p.type == AnimatorControllerParameterType.Bool)
+                {
+                    _animator.SetBool(p.nameHash, isAsleep);
+                    return;
+                }
+            }
+        }
+        catch { /* animator quirks — non-fatal */ }
+    }
+
     /// <summary>Apply remote flashlight on / off.</summary>
     [HideFromIl2Cpp]
     public void ApplyFlashlight(bool isOn)

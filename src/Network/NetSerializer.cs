@@ -1169,6 +1169,31 @@ public struct VmailCreatedPacket : INetPacket
     }
 }
 
+/// <summary>Local player got into / out of a bed.</summary>
+public struct PlayerInBedPacket : INetPacket
+{
+    public PacketType Type => PacketType.PlayerInBed;
+
+    public int  PlayerId;
+    public bool IsInBed;
+    public bool IsLowBed;
+
+    public void Serialize(NetDataWriter w)   { w.Put(PlayerId); w.Put(IsInBed); w.Put(IsLowBed); }
+    public void Deserialize(NetDataReader r) { PlayerId = r.GetInt(); IsInBed = r.GetBool(); IsLowBed = r.GetBool(); }
+}
+
+/// <summary>Local player fell asleep / woke up.</summary>
+public struct PlayerAsleepPacket : INetPacket
+{
+    public PacketType Type => PacketType.PlayerAsleep;
+
+    public int  PlayerId;
+    public bool IsAsleep;
+
+    public void Serialize(NetDataWriter w)   { w.Put(PlayerId); w.Put(IsAsleep); }
+    public void Deserialize(NetDataReader r) { PlayerId = r.GetInt(); IsAsleep = r.GetBool(); }
+}
+
 /// <summary>
 /// Player-to-player item handoff. Sender empties their slot under suppression
 /// (no ItemDrop packet flies); recipient calls PickUpItem on the same
@@ -1238,6 +1263,13 @@ public struct CrimeSceneDiscoveredPacket : INetPacket
 /// <summary>
 /// Phone call notification — lightweight banner-only sync (PhoneCall objects
 /// are too tangled with audio/dialog presets to safely replicate).
+///
+/// Two flavours encoded in the same packet:
+///   • Incoming NPC → host call: <c>CallerName</c> filled, <c>CalleeName</c>
+///     empty, banner reads "📞 Sarah is calling".
+///   • Outgoing player → NPC call: BOTH names filled, banner reads
+///     "📞 Player A is calling Sarah". Allows clients to see when their
+///     teammate picks up a phone and dials someone.
 /// </summary>
 public struct PhoneCallNotifyPacket : INetPacket
 {
@@ -1246,12 +1278,14 @@ public struct PhoneCallNotifyPacket : INetPacket
     public int    CallerHumanId;   // -1 if anonymous/system
     public string CallerName;      // resolved on the broadcasting side; empty if unknown
     public bool   IsStarting;      // true = call begun, false = call ended
+    public string CalleeName;      // non-empty marks "outgoing player call"; banner reads "X is calling Y"
 
     public void Serialize(NetDataWriter w)
     {
         w.Put(CallerHumanId);
         w.Put(CallerName ?? "");
         w.Put(IsStarting);
+        w.Put(CalleeName ?? "");
     }
 
     public void Deserialize(NetDataReader r)
@@ -1259,6 +1293,7 @@ public struct PhoneCallNotifyPacket : INetPacket
         CallerHumanId = r.GetInt();
         CallerName    = r.GetString();
         IsStarting    = r.GetBool();
+        CalleeName    = r.GetString();
     }
 }
 

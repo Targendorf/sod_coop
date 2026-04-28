@@ -199,6 +199,7 @@ public class CoopUpdateRunner : MonoBehaviour
             CoopUI.OnGUI();
             PingSystem.OnGUI();
             SoDCoop.Sync.PhoneSync.OnGUI();
+            SoDCoop.Sync.PlayerStateSync.OnGUI();
         }
         catch (System.Exception ex)
         {

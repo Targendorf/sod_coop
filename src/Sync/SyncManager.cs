@@ -134,6 +134,11 @@ public static class SyncManager
             {
                 InventorySync.OnPacketReceived(type, reader, senderId);
             }
+            // Player sleep / in-bed (38, 39).
+            else if (type == PacketType.PlayerInBed || type == PacketType.PlayerAsleep)
+            {
+                PlayerStateSync.OnPacketReceived(type, reader, senderId);
+            }
             // Player Packets: 10-29 (excluding 14, 15, 20-29 handled above)
             else if ((int)type >= 10 && (int)type <= 29)
             {

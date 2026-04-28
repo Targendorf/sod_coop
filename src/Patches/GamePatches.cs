@@ -520,6 +520,40 @@ public static class GamePatches
             try
             {
                 if (newCall == null) return;
+                if (!NetworkManager.IsConnected) return;
+
+                // Detect OUTGOING player call: PhoneCall.callerNS is the
+                // caller Human; if it's our local Player.Instance, this is
+                // a call WE just initiated.
+                bool isOutgoingFromMe = false;
+                try
+                {
+                    var callerHuman = newCall.callerNS;
+                    var localPlayer = global::Player.Instance;
+                    if (callerHuman != null && localPlayer != null
+                        && callerHuman.Pointer == localPlayer.Pointer)
+                        isOutgoingFromMe = true;
+                }
+                catch { }
+
+                if (isOutgoingFromMe)
+                {
+                    string callerName = NetworkManager.LocalPlayerName ?? "Player";
+                    string calleeName = "Unknown";
+                    try
+                    {
+                        // intendedReceiver Human is the NPC we're calling.
+                        var ir = newCall.intendedReceiverNS;
+                        if (ir != null && !string.IsNullOrEmpty(ir.citizenName))
+                            calleeName = ir.citizenName;
+                    }
+                    catch { }
+                    PhoneSync.BroadcastOutgoingPlayerCall(callerName, calleeName, isStarting: true);
+                    return;
+                }
+
+                // Otherwise treat as incoming NPC call — host-authoritative
+                // path so all peers see "Sarah is calling" exactly once.
                 if (!NetworkManager.IsHost) return;
                 int caller = newCall.caller;
                 string name = PhoneSync.ResolveCallerName(caller);
@@ -541,6 +575,34 @@ public static class GamePatches
             try
             {
                 if (newCall == null) return;
+                if (!NetworkManager.IsConnected) return;
+
+                bool isOutgoingFromMe = false;
+                try
+                {
+                    var callerHuman = newCall.callerNS;
+                    var localPlayer = global::Player.Instance;
+                    if (callerHuman != null && localPlayer != null
+                        && callerHuman.Pointer == localPlayer.Pointer)
+                        isOutgoingFromMe = true;
+                }
+                catch { }
+
+                if (isOutgoingFromMe)
+                {
+                    string callerName = NetworkManager.LocalPlayerName ?? "Player";
+                    string calleeName = "Unknown";
+                    try
+                    {
+                        var ir = newCall.intendedReceiverNS;
+                        if (ir != null && !string.IsNullOrEmpty(ir.citizenName))
+                            calleeName = ir.citizenName;
+                    }
+                    catch { }
+                    PhoneSync.BroadcastOutgoingPlayerCall(callerName, calleeName, isStarting: false);
+                    return;
+                }
+
                 if (!NetworkManager.IsHost) return;
                 int caller = newCall.caller;
                 string name = PhoneSync.ResolveCallerName(caller);
@@ -1086,6 +1148,77 @@ public static class GamePatches
     //  are suppressed via DamageSync.IsApplyingRemote being checked in the
     //  related ShouldSuppressBroadcast cascades.
     // ─────────────────────────────────────────────────────────────────────────
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Player sleep / wake / in-bed transitions.
+    //
+    //  Patches the Actor base methods (Player inherits Actor) and filters to
+    //  the LOCAL Player.Instance — NPCs sleep on their own deterministic
+    //  schedule and don't need explicit sync for this.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(Actor), nameof(Actor.SetInBed))]
+    public static class Actor_SetInBed_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Actor __instance, bool newVal, bool isLowBed)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (PlayerStateSync.IsApplyingRemote) return;
+                var localPlayer = global::Player.Instance;
+                if (localPlayer == null || __instance.Pointer != localPlayer.Pointer) return;
+                PlayerStateSync.BroadcastInBed(newVal, isLowBed);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"Actor.SetInBed patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(Actor), nameof(Actor.GoToSleep))]
+    public static class Actor_GoToSleep_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Actor __instance)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (PlayerStateSync.IsApplyingRemote) return;
+                var localPlayer = global::Player.Instance;
+                if (localPlayer == null || __instance.Pointer != localPlayer.Pointer) return;
+                PlayerStateSync.BroadcastAsleep(true);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"Actor.GoToSleep patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(Actor), nameof(Actor.WakeUp))]
+    public static class Actor_WakeUp_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Actor __instance)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (PlayerStateSync.IsApplyingRemote) return;
+                var localPlayer = global::Player.Instance;
+                if (localPlayer == null || __instance.Pointer != localPlayer.Pointer) return;
+                PlayerStateSync.BroadcastAsleep(false);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"Actor.WakeUp patch: {ex.Message}");
+            }
+        }
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
     //  Toolbox.NewVmailThread — voicemail thread creation.

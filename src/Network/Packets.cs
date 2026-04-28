@@ -217,6 +217,19 @@ public enum PacketType : byte
     /// </summary>
     PlayerHandoff = 37,
 
+    /// <summary>
+    /// Player got into / out of a bed. Mirrors Actor.SetInBed for the local
+    /// player so peers' RemotePlayer avatar lies down / stands up.
+    /// </summary>
+    PlayerInBed = 38,
+
+    /// <summary>
+    /// Player fell asleep / woke up. Mirrors Actor.GoToSleep / WakeUp.
+    /// Drives a HUD banner on peers ("X is asleep") so they know not to
+    /// wait — and animator transitions on the remote avatar.
+    /// </summary>
+    PlayerAsleep = 39,
+
     #endregion
     
     #region World Sync Packets (30-59)

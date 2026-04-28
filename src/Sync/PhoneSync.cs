@@ -37,15 +37,21 @@ public static class PhoneSync
     // ─────────────────────────────────────────────────────────────────────────
 
     public static void BroadcastCallStart(int callerHumanId, string callerName)
-        => Broadcast(callerHumanId, callerName, isStarting: true);
+        => BroadcastIncoming(callerHumanId, callerName, isStarting: true);
 
     public static void BroadcastCallEnd(int callerHumanId, string callerName)
-        => Broadcast(callerHumanId, callerName, isStarting: false);
+        => BroadcastIncoming(callerHumanId, callerName, isStarting: false);
 
-    private static void Broadcast(int callerHumanId, string callerName, bool isStarting)
+    /// <summary>
+    /// Host-authoritative broadcast for INCOMING calls (NPC → host's phone).
+    /// Each machine independently sees its own incoming calls (deterministic
+    /// from world seed), but we keep host-only broadcast here as a backstop
+    /// and so the host's own banner appears.
+    /// </summary>
+    private static void BroadcastIncoming(int callerHumanId, string callerName, bool isStarting)
     {
         if (!NetworkManager.IsConnected) return;
-        if (!NetworkManager.IsHost) return;     // host-only authority
+        if (!NetworkManager.IsHost) return;
 
         try
         {
@@ -54,17 +60,45 @@ public static class PhoneSync
                 CallerHumanId = callerHumanId,
                 CallerName    = callerName ?? "",
                 IsStarting    = isStarting,
+                CalleeName    = "",
             };
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.PhoneCallNotify, _writer, DeliveryMethod.ReliableOrdered);
-
-            // Show the banner locally too so the host sees it as well.
             ShowBanner(packet);
         }
         catch (System.Exception ex)
         {
-            Plugin.Log.LogWarning($"PhoneSync.Broadcast: {ex.Message}");
+            Plugin.Log.LogWarning($"PhoneSync.BroadcastIncoming: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Broadcast for OUTGOING player calls (local player → NPC). Anyone can
+    /// initiate a call (host or client), so this is broadcast from whoever's
+    /// the caller. Banner reads "📞 PlayerName is calling NpcName".
+    /// </summary>
+    public static void BroadcastOutgoingPlayerCall(string callerPlayerName, string calleeName, bool isStarting)
+    {
+        if (!NetworkManager.IsConnected) return;
+
+        try
+        {
+            var packet = new PhoneCallNotifyPacket
+            {
+                CallerHumanId = NetworkManager.LocalPlayerId,
+                CallerName    = callerPlayerName ?? "Player",
+                IsStarting    = isStarting,
+                CalleeName    = calleeName ?? "Unknown",
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.PhoneCallNotify, _writer, DeliveryMethod.ReliableOrdered);
+            // Don't show our own banner — we already see the in-game phone UI.
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"PhoneSync.BroadcastOutgoingPlayerCall: {ex.Message}");
         }
     }
 
@@ -107,15 +141,29 @@ public static class PhoneSync
 
     private static void ShowBanner(PhoneCallNotifyPacket p)
     {
-        var name = string.IsNullOrEmpty(p.CallerName) ? "Unknown" : p.CallerName;
-        var verb = p.IsStarting ? "is calling" : "hung up";
+        var caller = string.IsNullOrEmpty(p.CallerName) ? "Unknown" : p.CallerName;
+        var verb   = p.IsStarting ? "is calling"        : "hung up";
+        string text;
+        if (!string.IsNullOrEmpty(p.CalleeName))
+        {
+            // Outgoing player call.
+            text = p.IsStarting
+                ? $"📞 {caller} is calling {p.CalleeName}"
+                : $"📞 {caller} hung up on {p.CalleeName}";
+        }
+        else
+        {
+            // Incoming NPC call (or host-authoritative legacy path).
+            text = $"📞 {caller} {verb}";
+        }
+
         _banners.Add(new ActiveBanner
         {
-            Text       = $"📞 {name} {verb}",
+            Text       = text,
             ExpiresAt  = Time.unscaledTime + BANNER_LIFETIME,
         });
 
-        Plugin.Log.LogInfo($"[PhoneSync] banner: {name} {verb}");
+        Plugin.Log.LogInfo($"[PhoneSync] banner: {text}");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
