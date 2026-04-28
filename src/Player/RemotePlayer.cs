@@ -304,6 +304,226 @@ public class RemotePlayer : MonoBehaviour
     [HideFromIl2Cpp]
     public void ApplyAnimationState(PlayerAnimationPacket packet) { /* no-op */ }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Inventory-driven visual state (held item / raised / flashlight)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>Interactable.id currently visualised in the right hand, or -1 for empty.</summary>
+    private int _heldInteractableId = -1;
+    /// <summary>The instantiated copy of the held item's preset prefab, parented to the right hand.</summary>
+    private GameObject _heldVisual;
+    /// <summary>True when the avatar holds the item raised (combat-ready stance).</summary>
+    private bool _isRaised;
+    /// <summary>The flashlight Light component on the right hand, lazily created.</summary>
+    private Light _flashlight;
+
+    /// <summary>
+    /// Apply the held-item state from a remote player. -1 means empty hands.
+    /// Re-runs harmlessly with the same id (idempotent).
+    /// </summary>
+    [HideFromIl2Cpp]
+    public void ApplyHeldItem(int interactableId)
+    {
+        if (_heldInteractableId == interactableId) return;
+        _heldInteractableId = interactableId;
+        RebuildHeldVisual();
+    }
+
+    /// <summary>Apply remote raised / holstered stance.</summary>
+    [HideFromIl2Cpp]
+    public void ApplyRaised(bool isRaised)
+    {
+        if (_isRaised == isRaised) return;
+        _isRaised = isRaised;
+        // Best-effort: poke the citizen animator if it has an "isAiming" / "isRaised" parameter.
+        try
+        {
+            if (_animator == null) _animator = GetComponentInChildren<Animator>();
+            if (_animator == null) return;
+            var pars = _animator.parameters;
+            if (pars == null) return;
+            for (int i = 0; i < pars.Length; i++)
+            {
+                var p = pars[i];
+                if (p == null || string.IsNullOrEmpty(p.name)) continue;
+                var n = p.name.ToLowerInvariant();
+                if (n == "israised" || n == "raised" || n == "isaiming" || n == "aim" || n == "aiming")
+                {
+                    _animator.SetBool(p.nameHash, isRaised);
+                    break;
+                }
+            }
+        }
+        catch { /* animator quirks — non-fatal */ }
+    }
+
+    /// <summary>Apply remote flashlight on / off.</summary>
+    [HideFromIl2Cpp]
+    public void ApplyFlashlight(bool isOn)
+    {
+        try
+        {
+            if (isOn)
+            {
+                EnsureFlashlight();
+                if (_flashlight != null) _flashlight.enabled = true;
+            }
+            else
+            {
+                if (_flashlight != null) _flashlight.enabled = false;
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"RemotePlayer.ApplyFlashlight: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Find a "right hand" transform on the avatar — Animator humanoid bone first,
+    /// fallback to a name search, fallback to a fixed offset under the root.
+    /// </summary>
+    [HideFromIl2Cpp]
+    private Transform GetRightHandTransform()
+    {
+        try
+        {
+            if (_animator == null) _animator = GetComponentInChildren<Animator>();
+            if (_animator != null && _animator.isHuman)
+            {
+                var t = _animator.GetBoneTransform(HumanBodyBones.RightHand);
+                if (t != null) return t;
+            }
+        }
+        catch { }
+
+        // Fallback: search by common bone names.
+        try
+        {
+            var children = GetComponentsInChildren<Transform>(true);
+            for (int i = 0; i < children.Length; i++)
+            {
+                var n = children[i]?.name;
+                if (string.IsNullOrEmpty(n)) continue;
+                var lo = n.ToLowerInvariant();
+                if (lo == "righthand" || lo == "hand_r" || lo == "r_hand" || lo == "rightpalm") return children[i];
+            }
+        }
+        catch { }
+
+        // Last resort: dummy offset relative to root.
+        return transform;
+    }
+
+    [HideFromIl2Cpp]
+    private void RebuildHeldVisual()
+    {
+        // Tear down the previous visual.
+        if (_heldVisual != null)
+        {
+            try { Object.Destroy(_heldVisual); } catch { }
+            _heldVisual = null;
+        }
+        if (_heldInteractableId < 0) return;
+
+        try
+        {
+            var inter = FindInteractableById(_heldInteractableId);
+            if (inter == null) return;
+            var preset = inter.preset;
+            if (preset == null || preset.prefab == null) return;
+
+            var hand = GetRightHandTransform();
+            if (hand == null) return;
+
+            _heldVisual = Object.Instantiate(preset.prefab, hand);
+            _heldVisual.transform.localPosition = Vector3.zero;
+            _heldVisual.transform.localEulerAngles = preset.prefabLocalEuler;
+            _heldVisual.transform.localScale      = preset.prefabLocalScale != Vector3.zero
+                ? preset.prefabLocalScale
+                : Vector3.one;
+
+            // Strip any behaviour that would re-run game logic on this clone
+            // (Interactable, Rigidbody, Collider) — it's a static visual only.
+            StripHeldVisualComponents(_heldVisual);
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"RemotePlayer.RebuildHeldVisual({_heldInteractableId}): {ex.Message}");
+        }
+    }
+
+    [HideFromIl2Cpp]
+    private static void StripHeldVisualComponents(GameObject go)
+    {
+        try
+        {
+            var comps = go.GetComponentsInChildren<Component>(true);
+            for (int i = 0; i < comps.Length; i++)
+            {
+                var c = comps[i];
+                if (c == null) continue;
+                string typeName = null;
+                try { typeName = c.GetIl2CppType()?.Name; } catch { }
+                if (typeName == null) continue;
+                if (typeName == "Transform" || typeName == "MeshFilter" ||
+                    typeName == "MeshRenderer" || typeName == "SkinnedMeshRenderer")
+                    continue;
+                // Kill colliders, rigidbodies, interactable behaviours, audio sources.
+                try { Object.Destroy(c); } catch { }
+            }
+        }
+        catch { }
+    }
+
+    [HideFromIl2Cpp]
+    private static Interactable FindInteractableById(int id)
+    {
+        try
+        {
+            var dir = CityData.Instance?.interactableDirectory;
+            if (dir == null) return null;
+            if (id >= 0 && id < dir.Count)
+            {
+                var c = dir[id];
+                if (c != null && c.id == id) return c;
+            }
+            for (int i = 0; i < dir.Count; i++)
+            {
+                var c = dir[i];
+                if (c != null && c.id == id) return c;
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    [HideFromIl2Cpp]
+    private void EnsureFlashlight()
+    {
+        if (_flashlight != null) return;
+        try
+        {
+            var hand = GetRightHandTransform();
+            if (hand == null) return;
+            var go = new GameObject("RemoteFlashlight");
+            go.transform.SetParent(hand, false);
+            go.transform.localPosition = Vector3.zero;
+            go.transform.localRotation = Quaternion.identity;
+            _flashlight = go.AddComponent<Light>();
+            _flashlight.type      = LightType.Spot;
+            _flashlight.color     = new Color(1f, 0.96f, 0.85f, 1f);
+            _flashlight.intensity = 4f;
+            _flashlight.range     = 18f;
+            _flashlight.spotAngle = 55f;
+            _flashlight.shadows   = LightShadows.None;
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"RemotePlayer.EnsureFlashlight: {ex.Message}");
+        }
+    }
+
     /// <summary>Called by RemotePlayerManager when a citizen-clone visual is parented under us.</summary>
     [HideFromIl2Cpp]
     public void OnVisualUpgraded()
@@ -311,6 +531,10 @@ public class RemotePlayer : MonoBehaviour
         _animator = GetComponentInChildren<Animator>();
         _animatorParamsScanned = false;
         _animSpeedHash = _animIsRunningHash = _animIsCrouchingHash = -1;
+        // Reattach inventory visuals to the new rig's right-hand bone.
+        _flashlight = null;
+        RebuildHeldVisual();
+        if (_heldInteractableId >= 0) ApplyRaised(_isRaised);
     }
 
     /// <summary>Called when we revert to the capsule fallback (citizen rig destroyed).</summary>
@@ -320,6 +544,13 @@ public class RemotePlayer : MonoBehaviour
         _animator = null;
         _animatorParamsScanned = false;
         _animSpeedHash = _animIsRunningHash = _animIsCrouchingHash = -1;
+        // Citizen rig destroyed — drop attached visuals so they don't dangle.
+        if (_heldVisual != null)
+        {
+            try { Object.Destroy(_heldVisual); } catch { }
+            _heldVisual = null;
+        }
+        _flashlight = null;
     }
 
     [HideFromIl2Cpp]

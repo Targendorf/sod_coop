@@ -771,6 +771,47 @@ public static class GamePatches
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Held-item stance + flashlight (Phase 1 inventory visibility).
+    //  Held item itself is poll-based in InventorySync.Update — no patch needed.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.SetRaised))]
+    public static class FPItemController_SetRaised_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(bool val)
+        {
+            try
+            {
+                if (InventorySync.IsApplyingRemote) return;
+                InventorySync.BroadcastRaised(val);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"FPItemController.SetRaised patch: {ex.Message}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.SetFlashlight))]
+    public static class FPItemController_SetFlashlight_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(bool val)
+        {
+            try
+            {
+                if (InventorySync.IsApplyingRemote) return;
+                InventorySync.BroadcastFlashlight(val);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"FPItemController.SetFlashlight patch: {ex.Message}");
+            }
+        }
+    }
+
     [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.PickUpItem))]
     public static class FPItemController_PickUpItem_Patch
     {

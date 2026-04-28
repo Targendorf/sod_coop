@@ -98,6 +98,25 @@ public enum PacketType : byte
     /// </summary>
     PlayerVitals = 19,
 
+    /// <summary>
+    /// Currently held / equipped item changed. Carries Interactable.id of the
+    /// held item, or -1 for empty hands. Each player polls its own
+    /// FirstPersonItemController and broadcasts on change.
+    /// </summary>
+    ItemHeld = 20,
+
+    /// <summary>
+    /// Player's held item is raised (combat-ready) vs holstered/idle.
+    /// Mirrors FirstPersonItemController.SetRaised(bool).
+    /// </summary>
+    ItemRaised = 21,
+
+    /// <summary>
+    /// Player toggled the flashlight on / off.
+    /// Mirrors FirstPersonItemController.SetFlashlight(bool).
+    /// </summary>
+    ItemFlashlight = 22,
+
     #endregion
     
     #region World Sync Packets (30-59)

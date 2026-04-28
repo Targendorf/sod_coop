@@ -115,7 +115,14 @@ public static class SyncManager
             {
                 ItemSync.OnPacketReceived(type, reader, senderId);
             }
-            // Player Packets: 10-29 (excluding 14 and 15 handled above)
+            // Inventory visibility (20, 21, 22) — held item / raised / flashlight.
+            else if (type == PacketType.ItemHeld
+                  || type == PacketType.ItemRaised
+                  || type == PacketType.ItemFlashlight)
+            {
+                InventorySync.OnPacketReceived(type, reader, senderId);
+            }
+            // Player Packets: 10-29 (excluding 14, 15, 20-22 handled above)
             else if ((int)type >= 10 && (int)type <= 29)
             {
                 PlayerSync?.OnPacketReceived(type, reader, senderId);

@@ -1215,6 +1215,48 @@ public struct PlayerVitalsPacket : INetPacket
 }
 
 /// <summary>
+/// Currently held item changed. Each side polls its local
+/// <c>FirstPersonItemController.currentItem</c>, resolves the backing
+/// <c>InventorySlot.interactableID</c>, and broadcasts on change. Receivers
+/// spawn a copy of the Interactable's preset prefab on the remote player's
+/// right-hand bone. <c>InteractableId == -1</c> means empty hands.
+/// </summary>
+public struct ItemHeldPacket : INetPacket
+{
+    public PacketType Type => PacketType.ItemHeld;
+
+    public int PlayerId;
+    public int InteractableId;     // -1 = empty hand
+
+    public void Serialize(NetDataWriter w)   { w.Put(PlayerId); w.Put(InteractableId); }
+    public void Deserialize(NetDataReader r) { PlayerId = r.GetInt(); InteractableId = r.GetInt(); }
+}
+
+/// <summary>Player raised / lowered their held item (combat-ready stance).</summary>
+public struct ItemRaisedPacket : INetPacket
+{
+    public PacketType Type => PacketType.ItemRaised;
+
+    public int  PlayerId;
+    public bool IsRaised;
+
+    public void Serialize(NetDataWriter w)   { w.Put(PlayerId); w.Put(IsRaised); }
+    public void Deserialize(NetDataReader r) { PlayerId = r.GetInt(); IsRaised = r.GetBool(); }
+}
+
+/// <summary>Player toggled their flashlight on / off.</summary>
+public struct ItemFlashlightPacket : INetPacket
+{
+    public PacketType Type => PacketType.ItemFlashlight;
+
+    public int  PlayerId;
+    public bool IsOn;
+
+    public void Serialize(NetDataWriter w)   { w.Put(PlayerId); w.Put(IsOn); }
+    public void Deserialize(NetDataReader r) { PlayerId = r.GetInt(); IsOn = r.GetBool(); }
+}
+
+/// <summary>
 /// Item pickup event — keyed by Interactable.id.
 /// Sent after a successful FirstPersonItemController.PickUpItem so peers can
 /// hide the in-world object (it's now in the picker's inventory).

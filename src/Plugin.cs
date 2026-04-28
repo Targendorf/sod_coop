@@ -184,6 +184,7 @@ public class CoopUpdateRunner : MonoBehaviour
             SyncManager.Update();
             CoopUI.Update();
             PingSystem.Update();
+            SoDCoop.Sync.InventorySync.Update();
         }
         catch (System.Exception ex)
         {
