@@ -1195,6 +1195,51 @@ public struct PlayerAsleepPacket : INetPacket
 }
 
 /// <summary>
+/// Host's connection-lobby status. Broadcast at low frequency (every 2s)
+/// from the host so connected clients can render a live "Host is loading…"
+/// / "Host in game: City, Day N HH:MM" lobby UI without the client
+/// having to query.
+/// </summary>
+public enum HostPhase : byte
+{
+    InMainMenu   = 0,
+    LoadingWorld = 1,
+    InGame       = 2,
+}
+
+public struct HostStatusPacket : INetPacket
+{
+    public PacketType Type => PacketType.HostStatus;
+
+    public byte    Phase;        // HostPhase
+    public string  HostNickname;
+    public string  CityName;     // empty unless InGame
+    public string  ShareSeed;    // SoD city share-seed string when known
+    public float   GameTime;     // current game time when InGame
+    public int     PlayerCount;  // total connected players (including host)
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(Phase);
+        w.Put(HostNickname ?? "");
+        w.Put(CityName ?? "");
+        w.Put(ShareSeed ?? "");
+        w.Put(GameTime);
+        w.Put(PlayerCount);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        Phase        = r.GetByte();
+        HostNickname = r.GetString();
+        CityName     = r.GetString();
+        ShareSeed    = r.GetString();
+        GameTime     = r.GetFloat();
+        PlayerCount  = r.GetInt();
+    }
+}
+
+/// <summary>
 /// Money credit / debit on the local player. Quest rewards, evidence sales,
 /// found cash, fees. Receiver re-invokes
 /// <c>GameplayController.AddMoney(amount, displayMessage, reason)</c> so

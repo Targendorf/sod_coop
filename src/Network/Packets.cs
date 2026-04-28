@@ -238,6 +238,14 @@ public enum PacketType : byte
     /// </summary>
     MoneyAdded = 40,
 
+    /// <summary>
+    /// Host's lifecycle status (in-menu, loading world, in game) plus
+    /// city name + game time, broadcast every couple of seconds so the
+    /// client lobby UI can show "Host is loading…" or "Host in game:
+    /// New Babylon, Day 3 14:32".
+    /// </summary>
+    HostStatus = 41,
+
     #endregion
     
     #region World Sync Packets (30-59)

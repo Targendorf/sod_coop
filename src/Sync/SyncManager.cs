@@ -144,6 +144,11 @@ public static class SyncManager
             {
                 MoneySync.OnPacketReceived(type, reader, senderId);
             }
+            // Host lobby status (41).
+            else if (type == PacketType.HostStatus)
+            {
+                HostStatusSync.OnPacketReceived(type, reader, senderId);
+            }
             // Player Packets: 10-29 (excluding 14, 15, 20-29 handled above)
             else if ((int)type >= 10 && (int)type <= 29)
             {

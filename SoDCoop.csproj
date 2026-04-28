@@ -76,6 +76,15 @@
       <HintPath>$(BepInExPath)\interop\UnityEngine.TextRenderingModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- uGUI for the Canvas-based co-op menu (Image / Button / Text / InputField). -->
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(BepInExPath)\interop\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(BepInExPath)\interop\UnityEngine.UIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <!-- Community helper library (Venomaus). Loaded by Gale, do not copy. -->
     <Reference Include="SOD.Common">
       <HintPath>$(BepInExPath)\plugins\Venomaus-SODCommon\SOD.Common.dll</HintPath>

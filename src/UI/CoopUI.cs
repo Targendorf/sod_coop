@@ -79,37 +79,29 @@ public static class CoopUI
     
     public static void Update()
     {
-        // Toggle UI with F9
+        // Toggle the new Canvas-based co-op menu with F9. The legacy IMGUI
+        // window is no longer used for the lobby flow — see CoopMenuController.
         if (Input.GetKeyDown(TOGGLE_KEY))
         {
-            _showUI = !_showUI;
+            try { SoDCoop.UI.Coop.CoopMenuController.Toggle(); }
+            catch (System.Exception ex) { Plugin.Log.LogWarning($"Coop menu toggle: {ex.Message}"); }
         }
+
+        // Drive the new menu's per-frame poll (lobby / host status refresh).
+        try { SoDCoop.UI.Coop.CoopMenuController.Update(); } catch { }
     }
-    
+
     public static void OnGUI()
     {
-        // Always show name tags + player HUD + chat when connected.
+        // In-world overlays remain IMGUI: nametags, player vitals HUD, chat.
+        // The lobby / setup menu is now a Canvas (CoopMenuController), so we
+        // intentionally don't draw the old GUILayout.Window here anymore.
         if (NetworkManager.IsConnected)
         {
             NameTagOverlay.Draw();
             DrawPlayerListHUD();
             DrawChatWindow();
         }
-        
-        if (!_showUI) return;
-        
-        // Apply custom skin
-        GUI.skin.window.normal.background = MakeTexture(2, 2, new Color(0.1f, 0.1f, 0.15f, 0.95f));
-        GUI.skin.button.normal.background = MakeTexture(2, 2, new Color(0.2f, 0.4f, 0.6f, 0.9f));
-        GUI.skin.button.hover.background = MakeTexture(2, 2, new Color(0.3f, 0.5f, 0.7f, 0.9f));
-        GUI.skin.textField.normal.background = MakeTexture(2, 2, new Color(0.15f, 0.15f, 0.2f, 0.9f));
-        
-        _mainWindowRect = GUILayout.Window(
-            12345,
-            _mainWindowRect,
-            (GUI.WindowFunction)DrawMainWindow,
-            $"SoD Coop v{PluginInfo.PLUGIN_VERSION}"
-        );
     }
     
     private static void DrawMainWindow(int windowId)

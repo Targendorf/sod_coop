@@ -144,6 +144,7 @@ public class Plugin : BasePlugin
         
         Log.LogInfo("Initializing UI...");
         CoopUI.Initialize();
+        SoDCoop.UI.Coop.CoopMenuController.Initialize();
 
         Log.LogInfo("Initializing SOD.Common bridge...");
         SodCommonBridge.Initialize();
@@ -185,6 +186,7 @@ public class CoopUpdateRunner : MonoBehaviour
             CoopUI.Update();
             PingSystem.Update();
             SoDCoop.Sync.InventorySync.Update();
+            SoDCoop.Sync.HostStatusSync.Update();
         }
         catch (System.Exception ex)
         {
