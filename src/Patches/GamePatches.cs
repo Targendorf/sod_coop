@@ -1659,6 +1659,44 @@ public static class GamePatches
         }
     }
 
+    /// <summary>
+    /// Phase SJ.2.b — accept flow. <c>SideJob.OnPlayerCall</c> is the
+    /// vanilla entry-point that fires when the player calls the poster's
+    /// number to accept a job. On the client, our skeleton SideJob can't
+    /// run this end-to-end (missing dialog tree / leadKeys), so we suppress
+    /// the local invocation and ship the accept request to host. Host runs
+    /// the real OnPlayerCall on its real SideJob, which flips
+    /// <c>accepted=true</c> + advances state, then re-broadcasts the upsert.
+    /// </summary>
+    [HarmonyPatch(typeof(SideJob), nameof(SideJob.OnPlayerCall))]
+    public static class SideJob_OnPlayerCall_Patch
+    {
+        [HarmonyPrefix]
+        public static bool Prefix(SideJob __instance)
+        {
+            try
+            {
+                if (__instance == null) return true;
+                if (SideJobSync.IsApplyingRemote) return true; // host's own server-side replay
+
+                // Only redirect from clients. Host runs vanilla.
+                if (!NetworkManager.IsConnected) return true;
+                if (NetworkManager.IsHost) return true;
+
+                int jobID = __instance.jobID;
+                SideJobSync.RequestAccept(jobID);
+
+                Plugin.Log.LogInfo($"[SideJob.OnPlayerCall] client suppressed local invocation for jobID={jobID}; accept-request sent to host.");
+                return false; // skip original
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"SideJob.OnPlayerCall patch: {ex.Message}");
+            }
+            return true;
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     //  Phase 3b — NPC state mutations & player-to-NPC item transfers.
     //

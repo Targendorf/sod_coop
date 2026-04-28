@@ -585,5 +585,16 @@ public enum PacketType : byte
     /// </summary>
     PlayerOutfit = 107,
 
+    /// <summary>
+    /// Side-job accept request (client → host). Phase SJ.2.b: when a
+    /// client triggers <c>SideJob.OnPlayerCall</c> on its skeleton SideJob
+    /// (player called the poster's phone number), we suppress the local
+    /// invocation and ship the jobID to host. Host runs vanilla
+    /// <c>OnPlayerCall</c> on its real SideJob — which flips
+    /// <c>accepted = true</c>, advances <c>phase</c>, etc. — then re-
+    /// broadcasts the upsert so all peers see the new state.
+    /// </summary>
+    SideJobAcceptRequest = 108,
+
     #endregion
 }

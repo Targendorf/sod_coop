@@ -174,6 +174,11 @@ public static class SyncManager
             {
                 SideJobSync.OnPacketReceived(type, reader, senderId);
             }
+            // Side-job accept request (108) — client → host, runs OnPlayerCall and re-broadcasts upsert.
+            else if (type == PacketType.SideJobAcceptRequest)
+            {
+                SideJobSync.OnPacketReceived(type, reader, senderId);
+            }
             // Trespass / illegal-status flags (106) — client → host, applied to twin.
             else if (type == PacketType.PlayerSuspicion)
             {

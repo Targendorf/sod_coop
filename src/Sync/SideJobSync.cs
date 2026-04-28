@@ -37,6 +37,7 @@ public static class SideJobSync
     public const byte KIND_POSTED   = 1;
     public const byte KIND_ENDED    = 2;
     public const byte KIND_SNAPSHOT = 3;
+    public const byte KIND_UPDATED  = 4; // generic state-changed (e.g. after accept)
 
     public static bool IsApplyingRemote { get; private set; }
 
@@ -193,19 +194,96 @@ public static class SideJobSync
 
     public static void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
     {
-        if (type != PacketType.SideJobNotification) return;
-
         try
         {
-            var p = new SideJobUpsertPacket();
-            p.Deserialize(reader);
-            ApplyUpsert(p);
+            switch (type)
+            {
+                case PacketType.SideJobNotification:
+                {
+                    var p = new SideJobUpsertPacket();
+                    p.Deserialize(reader);
+                    ApplyUpsert(p);
+                    break;
+                }
+                case PacketType.SideJobAcceptRequest:
+                {
+                    int jobID = reader.GetInt();
+                    HandleAcceptRequest(jobID, senderId);
+                    break;
+                }
+            }
         }
         catch (Exception ex)
         {
             Plugin.Log.LogError($"SideJobSync.OnPacketReceived: {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// Client → host. Sent from the client's <c>SideJob.OnPlayerCall</c>
+    /// Harmony prefix when the local invocation is suppressed.
+    /// </summary>
+    public static void RequestAccept(int jobID)
+    {
+        if (NetworkManager.IsHost) return;
+        if (!NetworkManager.IsConnected) return;
+
+        try
+        {
+            _writer.Reset();
+            _writer.Put(jobID);
+            NetworkManager.SendToHost(PacketType.SideJobAcceptRequest, _writer, DeliveryMethod.ReliableOrdered);
+            Plugin.Log.LogInfo($"[SideJobSync] sent accept-request for jobID={jobID}");
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"SideJobSync.RequestAccept: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Host-side. Look up the live SideJob in <c>allJobsDictionary</c> and
+    /// invoke vanilla <c>OnPlayerCall</c> — which flips <c>accepted=true</c>,
+    /// transitions phase, etc. Then broadcast a fresh upsert so all peers
+    /// (including the requester) see the new state.
+    /// </summary>
+    private static void HandleAcceptRequest(int jobID, int senderId)
+    {
+        if (!NetworkManager.IsHost) return;
+
+        try
+        {
+            var ctrl = global::SideJobController.Instance;
+            if (ctrl == null) { Plugin.Log.LogWarning($"[SideJobSync] accept-request jobID={jobID}: no SideJobController.Instance"); return; }
+            var dict = ctrl.allJobsDictionary;
+            if (dict == null || !dict.TryGetValue(jobID, out var job) || job == null)
+            {
+                Plugin.Log.LogWarning($"[SideJobSync] accept-request: jobID={jobID} not in allJobsDictionary on host.");
+                return;
+            }
+
+            IsApplyingRemote = true;
+            try
+            {
+                job.OnPlayerCall();
+                Plugin.Log.LogInfo($"[SideJobSync] applied accept for jobID={jobID} from playerId={senderId}; accepted={TryReadBool(() => job.accepted)} state={TryReadInt(() => (int)job.state)}");
+            }
+            finally
+            {
+                IsApplyingRemote = false;
+            }
+
+            // Broadcast updated state to all peers — OnPlayerCall may flip
+            // accepted / phase / state without going through SetJobState
+            // (which would have hit our existing patch).
+            Broadcast(KIND_UPDATED, job, peer: null);
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogError($"SideJobSync.HandleAcceptRequest: {ex.Message}");
+        }
+    }
+
 
     private static void ApplyUpsert(SideJobUpsertPacket p)
     {
