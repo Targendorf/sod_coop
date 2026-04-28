@@ -193,6 +193,23 @@ public class PlayerSync
             var packet = new PlayerVitalsPacket();
             packet.Deserialize(reader);
             if (packet.PlayerId == NetworkManager.LocalPlayerId) return;
+
+            // Drive RemotePlayer's downed pose from the IsDead bit. This is
+            // the resilient path: even if a PlayerDamage event packet got
+            // dropped, the next vitals tick will bring the visual into sync.
+            // PlayerDamage is the immediate path; this one is the safety net.
+            try
+            {
+                _remoteVitals.TryGetValue(packet.PlayerId, out var prev);
+                bool prevDead = prev.IsDead;
+                if (prevDead != packet.IsDead)
+                {
+                    var rp = SoDCoop.Player.RemotePlayerManager.GetPlayer(packet.PlayerId);
+                    rp?.SetDown(packet.IsDead);
+                }
+            }
+            catch { }
+
             _remoteVitals[packet.PlayerId] = packet;
         }
     }

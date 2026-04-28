@@ -546,6 +546,16 @@ public enum PacketType : byte
     /// Lightweight banner: caller name and start/end flag, no full PhoneCall replay.
     /// </summary>
     PhoneCallNotify = 103,
-    
+
+    /// <summary>
+    /// Local player took damage. Carries amount, attacker (if known), hit
+    /// position / direction, and a lethal flag. Receivers replay it as a
+    /// chat banner ("X is hurt" / "X is down") and toggle a visible "downed"
+    /// pose on that player's RemotePlayer avatar. Player health itself is
+    /// still per-machine state (we only sync the *event*, not HP value),
+    /// matching the existing "asymmetric" pattern in PlayerVitals.
+    /// </summary>
+    PlayerDamage = 104,
+
     #endregion
 }

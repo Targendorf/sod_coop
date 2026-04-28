@@ -1079,6 +1079,50 @@ public struct NpcDamagePacket : INetPacket
 }
 
 /// <summary>
+/// Local player took damage. Carries the event metadata (amount, attacker,
+/// hit pos/dir, lethal flag) so receivers can show a chat banner and toggle
+/// a "downed" visual on the corresponding RemotePlayer.
+///
+/// <para>HP / health value itself is NOT synced — each machine keeps its own
+/// player-health state. Only the discrete damage events are mirrored, which
+/// is enough for chat awareness + visible ragdoll on lethal hits.</para>
+/// </summary>
+public struct PlayerDamagePacket : INetPacket
+{
+    public PacketType Type => PacketType.PlayerDamage;
+
+    public int     SenderId;
+    public int     PlayerId;          // network player id of the victim
+    public int     AttackerHumanId;   // -1 if unknown / environment
+    public float   Amount;
+    public Vector3 HitPosition;
+    public Vector3 HitDirection;
+    public bool    IsLethal;          // killing-blow flag — receiver shows "down" pose
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(SenderId);
+        w.Put(PlayerId);
+        w.Put(AttackerHumanId);
+        w.Put(Amount);
+        w.Put(HitPosition);
+        w.Put(HitDirection);
+        w.Put(IsLethal);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        SenderId        = r.GetInt();
+        PlayerId        = r.GetInt();
+        AttackerHumanId = r.GetInt();
+        Amount          = r.GetFloat();
+        HitPosition     = r.GetVector3();
+        HitDirection    = r.GetVector3();
+        IsLethal        = r.GetBool();
+    }
+}
+
+/// <summary>
 /// Player pressed an elevator floor button. Cross-machine elevator identity
 /// is the pair (<c>building.buildingID</c>, <c>bottom.globalTileCoord</c>) —
 /// both are deterministic from the world seed. Receiver iterates

@@ -1451,10 +1451,28 @@ public static class GamePatches
             {
                 if (__instance == null) return;
                 if (DamageSync.IsApplyingRemote) return;
+                if (PlayerDamageSync.IsApplyingRemote) return;
 
-                // Skip Player victims — health is local per-machine.
+                // Player victim path — HP itself is per-machine state, but we
+                // still want to notify peers of the discrete damage event so
+                // they get a chat banner and (on lethal) a downed pose on the
+                // RemotePlayer. Then early-return — the NPC broadcast below
+                // doesn't apply.
                 if (global::Player.Instance != null && __instance.Pointer == global::Player.Instance.Pointer)
+                {
+                    int playerAttackerHumanId = -1;
+                    if (fromWho != null)
+                    {
+                        try { playerAttackerHumanId = fromWho.TryCast<Human>()?.humanID ?? -1; } catch { }
+                    }
+                    PlayerDamageSync.BroadcastDamage(
+                        playerAttackerHumanId,
+                        amount,
+                        damagePosition,
+                        damageDirection,
+                        isLethal: enableKill);
                     return;
+                }
 
                 // Look up victim humanID via Human cast.
                 var victimHuman = __instance.TryCast<Human>();

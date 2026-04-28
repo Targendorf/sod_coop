@@ -164,6 +164,11 @@ public static class SyncManager
             {
                 DamageSync.OnPacketReceived(type, reader, senderId);
             }
+            // Local-player damage events (104) — chat banner + RemotePlayer down pose.
+            else if (type == PacketType.PlayerDamage)
+            {
+                PlayerDamageSync.OnPacketReceived(type, reader, senderId);
+            }
             // Elevator floor call (32).
             else if (type == PacketType.ElevatorCall)
             {

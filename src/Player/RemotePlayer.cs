@@ -75,6 +75,54 @@ public class RemotePlayer : MonoBehaviour
 
     private bool _initialized;
 
+    /// <summary>
+    /// True when this remote player is downed (lethal damage / dead). Visual
+    /// hook: Update() tilts the avatar 90° so they appear to be lying on the
+    /// ground, and animator updates are skipped so they freeze in place.
+    /// Cleared via SetDown(false), e.g. when a fresh PlayerVitals packet
+    /// reports IsDead=false (player respawned / woke up).
+    /// </summary>
+    public bool IsDown { get; private set; }
+
+    /// <summary>Avatar visual tilt applied when IsDown is true. Local-space, around forward axis.</summary>
+    private static readonly Quaternion DOWN_TILT = Quaternion.Euler(90f, 0f, 0f);
+
+    /// <summary>
+    /// Toggle the downed state. When entering down, captures all child
+    /// transforms' local rotations so we can restore them. Idempotent.
+    /// </summary>
+    [HideFromIl2Cpp]
+    public void SetDown(bool isDown)
+    {
+        if (IsDown == isDown) return;
+        IsDown = isDown;
+
+        try
+        {
+            // Apply local tilt to direct child visuals (capsule / cloned
+            // citizen body). The parent transform keeps being driven by
+            // snapshot interpolation in Update() — we only rotate children.
+            for (int i = 0; i < transform.childCount; i++)
+            {
+                var child = transform.GetChild(i);
+                if (child == null) continue;
+                // Skip the BillboardLabel nametag (it has its own behaviour).
+                if (child.name != null && child.name.StartsWith("Label", System.StringComparison.Ordinal)) continue;
+
+                child.localRotation = isDown ? DOWN_TILT : Quaternion.identity;
+            }
+
+            if (_animator != null)
+            {
+                try { _animator.enabled = !isDown; } catch { }
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"RemotePlayer.SetDown({isDown}) for {PlayerName}: {ex.Message}");
+        }
+    }
+
     [HideFromIl2Cpp]
     public void Initialize(int playerId, string playerName)
     {
