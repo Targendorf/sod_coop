@@ -437,18 +437,9 @@ public static class CoopUI
 
             AddChatMessage(packet.PlayerId, packet.PlayerName, packet.Message);
 
-            // Host: rebroadcast to all OTHER clients so 3+ player chats fan out.
-            if (NetworkManager.IsHost)
-            {
-                var fwd = new NetDataWriter();
-                packet.Serialize(fwd);
-                foreach (var client in NetworkManager.Clients)
-                {
-                    // Skip the original sender (we don't have its peer here cheaply, so just send to all;
-                    // sender will filter via PlayerId == LocalPlayerId on its end).
-                    NetworkManager.SendTo(client, PacketType.ChatMessage, fwd, DeliveryMethod.ReliableOrdered);
-                }
-            }
+            // Host→other-clients fan-out is now handled generically in
+            // NetworkManager.OnNetworkReceive (star-topology forward) — we
+            // don't manually rebroadcast here anymore.
         }
         catch (System.Exception ex)
         {

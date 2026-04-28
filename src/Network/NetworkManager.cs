@@ -623,13 +623,74 @@ public static class NetworkManager
         }
     }
     
+    /// <summary>
+    /// Used for star-topology rebroadcast: when host receives a packet from
+    /// client A, it must forward the same bytes to clients B, C, ... so all
+    /// peers see each other's events. Distinct from <see cref="_sendWrapper"/>
+    /// to avoid aliasing during nested dispatch.
+    /// </summary>
+    private static readonly NetDataWriter _forwardWrapper = new();
+
+    /// <summary>
+    /// Packet types that are NOT host-rebroadcast to other clients.
+    /// Mostly handshake / connection-flow packets that have specific
+    /// host↔single-peer semantics, plus packets host already broadcasts
+    /// itself via SendToAll (HostStatus, SideJobNotification).
+    /// </summary>
+    private static bool IsForwardableFromClient(PacketType type)
+    {
+        switch (type)
+        {
+            case PacketType.Handshake:                  // host→client only
+            case PacketType.PlayerJoined:               // host→client only
+            case PacketType.PlayerLeft:                 // host→client only
+            case PacketType.CharacterCreationRequired:  // host→single client
+            case PacketType.CharacterSubmit:            // client→host only (no fan-out)
+            case PacketType.CharacterReset:             // client→host only
+            case PacketType.CharacterRejected:          // host→single client
+            case PacketType.HostStatus:                 // host originates, already SendToAll
+            case PacketType.SideJobNotification:        // host originates
+            case PacketType.SideJobAcceptRequest:       // client→host only; host re-broadcasts upsert
+                return false;
+            default:
+                return true;
+        }
+    }
+
     private static void OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channel, DeliveryMethod deliveryMethod)
     {
         try
         {
             var packetType = (PacketType)reader.GetByte();
             int senderId = GetPlayerIdByPeer(peer);
-            
+
+            // Host-side star-topology rebroadcast: capture the body bytes
+            // BEFORE dispatch (which advances the reader), then forward to
+            // all *other* clients after dispatch completes. The originating
+            // peer is skipped to avoid self-echo. Sender preservation: the
+            // SenderId field inside the packet body stays at the original
+            // client's LocalPlayerId (host-assigned), so receiving clients
+            // correctly distinguish "from peer N" vs their own echo.
+            byte[] forwardBody = null;
+            int    forwardBodyLen = 0;
+            if (IsHost && _clients.Count >= 2 && IsForwardableFromClient(packetType))
+            {
+                try
+                {
+                    forwardBodyLen = reader.AvailableBytes;
+                    if (forwardBodyLen > 0)
+                    {
+                        forwardBody = new byte[forwardBodyLen];
+                        System.Buffer.BlockCopy(reader.RawData, reader.Position, forwardBody, 0, forwardBodyLen);
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    Plugin.Log.LogWarning($"OnNetworkReceive forward-capture: {ex.Message}");
+                    forwardBody = null;
+                }
+            }
+
             switch (packetType)
             {
                 case PacketType.Handshake:
@@ -664,6 +725,31 @@ public static class NetworkManager
                     // Forward to registered handlers
                     OnPacketReceived?.Invoke(packetType, reader, senderId);
                     break;
+            }
+
+            // Star-topology forward to other clients (host only). After
+            // dispatch so any host-side modification (e.g. forensics
+            // attribution remap on Apply) has had a chance to run on the
+            // host's local state. Body bytes themselves are forwarded raw
+            // so receiving clients see the same SenderId / payload the
+            // originating client sent.
+            if (forwardBody != null && _clients.Count >= 2)
+            {
+                try
+                {
+                    _forwardWrapper.Reset();
+                    _forwardWrapper.Put((byte)packetType);
+                    _forwardWrapper.Put(forwardBody, 0, forwardBodyLen);
+                    foreach (var c in _clients)
+                    {
+                        if (c == peer) continue; // skip originator
+                        c.Send(_forwardWrapper, deliveryMethod);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Log.LogWarning($"OnNetworkReceive forward-send: {ex.Message}");
+                }
             }
         }
         catch (Exception ex)
