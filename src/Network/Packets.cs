@@ -557,5 +557,14 @@ public enum PacketType : byte
     /// </summary>
     PlayerDamage = 104,
 
+    /// <summary>
+    /// Side-job lifecycle notification (host → all). MVP "awareness" packet:
+    /// chat-banner only — does not reconstruct a SideJob object on the
+    /// client (host-authoritative gameplay loop is deferred to SJ.2/3).
+    /// Carries a kind discriminator (created / posted / ended), the jobID,
+    /// preset name, poster citizen name, and reward amount.
+    /// </summary>
+    SideJobNotification = 105,
+
     #endregion
 }

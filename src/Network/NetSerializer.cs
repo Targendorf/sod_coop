@@ -1079,6 +1079,42 @@ public struct NpcDamagePacket : INetPacket
 }
 
 /// <summary>
+/// Side-job lifecycle notification. Host-authoritative; clients render as
+/// chat banners only. <see cref="Kind"/> values:
+///   0 = Created  (SideJob ctor finished — first generation)
+///   1 = Posted   (SetJobState → posted — visible on poster's corkboard)
+///   2 = Ended    (SetJobState → ended — completed / failed / expired)
+/// </summary>
+public struct SideJobNotificationPacket : INetPacket
+{
+    public PacketType Type => PacketType.SideJobNotification;
+
+    public byte   Kind;
+    public int    JobId;
+    public string PresetName;
+    public string PosterName;
+    public int    Reward;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(Kind);
+        w.Put(JobId);
+        w.Put(PresetName ?? "");
+        w.Put(PosterName ?? "");
+        w.Put(Reward);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        Kind       = r.GetByte();
+        JobId      = r.GetInt();
+        PresetName = r.GetString();
+        PosterName = r.GetString();
+        Reward     = r.GetInt();
+    }
+}
+
+/// <summary>
 /// Local player took damage. Carries the event metadata (amount, attacker,
 /// hit pos/dir, lethal flag) so receivers can show a chat banner and toggle
 /// a "downed" visual on the corresponding RemotePlayer.

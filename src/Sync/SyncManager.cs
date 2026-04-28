@@ -169,6 +169,11 @@ public static class SyncManager
             {
                 PlayerDamageSync.OnPacketReceived(type, reader, senderId);
             }
+            // Side-job lifecycle notifications (105) — host → all, banner-only.
+            else if (type == PacketType.SideJobNotification)
+            {
+                SideJobSync.OnPacketReceived(type, reader, senderId);
+            }
             // Elevator floor call (32).
             else if (type == PacketType.ElevatorCall)
             {

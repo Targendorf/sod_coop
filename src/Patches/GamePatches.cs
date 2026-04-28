@@ -1508,6 +1508,64 @@ public static class GamePatches
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    //  Phase SJ.1 — Side-job awareness sync.
+    //
+    //  Three patches:
+    //   • SideJob ctor postfix — broadcast Created when host creates a job.
+    //   • SideJob.SetJobState postfix — broadcast Posted / Ended transitions.
+    //   • SideJobController.JobCreationCheck prefix on clients — neutered so
+    //     clients don't manufacture their own divergent set of jobs (host
+    //     authority).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(SideJob), MethodType.Constructor,
+                  typeof(JobPreset), typeof(SideJobController.JobPickData), typeof(bool))]
+    public static class SideJob_Ctor_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(SideJob __instance)
+        {
+            try { SideJobSync.BroadcastFromCtor(__instance); }
+            catch (System.Exception ex) { Plugin.Log.LogWarning($"SideJob ctor patch: {ex.Message}"); }
+        }
+    }
+
+    [HarmonyPatch(typeof(SideJob), nameof(SideJob.SetJobState))]
+    public static class SideJob_SetJobState_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(SideJob __instance, SideJob.JobState newState)
+        {
+            try { SideJobSync.BroadcastStateChange(__instance, newState); }
+            catch (System.Exception ex) { Plugin.Log.LogWarning($"SideJob.SetJobState patch: {ex.Message}"); }
+        }
+    }
+
+    /// <summary>
+    /// Client-only: skip <c>JobCreationCheck</c> entirely. Without this the
+    /// client's local SideJobController would invent its own set of jobs
+    /// from its private RNG state, which would be invisible to (and
+    /// inconsistent with) the host's authoritative set.
+    /// </summary>
+    [HarmonyPatch(typeof(SideJobController), nameof(SideJobController.JobCreationCheck))]
+    public static class SideJobController_JobCreationCheck_Patch
+    {
+        [HarmonyPrefix]
+        public static bool Prefix()
+        {
+            try
+            {
+                if (NetworkManager.IsConnected && !NetworkManager.IsHost)
+                {
+                    return false; // skip original — clients don't generate jobs
+                }
+            }
+            catch { }
+            return true;
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     //  Phase 3b — NPC state mutations & player-to-NPC item transfers.
     //
     //  We patch the LEAF state-changers (Human.TryGiveItem,
