@@ -65,6 +65,7 @@ public static class EvidenceSync
     public static void BroadcastNewEvidenceSince(HashSet<string> snapshot)
     {
         if (!NetworkManager.IsConnected) return;
+        if (!NetworkManager.HasPeers) return;
         if (IsApplyingRemote) return;
         if (snapshot == null) return;
 
@@ -184,6 +185,8 @@ public static class EvidenceSync
     public static void BroadcastDiscovery(string evId, byte discovery)
     {
         if (!NetworkManager.IsConnected) return;
+        if (!NetworkManager.HasPeers) return;
+        if (WorldReadyGate.IsInInitGrace) return;
         if (IsApplyingRemote) return;
         if (string.IsNullOrEmpty(evId)) return;
 
@@ -215,6 +218,8 @@ public static class EvidenceSync
     public static void BroadcastSetNote(string evId, Il2CppSystem.Collections.Generic.List<Evidence.DataKey> keys, string text)
     {
         if (!NetworkManager.IsConnected) return;
+        if (!NetworkManager.HasPeers) return;
+        if (WorldReadyGate.IsInInitGrace) return;
         if (IsApplyingRemote) return;
         if (string.IsNullOrEmpty(evId)) return;
 
@@ -257,6 +262,8 @@ public static class EvidenceSync
     public static void BroadcastCustomName(string evId, Evidence.DataKey dk, string customName)
     {
         if (!NetworkManager.IsConnected) return;
+        if (!NetworkManager.HasPeers) return;
+        if (WorldReadyGate.IsInInitGrace) return;
         if (IsApplyingRemote) return;
         if (string.IsNullOrEmpty(evId)) return;
 

@@ -108,6 +108,21 @@ public static class NetworkManager
     /// Current latency to host (client) or 0 (host).
     /// </summary>
     public static int Ping => HostPeer?.Ping ?? 0;
+
+    /// <summary>
+    /// Cheap "is anyone actually listening" check. True when host has at
+    /// least one fully-handshaked client, or when the local instance is a
+    /// client connected to a host. Use to skip broadcast bookkeeping
+    /// (serialization, log spam) when there's literally no one to receive.
+    /// </summary>
+    public static bool HasPeers
+    {
+        get
+        {
+            if (IsHost) return _clients.Count > 0;
+            return HostPeer != null && State == ConnectionState.Connected;
+        }
+    }
     
     #endregion
     

@@ -30,6 +30,8 @@ public static class VmailSync
     public static void BroadcastCreated(StateSaveData.MessageThreadSave thread)
     {
         if (!NetworkManager.IsConnected) return;
+        if (!NetworkManager.HasPeers) return;
+        if (WorldReadyGate.IsInInitGrace) return;
         if (IsApplyingRemote) return;
         if (thread == null) return;
 

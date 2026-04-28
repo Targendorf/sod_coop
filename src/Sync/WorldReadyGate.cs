@@ -14,6 +14,24 @@ public static class WorldReadyGate
     /// <summary>True when CityData/Citizens/Player are all live.</summary>
     public static bool IsWorldReady { get; private set; }
 
+    /// <summary>Time.unscaledTime when the world flipped to ready (or 0 if never).</summary>
+    public static float WorldReadyAt { get; private set; }
+
+    /// <summary>
+    /// "World is ready" fires early in SoD's load sequence (city + citizens + Player exist),
+    /// but SoD then continues with **massive** scripted setup: per-citizen evidence naming
+    /// via <c>Evidence.SetNote</c>, vmail thread generation, case-board timeline events,
+    /// etc. — easily thousands of mutation calls. We don't want to broadcast any of those:
+    /// they're deterministic from the world seed and identical on every machine. This grace
+    /// window suppresses Evidence / Vmail / equivalent broadcasts for a few seconds after
+    /// world-ready, after which any remaining mutation is genuinely player-driven.
+    /// </summary>
+    public const float INIT_GRACE_SECONDS = 30f;
+
+    /// <summary>True for the first <see cref="INIT_GRACE_SECONDS"/> after world-ready.</summary>
+    public static bool IsInInitGrace =>
+        IsWorldReady && (Time.unscaledTime - WorldReadyAt) < INIT_GRACE_SECONDS;
+
     /// <summary>Fires once when the world transitions to ready.</summary>
     public static event Action OnWorldReady;
 
@@ -56,12 +74,14 @@ public static class WorldReadyGate
         IsWorldReady = ready;
         if (ready)
         {
-            Plugin.Log.LogInfo("WorldReadyGate: world is READY (city + citizens + player live).");
+            WorldReadyAt = Time.unscaledTime;
+            Plugin.Log.LogInfo($"WorldReadyGate: world is READY — init-grace window is {INIT_GRACE_SECONDS}s.");
             try { OnWorldReady?.Invoke(); }
             catch (Exception ex) { Plugin.Log.LogError($"OnWorldReady handler threw: {ex}"); }
         }
         else
         {
+            WorldReadyAt = 0f;
             Plugin.Log.LogInfo("WorldReadyGate: world UNLOADED (returned to menu / between saves).");
             try { OnWorldUnready?.Invoke(); }
             catch (Exception ex) { Plugin.Log.LogError($"OnWorldUnready handler threw: {ex}"); }
