@@ -689,6 +689,45 @@ public static class GamePatches
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  FootprintController.Setup — the visual entry point for every footstep
+    //  decal. Host broadcasts NPC + own-player footsteps; clients broadcast
+    //  ONLY their local player's footsteps (NPC visuals on clients fire
+    //  walking-animation events too because we mirror their animator state,
+    //  but those NPC prints are the host's responsibility — broadcasting from
+    //  the client too would double them).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(FootprintController), nameof(FootprintController.Setup))]
+    public static class FootprintController_Setup_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(GameplayController.Footprint newFootprint)
+        {
+            try
+            {
+                if (newFootprint == null) return;
+                if (FootprintSync.ShouldSuppressBroadcast) return;
+                if (!NetworkManager.IsConnected) return;
+
+                // Client filter: only our local player's footsteps. NPC prints
+                // are the host's exclusive concern.
+                if (!NetworkManager.IsHost)
+                {
+                    var localPlayer = global::Player.Instance;
+                    if (localPlayer == null) return;
+                    if (newFootprint.hID != localPlayer.humanID) return;
+                }
+
+                FootprintSync.BroadcastAdd(newFootprint);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"FootprintController.Setup patch: {ex.Message}");
+            }
+        }
+    }
+
     [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.PickUpItem))]
     public static class FPItemController_PickUpItem_Patch
     {

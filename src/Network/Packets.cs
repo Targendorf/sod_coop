@@ -207,6 +207,15 @@ public enum PacketType : byte
     /// </summary>
     FingerprintClearManual = 54,
 
+    /// <summary>
+    /// A bloody/dirty footprint decal was placed in the world. Carries the
+    /// originating Human's id, the world position + euler rotation of the
+    /// print, dirt and blood strengths, and a room id. Receiver reconstructs
+    /// a <c>GameplayController.Footprint</c> and feeds it into a fresh
+    /// <c>FootprintController</c> from the pool.
+    /// </summary>
+    FootprintAdd = 55,
+
     #endregion
     
     #region Case/Investigation Sync Packets (60-79)

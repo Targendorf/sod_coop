@@ -1063,6 +1063,50 @@ public struct FingerprintAddPacket : INetPacket
 }
 
 /// <summary>
+/// A footprint decal was placed in the world (bloody / dirty footstep).
+/// All seven fields of <c>GameplayController.Footprint</c> are sent so the
+/// receiver can reconstruct an identical Footprint and pass it to a fresh
+/// <c>FootprintController</c> from the pool. SenderId carries echo dedup.
+/// </summary>
+public struct FootprintAddPacket : INetPacket
+{
+    public PacketType Type => PacketType.FootprintAdd;
+
+    public int     HumanId;     // Footprint.hID
+    public int     RoomId;      // Footprint.rID
+    public Vector3 Position;    // Footprint.wP
+    public Vector3 EulerRot;    // Footprint.eU
+    public float   Dirt;        // Footprint.str
+    public float   Blood;       // Footprint.bl
+    public float   Timestamp;   // Footprint.t (game-time)
+    public int     SenderId;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(HumanId);
+        w.Put(RoomId);
+        w.Put(Position);
+        w.Put(EulerRot);
+        w.Put(Dirt);
+        w.Put(Blood);
+        w.Put(Timestamp);
+        w.Put(SenderId);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        HumanId   = r.GetInt();
+        RoomId    = r.GetInt();
+        Position  = r.GetVector3();
+        EulerRot  = r.GetVector3();
+        Dirt      = r.GetFloat();
+        Blood     = r.GetFloat();
+        Timestamp = r.GetFloat();
+        SenderId  = r.GetInt();
+    }
+}
+
+/// <summary>
 /// All manually-placed fingerprints on an Interactable were cleared.
 /// Receiver re-invokes <c>RemoveManuallyCreatedFingerprints</c> locally.
 /// </summary>

@@ -134,6 +134,11 @@ public static class SyncManager
             {
                 FingerprintSync.OnPacketReceived(type, reader, senderId);
             }
+            // Footprint decals (55) — separate handler.
+            else if (type == PacketType.FootprintAdd)
+            {
+                FootprintSync.OnPacketReceived(type, reader, senderId);
+            }
             // Weather (34) — host-authoritative, dedicated handler.
             else if (type == PacketType.WeatherSync)
             {
