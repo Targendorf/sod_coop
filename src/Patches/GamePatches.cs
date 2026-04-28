@@ -656,7 +656,11 @@ public static class GamePatches
             try
             {
                 if (__instance == null || from == null) return;
-                if (FingerprintSync.IsApplyingRemote) return;
+                // Suppress when this fingerprint is a side-effect of an Apply path
+                // (door open / item pickup / switch / murder / case board) — the
+                // originator already broadcast it and a separate FingerprintAdd
+                // will arrive over the wire alongside the outer event.
+                if (FingerprintSync.ShouldSuppressBroadcast) return;
                 FingerprintSync.BroadcastAdd(__instance.id, from.humanID, (byte)life);
             }
             catch (System.Exception ex)
@@ -675,7 +679,7 @@ public static class GamePatches
             try
             {
                 if (__instance == null) return;
-                if (FingerprintSync.IsApplyingRemote) return;
+                if (FingerprintSync.ShouldSuppressBroadcast) return;
                 FingerprintSync.BroadcastClearManual(__instance.id);
             }
             catch (System.Exception ex)

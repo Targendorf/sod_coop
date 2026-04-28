@@ -27,6 +27,23 @@ public static class FingerprintSync
     /// </summary>
     public static bool IsApplyingRemote { get; private set; }
 
+    /// <summary>
+    /// AddNewDynamicFingerprint is invoked as a side-effect of many SoD methods
+    /// — door open, item pickup, switch toggle, murder, etc. When we apply any
+    /// of those events from the network, the inner fingerprint call must NOT
+    /// re-broadcast (the originator already broadcast a Fingerprint packet of
+    /// its own, and a separate one will arrive for the outer event too).
+    ///
+    /// Centralised here so the Harmony patch only checks one accessor instead
+    /// of probing each sync system's flag individually.
+    /// </summary>
+    public static bool ShouldSuppressBroadcast =>
+        IsApplyingRemote
+        || WorldStateSync.IsApplyingRemote
+        || ItemSync.IsApplyingRemote
+        || CitizenDeathSync.IsApplyingRemote
+        || CaseBoardSync.IsApplyingRemote;
+
     private static readonly NetDataWriter _writer = new();
 
     // -------------------------------------------------------------------------
@@ -123,10 +140,6 @@ public static class FingerprintSync
             // human may be null for the local player — pass null safely
             // (AddNewDynamicFingerprint handles null in some SoD versions; wrap in try/finally)
 
-            // Recency dedup: if this interactable already has a print from this human
-            // created within the last 0.5 game-seconds, skip to avoid doubles.
-            if (HasRecentPrint(inter, p.HumanId, 0.5f)) return;
-
             IsApplyingRemote = true;
             try
             {
@@ -210,29 +223,4 @@ public static class FingerprintSync
         return null;
     }
 
-    /// <summary>
-    /// Returns true if the interactable already has a DynamicFingerprint from the given human
-    /// created within <paramref name="windowMinutes"/> game-minutes. Used to deduplicate
-    /// near-simultaneous add events from both sides in P2P.
-    /// </summary>
-    private static bool HasRecentPrint(Interactable inter, int humanId, float windowMinutes)
-    {
-        try
-        {
-            var df = inter.df;
-            if (df == null || df.Count == 0) return false;
-
-            float now = SessionData.Instance?.gameTime ?? 0f;
-            for (int i = 0; i < df.Count; i++)
-            {
-                var fp = df[i];
-                if (fp == null) continue;
-                // DynamicFingerprint.id is the humanID of the originator in SoD.
-                if (fp.id == humanId && Mathf.Abs(fp.created - now) < windowMinutes)
-                    return true;
-            }
-        }
-        catch { }
-        return false;
-    }
 }
