@@ -1107,6 +1107,51 @@ public struct FootprintAddPacket : INetPacket
 }
 
 /// <summary>
+/// Blood / dirt spatter pattern. Receiver reconstructs a
+/// <c>SpatterSimulation</c> via the world-position ctor and lets the game's
+/// own pipeline spawn the decals. <c>PresetName</c> is the
+/// <c>SpatterPatternPreset.name</c> (Unity ScriptableObject name) used for
+/// cross-machine preset resolution.
+/// </summary>
+public struct SpatterAddPacket : INetPacket
+{
+    public PacketType Type => PacketType.SpatterAdd;
+
+    public Vector3 WorldOrigin;
+    public Vector3 WorldTarget;
+    public string  PresetName;     // SpatterPatternPreset.name
+    public byte    EraseMode;      // SpatterSimulation.EraseMode enum
+    public byte    Force;          // SpatterSimulation.ForceType enum
+    public float   CountMultiplier;
+    public bool    StickToActors;
+    public int     SenderId;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(WorldOrigin);
+        w.Put(WorldTarget);
+        w.Put(PresetName ?? "");
+        w.Put(EraseMode);
+        w.Put(Force);
+        w.Put(CountMultiplier);
+        w.Put(StickToActors);
+        w.Put(SenderId);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        WorldOrigin     = r.GetVector3();
+        WorldTarget     = r.GetVector3();
+        PresetName      = r.GetString();
+        EraseMode       = r.GetByte();
+        Force           = r.GetByte();
+        CountMultiplier = r.GetFloat();
+        StickToActors   = r.GetBool();
+        SenderId        = r.GetInt();
+    }
+}
+
+/// <summary>
 /// All manually-placed fingerprints on an Interactable were cleared.
 /// Receiver re-invokes <c>RemoveManuallyCreatedFingerprints</c> locally.
 /// </summary>

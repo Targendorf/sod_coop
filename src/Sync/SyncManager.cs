@@ -139,6 +139,11 @@ public static class SyncManager
             {
                 FootprintSync.OnPacketReceived(type, reader, senderId);
             }
+            // Blood / dirt spatter (56).
+            else if (type == PacketType.SpatterAdd)
+            {
+                SpatterSync.OnPacketReceived(type, reader, senderId);
+            }
             // Weather (34) — host-authoritative, dedicated handler.
             else if (type == PacketType.WeatherSync)
             {

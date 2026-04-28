@@ -728,6 +728,49 @@ public static class GamePatches
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  SpatterSimulation.Execute — fires once per spatter pattern (blood spray
+    //  from violence, gun shots, dripping items). Same broadcast policy as
+    //  footprints: host always broadcasts, clients only when origin can be
+    //  attributed to the local player. We can't easily attribute — spatter
+    //  doesn't carry a humanID — so as a heuristic clients suppress entirely
+    //  unless the closest Human at the origin is our local player.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(SpatterSimulation), nameof(SpatterSimulation.Execute))]
+    public static class SpatterSimulation_Execute_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(SpatterSimulation __instance)
+        {
+            try
+            {
+                if (__instance == null) return;
+                if (SpatterSync.ShouldSuppressBroadcast) return;
+                if (!NetworkManager.IsConnected) return;
+
+                // Client filter: only broadcast if origin is close to our
+                // local player (i.e. the spatter probably came from us).
+                // NPC-driven spatter on clients is impossible (AI off) so this
+                // mainly catches the case where a synced animator fires a
+                // damage-related event we don't want to mirror.
+                if (!NetworkManager.IsHost)
+                {
+                    var localPlayer = global::Player.Instance;
+                    if (localPlayer == null || localPlayer.transform == null) return;
+                    var dist = Vector3.Distance(localPlayer.transform.position, __instance.worldOrigin);
+                    if (dist > 5f) return;
+                }
+
+                SpatterSync.BroadcastFromSim(__instance);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"SpatterSimulation.Execute patch: {ex.Message}");
+            }
+        }
+    }
+
     [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.PickUpItem))]
     public static class FPItemController_PickUpItem_Patch
     {

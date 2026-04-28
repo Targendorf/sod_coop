@@ -216,6 +216,15 @@ public enum PacketType : byte
     /// </summary>
     FootprintAdd = 55,
 
+    /// <summary>
+    /// Blood / dirt spatter pattern execution. Carries the parameters of
+    /// SpatterSimulation.Execute() — origin, target, preset name, erase
+    /// mode, force type, count multiplier, and stickToActors flag. Receiver
+    /// reconstructs a SpatterSimulation via the world-position constructor
+    /// and lets it run normally.
+    /// </summary>
+    SpatterAdd = 56,
+
     #endregion
     
     #region Case/Investigation Sync Packets (60-79)
