@@ -102,7 +102,7 @@ public static class FootprintSync
             // Echo dedup: if we sent this packet ourselves (host reflects in star
             // topology), drop it.
             if (p.SenderId == NetworkManager.LocalPlayerId) return;
-            ApplyAdd(p);
+            ApplyAdd(p, senderId);
         }
         catch (System.Exception ex)
         {
@@ -110,22 +110,33 @@ public static class FootprintSync
         }
     }
 
-    private static void ApplyAdd(FootprintAddPacket p)
+    private static void ApplyAdd(FootprintAddPacket p, int senderId)
     {
         try
         {
-            // Resolve owner Human (may be null for the broadcasting peer's local
-            // player — citizenDictionary doesn't normally include remote players).
-            // Footprint ctor accepts null for the human and just records hID.
-            Human human = ResolveHuman(p.HumanId);
+            // Phase B.2: remote-client originated prints get attributed to the
+            // sender's twin citizen instead of whatever local-machine humanID
+            // they put in the packet (which is their local Player.Instance,
+            // unrelated to host's city DB).
+            int humanId = p.HumanId;
+            int twin = TwinManager.GetTwinHumanIDForSender(senderId);
+            if (twin > 0) humanId = twin;
+
+            // Resolve owner Human. May be null for host-originated host-player
+            // prints applied on a client (their citizenDictionary won't have
+            // the host's player citizen) — Footprint ctor accepts null.
+            Human human = ResolveHuman(humanId);
 
             // Resolve room (may be null — Footprint ctor accepts null forceRoom
             // and falls back to runtime detection).
             NewRoom room = ResolveRoom(p.RoomId);
 
-            // Construct the data object identically to the originator.
+            // Construct the data object identically to the originator. We
+            // pass the (possibly remapped) humanId via the constructed
+            // Footprint's hID field — see post-construction patch below.
             var fp = new GameplayController.Footprint(
                 human, p.Position, p.EulerRot, p.Dirt, p.Blood, room);
+            try { fp.hID = humanId; } catch { }
 
             // Force timestamp to match the originator so dedup / decay match
             // across machines.

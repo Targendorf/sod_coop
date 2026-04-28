@@ -102,7 +102,7 @@ public static class FingerprintSync
                 p.Deserialize(reader);
                 // Skip own echo (star topology: host reflects our packet back).
                 if (p.SenderId == NetworkManager.LocalPlayerId) return;
-                ApplyAdd(p);
+                ApplyAdd(p, senderId);
                 break;
             }
             case PacketType.FingerprintClearManual:
@@ -120,7 +120,7 @@ public static class FingerprintSync
     //  Apply helpers (replay the game call locally under IsApplyingRemote)
     // -------------------------------------------------------------------------
 
-    private static void ApplyAdd(FingerprintAddPacket p)
+    private static void ApplyAdd(FingerprintAddPacket p, int senderId)
     {
         try
         {
@@ -131,11 +131,19 @@ public static class FingerprintSync
                 return;
             }
 
+            // Phase B.2: if a remote client originated this print, replace the
+            // client's local Player.Instance.humanID (meaningless on host)
+            // with the twin citizen's humanID (so the print is attributed to
+            // the correct in-world identity).
+            int humanId = p.HumanId;
+            int twin = TwinManager.GetTwinHumanIDForSender(senderId);
+            if (twin > 0) humanId = twin;
+
             Human human = null;
             try
             {
                 if (CityData.Instance?.citizenDictionary != null)
-                    CityData.Instance.citizenDictionary.TryGetValue(p.HumanId, out human);
+                    CityData.Instance.citizenDictionary.TryGetValue(humanId, out human);
             }
             catch { }
 
@@ -147,7 +155,7 @@ public static class FingerprintSync
             {
                 var life = (Interactable.PrintLife)p.Life;
                 inter.AddNewDynamicFingerprint(human, life);
-                Plugin.Log.LogInfo($"[FingerprintSync] applied remote add: interactable={p.InteractableId} human={p.HumanId}");
+                Plugin.Log.LogInfo($"[FingerprintSync] applied remote add: interactable={p.InteractableId} human={humanId}{(twin > 0 ? $" (twin remap from {p.HumanId})" : "")}");
             }
             finally
             {

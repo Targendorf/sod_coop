@@ -65,6 +65,37 @@ public static class TwinManager
     }
 
     /// <summary>
+    /// Returns the twin humanID assigned to the network player <paramref name="senderId"/>,
+    /// or 0 if no remap should happen. Returns 0 for: non-host runtime, the
+    /// host's own player, unknown senderId, sender without a stored character
+    /// record, or sender whose record has no twin assigned yet.
+    ///
+    /// <para>Used by forensics-style sync handlers (fingerprints, footprints,
+    /// evidence creation) on the host to translate a remote player's
+    /// "self-attributed" humanID — which is meaningless on the host (it's
+    /// the client's local Player.Instance.humanID) — into the twin citizen
+    /// the host has chosen to represent that player in its world.</para>
+    /// </summary>
+    public static int GetTwinHumanIDForSender(int senderId)
+    {
+        try
+        {
+            if (!Network.NetworkManager.IsHost) return 0;
+            if (senderId == Network.NetworkManager.LocalPlayerId) return 0;
+            if (!Network.NetworkManager.Players.TryGetValue(senderId, out var info)) return 0;
+            if (string.IsNullOrEmpty(info?.ClientGuid)) return 0;
+
+            var rec = CharacterStore.TryGet(CharacterStore.CurrentSeed(), info.ClientGuid);
+            return rec?.HumanID ?? 0;
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"[TwinManager] GetTwinHumanIDForSender({senderId}): {ex.Message}");
+            return 0;
+        }
+    }
+
+    /// <summary>
     /// Re-applies all stored twin name overrides for the given seed. Called
     /// from <c>StartHost</c> so that whatever vanilla SoD reset on save load
     /// gets re-stamped with our names. Records without a HumanID yet are

@@ -139,7 +139,7 @@ public static class EvidenceSync
             var p = new EvidenceCreatePacket();
             p.Deserialize(reader);
             if (p.SenderId == NetworkManager.LocalPlayerId) return;
-            ApplyCreate(p);
+            ApplyCreate(p, senderId);
         }
         catch (System.Exception ex)
         {
@@ -147,7 +147,7 @@ public static class EvidenceSync
         }
     }
 
-    private static void ApplyCreate(EvidenceCreatePacket p)
+    private static void ApplyCreate(EvidenceCreatePacket p, int senderId)
     {
         if (string.IsNullOrEmpty(p.EvId) || string.IsNullOrEmpty(p.PresetName)) return;
 
@@ -163,9 +163,18 @@ public static class EvidenceSync
                 return;
             }
 
+            // Phase B.2: remote-client created evidence is attributed via the
+            // WriterHumanId field — that's the actual creator. Remap it to
+            // the sender's twin citizen on the host. Owner / Receiver are
+            // semantic (subject of a photo, recipient of a vmail) and stay
+            // as the originator labelled them.
+            int writerId = p.WriterHumanId;
+            int twin = TwinManager.GetTwinHumanIDForSender(senderId);
+            if (twin > 0) writerId = twin;
+
             // Resolve owner / writer / receiver Humans by humanID. May be null.
             Human owner    = ResolveHuman(p.OwnerHumanId);
-            Human writer   = ResolveHuman(p.WriterHumanId);
+            Human writer   = ResolveHuman(writerId);
             Human receiver = ResolveHuman(p.ReceiverHumanId);
 
             // Resolve parent Evidence by evID. May be null.
