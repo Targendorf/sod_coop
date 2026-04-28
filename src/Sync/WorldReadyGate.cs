@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using UnityEngine;
 
 namespace SoDCoop.Sync;
@@ -42,12 +43,22 @@ public static class WorldReadyGate
     private static float _nextPollTime;
     private static bool _initialized;
 
+    // Wall-clock instrumentation. _sinceInit is reset at plugin load so we
+    // can quote "world ready after Xs since plugin started"; _sinceReady is
+    // reset on each ready-flip so we can quote "init grace closed after Xs".
+    // Wall clock (Stopwatch) — not Time.unscaledTime — because Time freezes
+    // during scene transitions, which is exactly when the long load happens.
+    private static readonly Stopwatch _sinceInit  = new();
+    private static readonly Stopwatch _sinceReady = new();
+    private static bool _graceClosedLogged;
+
     public static void Initialize()
     {
         if (_initialized) return;
         _initialized = true;
         IsWorldReady = false;
         _nextPollTime = 0f;
+        _sinceInit.Restart();
         Plugin.Log.LogInfo("WorldReadyGate initialized.");
     }
 
@@ -68,6 +79,16 @@ public static class WorldReadyGate
         if (now < _nextPollTime) return;
         _nextPollTime = now + POLL_INTERVAL;
 
+        // Log grace-window close once (first poll where IsInInitGrace flips
+        // false while world is still ready). Lets us correlate with end of
+        // SoD's init burst.
+        if (IsWorldReady && !_graceClosedLogged && !IsInInitGrace)
+        {
+            _graceClosedLogged = true;
+            Plugin.Log.LogInfo($"WorldReadyGate: init-grace window closed after " +
+                $"{_sinceReady.Elapsed.TotalSeconds:F1}s wall-clock (configured {INIT_GRACE_SECONDS}s).");
+        }
+
         bool ready = ComputeReady();
         if (ready == IsWorldReady) return;
 
@@ -75,13 +96,19 @@ public static class WorldReadyGate
         if (ready)
         {
             WorldReadyAt = Time.unscaledTime;
-            Plugin.Log.LogInfo($"WorldReadyGate: world is READY — init-grace window is {INIT_GRACE_SECONDS}s.");
+            _sinceReady.Restart();
+            _graceClosedLogged = false;
+            Plugin.Log.LogInfo($"WorldReadyGate: world is READY after " +
+                $"{_sinceInit.Elapsed.TotalSeconds:F1}s since plugin load — " +
+                $"init-grace window is {INIT_GRACE_SECONDS}s.");
             try { OnWorldReady?.Invoke(); }
             catch (Exception ex) { Plugin.Log.LogError($"OnWorldReady handler threw: {ex}"); }
         }
         else
         {
             WorldReadyAt = 0f;
+            _sinceReady.Reset();
+            _graceClosedLogged = false;
             Plugin.Log.LogInfo("WorldReadyGate: world UNLOADED (returned to menu / between saves).");
             BroadcastBudget.Reset();
             try { OnWorldUnready?.Invoke(); }
