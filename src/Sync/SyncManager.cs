@@ -174,6 +174,11 @@ public static class SyncManager
             {
                 SideJobSync.OnPacketReceived(type, reader, senderId);
             }
+            // Trespass / illegal-status flags (106) — client → host, applied to twin.
+            else if (type == PacketType.PlayerSuspicion)
+            {
+                PlayerSuspicionSync.OnPacketReceived(type, reader, senderId);
+            }
             // Elevator floor call (32).
             else if (type == PacketType.ElevatorCall)
             {

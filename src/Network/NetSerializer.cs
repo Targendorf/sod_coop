@@ -1079,6 +1079,52 @@ public struct NpcDamagePacket : INetPacket
 }
 
 /// <summary>
+/// Player suspicion / trespass flags. Client-only outbound: each client
+/// polls its own <c>Player.Instance</c> Actor-level flags every tick, and
+/// when any change broadcasts this packet. Host applies the flags to the
+/// sender's twin <c>Human</c> so guard NPCs (which run on the host) react
+/// correctly to the remote player's behaviour.
+/// </summary>
+public struct PlayerSuspicionPacket : INetPacket
+{
+    public PacketType Type => PacketType.PlayerSuspicion;
+
+    public int  PlayerId;
+    public bool IsTrespassing;
+    public bool IllegalActionActive;
+    public bool IllegalAreaActive;
+    public bool IllegalStatus;
+    public int  TrespassingEscalation;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(PlayerId);
+        w.Put(IsTrespassing);
+        w.Put(IllegalActionActive);
+        w.Put(IllegalAreaActive);
+        w.Put(IllegalStatus);
+        w.Put(TrespassingEscalation);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        PlayerId              = r.GetInt();
+        IsTrespassing         = r.GetBool();
+        IllegalActionActive   = r.GetBool();
+        IllegalAreaActive     = r.GetBool();
+        IllegalStatus         = r.GetBool();
+        TrespassingEscalation = r.GetInt();
+    }
+
+    public bool SameAs(PlayerSuspicionPacket o)
+        => IsTrespassing         == o.IsTrespassing
+        && IllegalActionActive   == o.IllegalActionActive
+        && IllegalAreaActive     == o.IllegalAreaActive
+        && IllegalStatus         == o.IllegalStatus
+        && TrespassingEscalation == o.TrespassingEscalation;
+}
+
+/// <summary>
 /// Side-job upsert (host → all). Carries full scalar state of a SideJob so
 /// the receiver can either (a) reconstruct a skeleton SideJob in its own
 /// SideJobController.allJobsDictionary, or (b) at minimum surface a chat

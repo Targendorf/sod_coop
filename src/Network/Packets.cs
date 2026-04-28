@@ -566,5 +566,15 @@ public enum PacketType : byte
     /// </summary>
     SideJobNotification = 105,
 
+    /// <summary>
+    /// Player suspicion / trespass flags (client → host). Five Actor-level
+    /// flags that drive guard / NPC reactions: isTrespassing,
+    /// illegalActionActive, illegalAreaActive, illegalStatus, and
+    /// trespassingEscalation (int). Without sync, a remote client entering
+    /// a restricted area gets caught locally but their twin citizen on the
+    /// host stays "innocent" — host's NPCs never react.
+    /// </summary>
+    PlayerSuspicion = 106,
+
     #endregion
 }
