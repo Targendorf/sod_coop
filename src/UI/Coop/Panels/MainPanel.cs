@@ -1,3 +1,4 @@
+using SoDCoop.Localization;
 using SoDCoop.Network;
 using SoDCoop.Player;
 using UnityEngine;
@@ -11,7 +12,11 @@ namespace SoDCoop.UI.Coop.Panels;
 /// </summary>
 public class MainPanel : CoopPanelBase
 {
-    protected override string Title => "Co-op Multiplayer";
+    // Demo wiring of the localization facade. All visible strings come
+    // from L.Get(key); see SoDCoop.Localization.Translations for the
+    // canonical key list (En dict). Other panels are still on hard-coded
+    // English — they'll migrate incrementally as new keys land.
+    protected override string Title => L.Get("main.title");
 
     /// <summary>Two-step confirmation state for the Reset button.</summary>
     private bool   _resetArmed;
@@ -23,24 +28,24 @@ public class MainPanel : CoopPanelBase
 
     protected override void BuildBody()
     {
-        WrappedBodyLabel("Connect with a teammate to investigate together.",
+        WrappedBodyLabel(L.Get("main.tagline"),
             CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelMuted);
         Spacer(20f);
 
         CoopMenuFactory.MenuButton("Host",   Body,
-            "🛜  Host a session",
+            L.Get("main.btn.host"),
             () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Host));
 
         CoopMenuFactory.MenuButton("Join",   Body,
-            "🔌  Join a session",
+            L.Get("main.btn.join"),
             () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Join));
 
         CoopMenuFactory.MenuButton("ShowIp", Body,
-            "📡  Show my IP",
+            L.Get("main.btn.showIp"),
             () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.IpInfo));
 
         CoopMenuFactory.MenuButton("Settings", Body,
-            "⚙  Settings",
+            L.Get("main.btn.settings"),
             () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Settings));
 
         Spacer(20f);
@@ -60,7 +65,7 @@ public class MainPanel : CoopPanelBase
         Spacer(20f);
 
         CoopMenuFactory.MenuButton("Close",  Body,
-            "✕  Close menu",
+            L.Get("main.btn.close"),
             () => CoopMenuController.Hide());
     }
 

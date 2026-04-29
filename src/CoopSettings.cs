@@ -28,6 +28,13 @@ public static class CoopSettings
     /// <summary>Transient overlay banners (sleep notification, phone ring), top-right area.</summary>
     public static ConfigEntry<bool> ShowOverlayBanners;
 
+    /// <summary>
+    /// Forced UI language code (en / ru / uk / es / zh / de) or "auto"
+    /// to follow <c>Game.Instance.language</c>. See
+    /// <see cref="SoDCoop.Localization.L"/> for the resolution chain.
+    /// </summary>
+    public static ConfigEntry<string> LanguageOverride;
+
     public static void Initialize(ConfigFile config)
     {
         ShowStatusHUD = config.Bind(
@@ -45,5 +52,10 @@ public static class CoopSettings
         ShowOverlayBanners = config.Bind(
             "Overlays", "ShowOverlayBanners", true,
             "Show transient banners (\"X is asleep\", incoming-call sync). Disable for a quieter HUD.");
+
+        LanguageOverride = config.Bind(
+            "General", "LanguageOverride", "auto",
+            "UI language for the coop mod. Use \"auto\" to follow the game's current language. " +
+            "Explicit codes: en, ru, uk, es, zh, de. Re-resolved on plugin load and on each save load.");
     }
 }

@@ -56,6 +56,18 @@ public class Plugin : BasePlugin
             // instead of null ConfigEntry refs.
             CoopSettings.Initialize(Config);
 
+            // Resolve the UI language as soon as config is bound. This picks
+            // up the user's LanguageOverride; the Game.Instance.language
+            // fallback re-runs on world-ready (see WorldReadyGate hook).
+            SoDCoop.Localization.L.Refresh();
+            // Re-resolve every time a save loads so a player who switches
+            // SoD's language between sessions sees the mod follow.
+            SoDCoop.Sync.WorldReadyGate.OnWorldReady += () =>
+            {
+                try { SoDCoop.Localization.L.Refresh(); }
+                catch (System.Exception ex) { Log.LogWarning($"L.Refresh on world-ready: {ex.Message}"); }
+            };
+
             // Register our MonoBehaviour types with IL2CPP so AddComponent<> works.
             RegisterIl2CppTypes();
 
