@@ -48,9 +48,14 @@ public class Plugin : BasePlugin
         Log = base.Log;
         
         Log.LogInfo($"Loading {PluginInfo.PLUGIN_NAME} v{PluginInfo.PLUGIN_VERSION}...");
-        
+
         try
         {
+            // Persisted user toggles for overlay visibility. Bind first so any
+            // system that reads CoopSettings.* during init sees real values
+            // instead of null ConfigEntry refs.
+            CoopSettings.Initialize(Config);
+
             // Register our MonoBehaviour types with IL2CPP so AddComponent<> works.
             RegisterIl2CppTypes();
 
@@ -202,9 +207,14 @@ public class CoopUpdateRunner : MonoBehaviour
         try
         {
             CoopUI.OnGUI();
+            // PingSystem renders world-space pings triggered by player action;
+            // not a passive HUD, so it stays ungated.
             PingSystem.OnGUI();
-            SoDCoop.Sync.PhoneSync.OnGUI();
-            SoDCoop.Sync.PlayerStateSync.OnGUI();
+            if (CoopSettings.ShowOverlayBanners?.Value ?? true)
+            {
+                SoDCoop.Sync.PhoneSync.OnGUI();
+                SoDCoop.Sync.PlayerStateSync.OnGUI();
+            }
         }
         catch (System.Exception ex)
         {

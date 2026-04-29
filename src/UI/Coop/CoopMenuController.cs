@@ -35,9 +35,10 @@ public static class CoopMenuController
     private static LobbyPanel             _lobbyPanel;
     private static IpInfoPanel            _ipPanel;
     private static CreateCharacterPanel   _createCharacterPanel;
+    private static SettingsPanel          _settingsPanel;
 
     /// <summary>Current visible panel, or null when menu is hidden.</summary>
-    public enum PanelKind { None, Main, Host, Join, Lobby, IpInfo, CreateCharacter }
+    public enum PanelKind { None, Main, Host, Join, Lobby, IpInfo, CreateCharacter, Settings }
     private static PanelKind _current = PanelKind.None;
 
     private static bool _eventsHooked;
@@ -231,6 +232,7 @@ public static class CoopMenuController
             _lobbyPanel           = new LobbyPanel();            _lobbyPanel.Build(_panelContainer.transform);
             _ipPanel              = new IpInfoPanel();           _ipPanel.Build(_panelContainer.transform);
             _createCharacterPanel = new CreateCharacterPanel();  _createCharacterPanel.Build(_panelContainer.transform);
+            _settingsPanel        = new SettingsPanel();         _settingsPanel.Build(_panelContainer.transform);
 
             HideAllPanels();
             Plugin.Log.LogInfo("[CoopMenu] canvas built");
@@ -257,6 +259,7 @@ public static class CoopMenuController
             case PanelKind.Lobby:           _lobbyPanel?.Show();            break;
             case PanelKind.IpInfo:          _ipPanel?.Show();               break;
             case PanelKind.CreateCharacter: _createCharacterPanel?.Show();  break;
+            case PanelKind.Settings:        _settingsPanel?.Show();         break;
         }
     }
 
@@ -268,5 +271,6 @@ public static class CoopMenuController
         _lobbyPanel?.Hide();
         _ipPanel?.Hide();
         _createCharacterPanel?.Hide();
+        _settingsPanel?.Hide();
     }
 }

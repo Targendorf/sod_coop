@@ -96,11 +96,13 @@ public static class CoopUI
         // In-world overlays remain IMGUI: nametags, player vitals HUD, chat.
         // The lobby / setup menu is now a Canvas (CoopMenuController), so we
         // intentionally don't draw the old GUILayout.Window here anymore.
+        // Each overlay is independently gated by a CoopSettings toggle so the
+        // user can hide individual pieces from the Settings panel.
         if (NetworkManager.IsConnected)
         {
-            NameTagOverlay.Draw();
-            DrawPlayerListHUD();
-            DrawChatWindow();
+            if (CoopSettings.ShowNameTags?.Value      ?? true) NameTagOverlay.Draw();
+            if (CoopSettings.ShowStatusHUD?.Value     ?? true) DrawPlayerListHUD();
+            if (CoopSettings.ShowChatWindow?.Value    ?? true) DrawChatWindow();
         }
     }
     
