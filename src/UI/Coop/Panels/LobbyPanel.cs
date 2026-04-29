@@ -35,7 +35,7 @@ public class LobbyPanel : CoopPanelBase
 
     protected override void BuildBody()
     {
-        BodyLabel("Connected to host. Waiting for world…",
+        WrappedBodyLabel("Connected to host. Waiting for world…",
             CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelMuted);
         Spacer(8f);
 
@@ -57,12 +57,17 @@ public class LobbyPanel : CoopPanelBase
         // Game.Instance, not from CharacterStore).
         _resetBtn = CoopMenuFactory.MenuButton("ResetChar", Body,
             RESET_LABEL_NORMAL, OnResetClick);
-        _resetStatus = BodyLabel(
+        _resetStatus = WrappedBodyLabel(
             "Forgets your name on this host's world and disconnects. " +
             "Your old in-game identity (citizen) keeps the name but rejoins normal NPC life.",
             CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
 
         Spacer(6f);
+
+        CoopMenuFactory.MenuButton("Settings", Body, "⚙  Settings",
+            () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Settings));
+
+        Spacer(4f);
 
         CoopMenuFactory.MenuButton("Hide", Body, "✕  Hide menu",
             () => CoopMenuController.Hide());

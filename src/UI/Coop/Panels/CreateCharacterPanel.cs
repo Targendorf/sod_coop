@@ -55,7 +55,7 @@ public class CreateCharacterPanel : CoopPanelBase
 
     protected override void BuildBody()
     {
-        _contextLabel = BodyLabel("Connecting…", CoopMenuTheme.FontSizeBody,
+        _contextLabel = WrappedBodyLabel("Connecting…", CoopMenuTheme.FontSizeBody,
             CoopMenuTheme.LabelMuted, TextAnchor.MiddleCenter, FontStyle.Italic);
         Spacer(10f);
 
@@ -74,7 +74,7 @@ public class CreateCharacterPanel : CoopPanelBase
         _submitBtn = CoopMenuFactory.MenuButton("Submit", Body,
             "✓  Create character & join", OnSubmitClick);
 
-        _statusLabel = BodyLabel("", CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
+        _statusLabel = WrappedBodyLabel("", CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
 
         Spacer(20f);
 

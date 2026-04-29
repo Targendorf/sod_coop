@@ -23,12 +23,12 @@ public class JoinPanel : CoopPanelBase
 
     protected override void BuildBody()
     {
-        BodyLabel("Paste a join code, or enter the host's IP and port manually. " +
-                  "If this is your first time on the host's world, you'll be asked to create your character after connecting.",
+        WrappedBodyLabel("Paste a join code, or enter the host's IP and port manually. " +
+                         "If this is your first time on the host's world, you'll be asked to create your character after connecting.",
             CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelMuted);
         Spacer(8f);
 
-        _gameStateLabel = BodyLabel("",
+        _gameStateLabel = WrappedBodyLabel("",
             CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
         Spacer(4f);
 
@@ -66,7 +66,7 @@ public class JoinPanel : CoopPanelBase
 
         _connectBtn = CoopMenuFactory.MenuButton("Connect", Body, "🔌  Connect", OnConnectClick);
 
-        _statusLabel = BodyLabel("",
+        _statusLabel = WrappedBodyLabel("",
             CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
 
         Spacer(20f);

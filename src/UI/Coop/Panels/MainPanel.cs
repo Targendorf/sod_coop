@@ -23,7 +23,7 @@ public class MainPanel : CoopPanelBase
 
     protected override void BuildBody()
     {
-        BodyLabel("Connect with a teammate to investigate together.",
+        WrappedBodyLabel("Connect with a teammate to investigate together.",
             CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelMuted);
         Spacer(20f);
 
@@ -39,6 +39,10 @@ public class MainPanel : CoopPanelBase
             "📡  Show my IP",
             () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.IpInfo));
 
+        CoopMenuFactory.MenuButton("Settings", Body,
+            "⚙  Settings",
+            () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Settings));
+
         Spacer(20f);
 
         // Reset identity. Wipes our local stable clientGuid so on the next
@@ -47,7 +51,7 @@ public class MainPanel : CoopPanelBase
         // because it's not undoable.
         _resetBtn    = CoopMenuFactory.MenuButton("Reset", Body,
             RESET_LABEL_NORMAL, OnResetClick);
-        _resetStatus = BodyLabel(
+        _resetStatus = WrappedBodyLabel(
             "Use this to start over with a different name on every world. " +
             "Your existing characters on hosts you've already visited stay " +
             "with their names.",

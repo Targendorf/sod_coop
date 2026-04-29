@@ -24,12 +24,12 @@ public class HostPanel : CoopPanelBase
 
     protected override void BuildBody()
     {
-        BodyLabel("You'll host as your existing in-game character. Your name is read from the loaded save — make sure you're in-game before starting.",
+        WrappedBodyLabel("You'll host as your existing in-game character. Your name is read from the loaded save — make sure you're in-game before starting.",
             CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelMuted);
         Spacer(8f);
 
         BodyLabel("Playing as", CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
-        _identityLabel = BodyLabel("(reading from game…)",
+        _identityLabel = WrappedBodyLabel("(reading from game…)",
             CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelOk, TextAnchor.MiddleLeft, FontStyle.Bold);
 
         Spacer(6f);
@@ -48,13 +48,13 @@ public class HostPanel : CoopPanelBase
 
         Spacer(8f);
 
-        _statusLabel = BodyLabel("Status: not hosting",
+        _statusLabel = WrappedBodyLabel("Status: not hosting",
             CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
 
         BodyLabel("Join Code (paste this to your friend)",
             CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader);
 
-        _joinCodeLabel = BodyLabel("(start hosting to generate)",
+        _joinCodeLabel = WrappedBodyLabel("(start hosting to generate)",
             CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelOk);
         _joinCodeLabel.fontStyle = FontStyle.Italic;
 

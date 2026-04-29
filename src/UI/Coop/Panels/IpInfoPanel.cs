@@ -19,7 +19,7 @@ public class IpInfoPanel : CoopPanelBase
 
     protected override void BuildBody()
     {
-        BodyLabel("Share these with your teammate so they can connect.",
+        WrappedBodyLabel("Share these with your teammate so they can connect.",
             CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelMuted);
         Spacer(20f);
 
@@ -45,8 +45,8 @@ public class IpInfoPanel : CoopPanelBase
 
         Spacer(20f);
 
-        BodyLabel("LAN works without port forwarding. WAN requires opening the port " +
-                  "(default 9050 UDP) in your router for friends over the internet.",
+        WrappedBodyLabel("LAN works without port forwarding. WAN requires opening the port " +
+                         "(default 9050 UDP) in your router for friends over the internet.",
             CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
 
         Spacer(20f);
