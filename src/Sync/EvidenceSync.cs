@@ -131,6 +131,36 @@ public static class EvidenceSync
     //  Inbound
     // ─────────────────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Host-only star-topology remap. Re-serialises an EvidenceCreate from
+    /// raw <paramref name="body"/> bytes with <c>WriterHumanId</c> rewritten
+    /// to the sender's twin humanID. Owner / Receiver fields are semantic
+    /// (photo subject, vmail recipient) and stay as the originator set
+    /// them. Returns null if no remap needed.
+    /// </summary>
+    public static NetDataWriter RemapForForward(byte[] body, int bodyLen, int senderId, NetDataWriter outBuf)
+    {
+        if (!NetworkManager.IsHost) return null;
+        int twin = TwinManager.GetTwinHumanIDForSender(senderId);
+        if (twin <= 0) return null;
+
+        try
+        {
+            var reader = new NetDataReader(body, 0, bodyLen);
+            var p = new EvidenceCreatePacket();
+            p.Deserialize(reader);
+            p.WriterHumanId = twin;
+            outBuf.Reset();
+            p.Serialize(outBuf);
+            return outBuf;
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"EvidenceSync.RemapForForward: {ex.Message}");
+            return null;
+        }
+    }
+
     public static void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
     {
         try

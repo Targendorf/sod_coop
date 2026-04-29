@@ -744,6 +744,15 @@ public static class NetworkManager
     private static readonly NetDataWriter _forwardWrapper = new();
 
     /// <summary>
+    /// Scratch buffer for forensics-attribution remap during forward (used
+    /// only on the host's path, when a client-originated forensics packet
+    /// needs its humanID rewritten to the sender's twin before being
+    /// forwarded to other clients). Separate from <see cref="_forwardWrapper"/>
+    /// so the remap output and the wrap-with-type-prefix output don't alias.
+    /// </summary>
+    private static readonly NetDataWriter _remapScratch = new();
+
+    /// <summary>
     /// Packet types that are NOT host-rebroadcast to other clients.
     /// Mostly handshake / connection-flow packets that have specific
     /// host↔single-peer semantics, plus packets host already broadcasts
@@ -841,18 +850,34 @@ public static class NetworkManager
             }
 
             // Star-topology forward to other clients (host only). After
-            // dispatch so any host-side modification (e.g. forensics
-            // attribution remap on Apply) has had a chance to run on the
-            // host's local state. Body bytes themselves are forwarded raw
-            // so receiving clients see the same SenderId / payload the
-            // originating client sent.
+            // dispatch so any host-side modification has had a chance to
+            // run on the host's local state.
+            //
+            // For forensics packets that carry a humanID (Footprint /
+            // Fingerprint / EvidenceCreate's writer), forward the bytes
+            // with the humanID REWRITTEN to the sender's twin humanID —
+            // otherwise other clients receive the originating client's
+            // local humanID which is meaningless on their machine. For
+            // every other packet type, forward raw.
             if (forwardBody != null && _clients.Count >= 2)
             {
                 try
                 {
+                    NetDataWriter remapped = packetType switch
+                    {
+                        PacketType.FingerprintAdd => SoDCoop.Sync.FingerprintSync.RemapForForward(forwardBody, forwardBodyLen, senderId, _remapScratch),
+                        PacketType.FootprintAdd   => SoDCoop.Sync.FootprintSync  .RemapForForward(forwardBody, forwardBodyLen, senderId, _remapScratch),
+                        PacketType.EvidenceCreate => SoDCoop.Sync.EvidenceSync   .RemapForForward(forwardBody, forwardBodyLen, senderId, _remapScratch),
+                        _ => null,
+                    };
+
                     _forwardWrapper.Reset();
                     _forwardWrapper.Put((byte)packetType);
-                    _forwardWrapper.Put(forwardBody, 0, forwardBodyLen);
+                    if (remapped != null)
+                        _forwardWrapper.Put(remapped.Data, 0, remapped.Length);
+                    else
+                        _forwardWrapper.Put(forwardBody, 0, forwardBodyLen);
+
                     foreach (var c in _clients)
                     {
                         if (c == peer) continue; // skip originator

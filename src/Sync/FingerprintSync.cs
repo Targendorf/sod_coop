@@ -92,6 +92,36 @@ public static class FingerprintSync
     //  Packet dispatch (called from SyncManager)
     // -------------------------------------------------------------------------
 
+    /// <summary>
+    /// Host-only star-topology remap. Re-serialises a FingerprintAdd from
+    /// raw <paramref name="body"/> bytes with <c>HumanId</c> rewritten to
+    /// the sender's twin humanID. Returns null if no remap is needed
+    /// (sender has no twin / not host). Used by NetworkManager to forward
+    /// the corrected packet to other clients in 3+ player sessions.
+    /// </summary>
+    public static NetDataWriter RemapForForward(byte[] body, int bodyLen, int senderId, NetDataWriter outBuf)
+    {
+        if (!NetworkManager.IsHost) return null;
+        int twin = TwinManager.GetTwinHumanIDForSender(senderId);
+        if (twin <= 0) return null;
+
+        try
+        {
+            var reader = new NetDataReader(body, 0, bodyLen);
+            var p = new FingerprintAddPacket();
+            p.Deserialize(reader);
+            p.HumanId = twin;
+            outBuf.Reset();
+            p.Serialize(outBuf);
+            return outBuf;
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"FingerprintSync.RemapForForward: {ex.Message}");
+            return null;
+        }
+    }
+
     public static void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
     {
         switch (type)
