@@ -6,6 +6,7 @@ using System.Net;
 using System.Net.Sockets;
 using SoDCoop.Player;
 using SoDCoop.Sync;
+using UnityEngine;
 
 namespace SoDCoop.Network;
 
@@ -33,6 +34,14 @@ public static class NetworkManager
     private const int MAX_PLAYERS = 4;
     private const int DISCONNECT_TIMEOUT = 5000; // ms
     private const int UPDATE_INTERVAL = 15; // ms
+
+    /// <summary>
+    /// Seconds we keep a disconnected player's slot alive waiting for them to
+    /// reconnect with the same clientGuid. Covers wifi blips, TCP-style
+    /// transient drops, and momentary route flaps. After this expires the
+    /// player is finalised: removed from _players, PlayerLeft broadcast.
+    /// </summary>
+    private const float RECONNECT_GRACE_S = 5f;
     
     #endregion
     
@@ -401,6 +410,46 @@ public static class NetworkManager
     public static void Update()
     {
         _netManager?.PollEvents();
+        if (IsHost) FinalisePendingDisconnects();
+    }
+
+    /// <summary>
+    /// Sweep <see cref="_players"/> for slots whose <see cref="PlayerNetInfo.DisconnectedAt"/>
+    /// has been non-zero for longer than <see cref="RECONNECT_GRACE_S"/>.
+    /// Those become full PlayerLeft broadcasts and are removed from the
+    /// roster. Cheap — usually no work, runs once per frame on the host.
+    /// </summary>
+    private static void FinalisePendingDisconnects()
+    {
+        if (_players.Count == 0) return;
+        float now = Time.unscaledTime;
+
+        // Collect first to avoid mutating the dict mid-iteration.
+        List<int> toRemove = null;
+        foreach (var kvp in _players)
+        {
+            var p = kvp.Value;
+            if (p == null || !p.IsAwaitingReconnect) continue;
+            if (now - p.DisconnectedAt < RECONNECT_GRACE_S) continue;
+            (toRemove ??= new List<int>()).Add(kvp.Key);
+        }
+        if (toRemove == null) return;
+
+        foreach (var id in toRemove)
+        {
+            if (!_players.TryGetValue(id, out var info)) continue;
+            string name = info.PlayerName;
+            _players.Remove(id);
+
+            _writer.Reset();
+            _writer.Put(id);
+            foreach (var client in _clients)
+            {
+                SendTo(client, PacketType.PlayerLeft, _writer);
+            }
+            Plugin.Log.LogInfo($"Player '{name}' (ID: {id}) reconnect-grace expired — finalising disconnect.");
+            OnPlayerLeft?.Invoke(id, name);
+        }
     }
     
     #endregion
@@ -439,18 +488,73 @@ public static class NetworkManager
         Plugin.Log.LogInfo($"Client GUID '{clientGuid}' connecting from {peer.Address}:{peer.Port}");
     }
 
+    /// <summary>
+    /// Host-only. Look up an existing player slot whose clientGuid matches
+    /// and is currently in the reconnect-grace window. Returns -1 / null on
+    /// miss (= treat as a fresh peer).
+    /// </summary>
+    private static (int playerId, PlayerNetInfo info) FindPendingReconnect(string clientGuid)
+    {
+        if (string.IsNullOrEmpty(clientGuid)) return (-1, null);
+        foreach (var kvp in _players)
+        {
+            var p = kvp.Value;
+            if (p == null) continue;
+            if (!p.IsAwaitingReconnect) continue;
+            if (string.IsNullOrEmpty(p.ClientGuid)) continue;
+            if (p.ClientGuid != clientGuid) continue;
+            return (kvp.Key, p);
+        }
+        return (-1, null);
+    }
+
     private static void OnPeerConnected(NetPeer peer)
     {
         if (IsHost)
         {
-            // Host: new client connected. Branch on whether we already have a
-            // character record for their guid in the current world seed.
-            // We deliberately do NOT add the peer to _clients yet — that's
-            // done in AssignCharacterAndCompleteHandshake once we know they
-            // have a name. Otherwise SendToAll would broadcast world state
-            // to a peer that hasn't received its handshake yet.
-            int playerId = _nextPlayerId++;
             string clientGuid = (peer.Tag as string) ?? "";
+
+            // Reconnect path: same clientGuid is in the grace window. Restore
+            // the existing slot, swap in the new NetPeer reference, send a
+            // fresh Handshake so they re-sync. No PlayerJoined broadcast —
+            // other peers never saw a PlayerLeft, the slot was kept alive.
+            var (existingId, existingInfo) = FindPendingReconnect(clientGuid);
+            if (existingId >= 0 && existingInfo != null)
+            {
+                existingInfo.Peer = peer;
+                existingInfo.DisconnectedAt = 0f;
+                if (!_clients.Contains(peer)) _clients.Add(peer);
+
+                // Re-send handshake so the client re-learns its playerId and
+                // current player roster (the client side fully cleared on
+                // disconnect, so it needs everything again).
+                _writer.Reset();
+                _writer.Put(existingId);
+                _writer.Put(_players.Count);
+                foreach (var p in _players.Values)
+                {
+                    _writer.Put(p.PlayerId);
+                    _writer.Put(p.PlayerName);
+                    _writer.Put(p.IsHost);
+                    _writer.Put(p.FirstName ?? "");
+                    _writer.Put(p.Surname ?? "");
+                }
+                SendTo(peer, PacketType.Handshake, _writer);
+
+                Plugin.Log.LogInfo($"[NetworkManager] reconnect: restored playerId={existingId} ({existingInfo.PlayerName}) from {peer.Address}:{peer.Port}");
+
+                // Push the side-job snapshot again — they may have missed
+                // updates while away.
+                try { SoDCoop.Sync.SideJobSync.SendSnapshotTo(peer); }
+                catch (System.Exception ex) { Plugin.Log.LogWarning($"SideJobSync.SendSnapshotTo (reconnect): {ex.Message}"); }
+                return;
+            }
+
+            // Fresh peer path. We deliberately do NOT add to _clients yet —
+            // that's done in AssignCharacterAndCompleteHandshake once we
+            // know they have a name. Otherwise SendToAll would broadcast
+            // world state to a peer that hasn't received its handshake yet.
+            int playerId = _nextPlayerId++;
             string seed = CharacterStore.CurrentSeed();
 
             // Reserve a slot but mark not-yet-assigned so we don't broadcast a
@@ -584,47 +688,40 @@ public static class NetworkManager
     {
         if (IsHost)
         {
-            // Host: client disconnected
+            // Host: client disconnected. Always remove the dead NetPeer from
+            // the broadcast list immediately — it's a stale socket reference.
             _clients.Remove(peer);
 
-            // Find and remove player
+            // Find the player slot.
             int playerId = -1;
-            string playerName = "Unknown";
-            bool wasAssigned = false;
+            PlayerNetInfo info = null;
             foreach (var kvp in _players)
             {
                 if (kvp.Value.Peer == peer)
                 {
                     playerId = kvp.Key;
-                    playerName = kvp.Value.PlayerName;
-                    wasAssigned = kvp.Value.CharacterAssigned;
+                    info = kvp.Value;
                     break;
                 }
             }
 
-            if (playerId >= 0)
+            if (playerId < 0 || info == null) return;
+
+            // Pre-character-creation peers: never announced, drop silently.
+            if (!info.CharacterAssigned)
             {
                 _players.Remove(playerId);
-
-                // Only notify other peers if this player had actually been
-                // announced to them via PlayerJoined. Pre-character-creation
-                // disconnects are silent — no one else knew they existed.
-                if (wasAssigned)
-                {
-                    _writer.Reset();
-                    _writer.Put(playerId);
-                    foreach (var client in _clients)
-                    {
-                        SendTo(client, PacketType.PlayerLeft, _writer);
-                    }
-                    Plugin.Log.LogInfo($"Player '{playerName}' (ID: {playerId}) disconnected: {disconnectInfo.Reason}");
-                    OnPlayerLeft?.Invoke(playerId, playerName);
-                }
-                else
-                {
-                    Plugin.Log.LogInfo($"Pending peer (ID: {playerId}) gave up before character creation: {disconnectInfo.Reason}");
-                }
+                Plugin.Log.LogInfo($"Pending peer (ID: {playerId}) gave up before character creation: {disconnectInfo.Reason}");
+                return;
             }
+
+            // Reconnect grace: keep the slot alive for RECONNECT_GRACE_S
+            // seconds. If the same clientGuid comes back in that window,
+            // FindPendingReconnect / OnPeerConnected restore it. If not,
+            // FinalisePendingDisconnects fires PlayerLeft and removes.
+            info.DisconnectedAt = Time.unscaledTime;
+            info.Peer = null;
+            Plugin.Log.LogInfo($"Player '{info.PlayerName}' (ID: {playerId}) disconnected: {disconnectInfo.Reason} — awaiting reconnect for {RECONNECT_GRACE_S}s.");
         }
         else
         {
@@ -1066,4 +1163,16 @@ public class PlayerNetInfo
     /// don't see a half-formed peer.
     /// </summary>
     public bool CharacterAssigned { get; set; }
+
+    /// <summary>
+    /// Host-side. <c>Time.unscaledTime</c> at which this player's peer
+    /// disconnected, or 0 when they're live. Non-zero means they're in
+    /// the reconnect-grace window — slot kept alive in case they come
+    /// back with the same clientGuid. <see cref="NetworkManager.Update"/>
+    /// finalises removal once grace expires.
+    /// </summary>
+    public float DisconnectedAt { get; set; }
+
+    /// <summary>True iff currently waiting for reconnect (grace not yet expired).</summary>
+    public bool IsAwaitingReconnect => DisconnectedAt > 0f;
 }
