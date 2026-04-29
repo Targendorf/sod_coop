@@ -1563,6 +1563,24 @@ public static class GamePatches
     //  no need to stream per-frame Y positions. Echo dedup via SenderId.
     // ─────────────────────────────────────────────────────────────────────────
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Map view — register remote players as tracked map objects whenever the
+    //  city map opens. SoD's MapController auto-projects tracked transforms
+    //  onto the map UI, so once registered the markers follow live without
+    //  per-frame work from us. Idempotent — re-opens skip already-known peers.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(MapController), nameof(MapController.OpenMap))]
+    public static class MapController_OpenMap_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix(MapController __instance)
+        {
+            try { CoopMapMarkers.OnMapOpened(__instance); }
+            catch (System.Exception ex) { Plugin.Log.LogWarning($"MapController.OpenMap patch: {ex.Message}"); }
+        }
+    }
+
     [HarmonyPatch(typeof(Elevator), nameof(Elevator.CallElevator))]
     public static class Elevator_CallElevator_Patch
     {
