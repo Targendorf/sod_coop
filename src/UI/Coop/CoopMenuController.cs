@@ -166,6 +166,7 @@ public static class CoopMenuController
         {
             _lobbyPanel?.Tick();
             _hostPanel?.Tick();
+            _joinPanel?.Tick();
         }
         catch (System.Exception ex)
         {

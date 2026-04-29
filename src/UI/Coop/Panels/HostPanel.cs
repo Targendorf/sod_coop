@@ -1,4 +1,5 @@
 using SoDCoop.Network;
+using SoDCoop.Sync;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -80,11 +81,17 @@ public class HostPanel : CoopPanelBase
 
     private void Refresh()
     {
-        bool hosting = NetworkManager.IsConnected && NetworkManager.IsHost;
+        bool hosting   = NetworkManager.IsConnected && NetworkManager.IsHost;
+        bool inGame    = WorldReadyGate.IsWorldReady;
+        bool canHost   = !hosting && inGame;
 
-        if (_startBtn != null) _startBtn.gameObject.SetActive(!hosting);
-        if (_stopBtn  != null) _stopBtn .gameObject.SetActive(hosting);
-        if (_copyBtn  != null) _copyBtn .gameObject.SetActive(hosting);
+        if (_startBtn != null)
+        {
+            _startBtn.gameObject.SetActive(!hosting);
+            _startBtn.interactable = canHost;   // greyed out from main menu
+        }
+        if (_stopBtn != null) _stopBtn.gameObject.SetActive(hosting);
+        if (_copyBtn != null) _copyBtn.gameObject.SetActive(hosting);
 
         // Identity preview: read live from Game.Instance pre-host (so user sees
         // the name they'll be hosting as), then mirror what's in NetworkManager
@@ -97,9 +104,14 @@ public class HostPanel : CoopPanelBase
                 display = string.IsNullOrEmpty(NetworkManager.LocalPlayerName) ? "Host" : NetworkManager.LocalPlayerName;
                 _identityLabel.color = CoopMenuTheme.LabelOk;
             }
+            else if (!inGame)
+            {
+                display = "⚠ Load a save first — your character is read from the loaded game.";
+                _identityLabel.color = CoopMenuTheme.LabelWarn;
+            }
             else
             {
-                var (fn, sn) = SoDCoop.Sync.CharacterStore.ReadHostCharacter();
+                var (fn, sn) = CharacterStore.ReadHostCharacter();
                 if (string.IsNullOrEmpty(fn) && string.IsNullOrEmpty(sn))
                 {
                     display = "(no save loaded — will host as 'Host')";
@@ -121,6 +133,11 @@ public class HostPanel : CoopPanelBase
                 int conns = NetworkManager.Players?.Count ?? 0;
                 _statusLabel.text = $"Status: hosting — {conns} peer(s) connected";
                 _statusLabel.color = CoopMenuTheme.LabelOk;
+            }
+            else if (!inGame)
+            {
+                _statusLabel.text = "Status: in main menu — start or load a save before hosting.";
+                _statusLabel.color = CoopMenuTheme.LabelWarn;
             }
             else
             {
@@ -163,6 +180,20 @@ public class HostPanel : CoopPanelBase
     {
         try
         {
+            // Hard guard: refuse to host from main menu / mid-load. The host's
+            // identity comes from Game.Instance and the join code embeds the
+            // city name — both meaningless until the world is fully loaded.
+            if (!WorldReadyGate.IsWorldReady)
+            {
+                if (_statusLabel != null)
+                {
+                    _statusLabel.text = "⚠ You must be in-game to host. Load a save first, then come back.";
+                    _statusLabel.color = CoopMenuTheme.LabelWarn;
+                }
+                Plugin.Log.LogWarning("[HostPanel] Start Hosting rejected: world not ready (still on main menu / loading).");
+                return;
+            }
+
             int port = int.TryParse(_portInput?.text ?? "9050", out var p) ? p : 9050;
             if (NetworkManager.StartHost(port))
             {

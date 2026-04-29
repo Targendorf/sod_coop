@@ -1,4 +1,5 @@
 using SoDCoop.Network;
+using SoDCoop.Sync;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -17,6 +18,7 @@ public class JoinPanel : CoopPanelBase
     private InputField _ipInput;
     private InputField _portInput;
     private Text       _statusLabel;
+    private Text       _gameStateLabel;
     private Button     _connectBtn;
 
     protected override void BuildBody()
@@ -25,6 +27,10 @@ public class JoinPanel : CoopPanelBase
                   "If this is your first time on the host's world, you'll be asked to create your character after connecting.",
             CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelMuted);
         Spacer(8f);
+
+        _gameStateLabel = BodyLabel("",
+            CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
+        Spacer(4f);
 
         BodyLabel("Join code (recommended)", CoopMenuTheme.FontSizeSmall,
             CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
@@ -103,6 +109,23 @@ public class JoinPanel : CoopPanelBase
     {
         try
         {
+            // Hard guard: don't let the user join while their own save is loaded.
+            // The client plays AS one of the host's citizens (twin) in the host's
+            // world; their local save is irrelevant and a loaded local world
+            // would just keep ticking in the background (NPCs walking around,
+            // time passing, sound playing) while the lobby waits — confusing
+            // state at best, broken sync at worst.
+            if (WorldReadyGate.IsWorldReady)
+            {
+                if (_statusLabel != null)
+                {
+                    _statusLabel.text = "⚠ Return to the main menu first — you can't join while your own save is loaded.";
+                    _statusLabel.color = CoopMenuTheme.LabelWarn;
+                }
+                Plugin.Log.LogWarning("[JoinPanel] Connect rejected: client has a save loaded; must be on main menu.");
+                return;
+            }
+
             string ip = _ipInput?.text ?? "127.0.0.1";
             int port = int.TryParse(_portInput?.text ?? "9050", out var p) ? p : 9050;
 
@@ -135,6 +158,40 @@ public class JoinPanel : CoopPanelBase
                 _statusLabel.color = CoopMenuTheme.LabelError;
             }
         }
+    }
+
+    public override void Show()
+    {
+        base.Show();
+        Refresh();
+    }
+
+    public void Tick()
+    {
+        if (Root == null || !Root.activeSelf) return;
+        Refresh();
+    }
+
+    private void Refresh()
+    {
+        bool inGame = WorldReadyGate.IsWorldReady;
+
+        if (_gameStateLabel != null)
+        {
+            if (inGame)
+            {
+                _gameStateLabel.text = "⚠ A save is currently loaded. Return to the main menu before joining.";
+                _gameStateLabel.color = CoopMenuTheme.LabelWarn;
+            }
+            else
+            {
+                _gameStateLabel.text = "✔ On main menu — ready to join.";
+                _gameStateLabel.color = CoopMenuTheme.LabelOk;
+            }
+        }
+
+        if (_connectBtn != null)
+            _connectBtn.interactable = !inGame;
     }
 
     private static void AddLayoutHeight(GameObject go, float height)
