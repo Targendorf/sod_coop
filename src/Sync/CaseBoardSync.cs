@@ -49,25 +49,37 @@ public static class CaseBoardSync
     private static readonly Dictionary<long, int> _lastMoveSender = new();
 
     /// <summary>
-    /// Push every active case's pinned-card state and status to a freshly-
-    /// joined peer. Without this, a mid-session client sees an empty case
-    /// board even though the host has been investigating for hours — and
-    /// since pins are the most visible "we know X" signal in coop, this
-    /// is the most impactful late-join snapshot of all.
+    /// Push every active case's runtime state to a freshly-joined peer so
+    /// the case board converges to the host's view. Without this, a
+    /// mid-session client sees an empty board even though the host has
+    /// been investigating for hours — pins, threads, and resolve answers
+    /// are all only broadcast on change, so the joiner missed everything.
     ///
     /// <para>Sent per active case:</para>
     /// <list type="bullet">
-    ///   <item>One <c>CaseBoardPin</c> per <c>caseElement</c> — carries
-    ///         evID, DataKey set, board position, auto-pin flag.</item>
-    ///   <item>One <c>CaseBoardStatus</c> for the case's current
-    ///         <c>SetStatus</c> value (active / solved / failed).</item>
+    ///   <item><c>CaseBoardPin</c> per <c>caseElement</c> — pinned card
+    ///         identity (evID + DataKey set), board position, auto-pin flag.</item>
+    ///   <item><c>CaseBoardString</c> per (StringColours, target) — one
+    ///         packet per coloured thread between pinned cards. SoD's
+    ///         StringColours can have multiple targets per source so we
+    ///         emit one packet per <c>toEv</c> entry.</item>
+    ///   <item><c>CaseBoardResolveAnswer</c> per ResolveQuestion with
+    ///         non-zero progress — investigation answers (suspect /
+    ///         location / time picks).</item>
+    ///   <item><c>CaseBoardStatus</c> — the case's current
+    ///         <c>caseStatus</c> (active / solved / failed).</item>
     /// </list>
     ///
-    /// <para>What's NOT yet snapshot'd (TODO): coloured strings between
-    /// pinned cards, hidden-fact toggles (Case.SetHidden), per-fact
-    /// custom names (Fact.SetCustomName), resolve-question answers.
-    /// Each is small distinct state — extend by walking the matching
-    /// per-case sub-collections and reusing the existing packet helpers.</para>
+    /// <para>What's still NOT snapshot'd:</para>
+    /// <list type="bullet">
+    ///   <item>Hidden-fact toggles (<c>Case.hiddenConnections</c> stores
+    ///         them as opaque packed strings — reverse-engineering the
+    ///         encoding isn't worth the value; players rarely hide facts).</item>
+    ///   <item>Per-fact custom names (<c>Fact.SetCustomName</c>) — would
+    ///         require walking every fact on every evidence linked to
+    ///         every case-element. Live broadcasts work fine, only
+    ///         late-joiners miss pre-existing renames.</item>
+    /// </list>
     /// </summary>
     public static void SendSnapshotTo(NetPeer peer)
     {
@@ -80,14 +92,14 @@ public static class CaseBoardSync
             var cases = cpc?.activeCases;
             if (cases == null || cases.Count == 0) return;
 
-            int pins = 0, statuses = 0;
+            int pins = 0, strings = 0, answers = 0, statuses = 0;
 
             for (int i = 0; i < cases.Count; i++)
             {
                 var c = cases[i];
                 if (c == null) continue;
 
-                // Pinned cards.
+                // ─── Pinned cards ────────────────────────────────────────
                 try
                 {
                     var els = c.caseElements;
@@ -99,15 +111,7 @@ public static class CaseBoardSync
                             if (el == null) continue;
                             if (string.IsNullOrEmpty(el.id)) continue;
 
-                            byte[] keyBytes;
-                            try
-                            {
-                                var dk = el.dk;
-                                int n = dk?.Count ?? 0;
-                                keyBytes = new byte[n];
-                                for (int k = 0; k < n; k++) keyBytes[k] = (byte)dk[k];
-                            }
-                            catch { keyBytes = System.Array.Empty<byte>(); }
+                            byte[] keyBytes = DataKeyListToBytes(el.dk);
 
                             var pkt = new CaseBoardPinPacket
                             {
@@ -126,7 +130,84 @@ public static class CaseBoardSync
                 }
                 catch { }
 
-                // Status.
+                // ─── Coloured strings between pinned cards ───────────────
+                try
+                {
+                    var sc = c.stringColours;
+                    if (sc != null)
+                    {
+                        for (int j = 0; j < sc.Count; j++)
+                        {
+                            var s = sc[j];
+                            if (s == null) continue;
+                            string fromEv = s.fromEv;
+                            if (string.IsNullOrEmpty(fromEv)) continue;
+
+                            byte[] fromKeys = DataKeyListToBytes(s.fromDK);
+                            byte[] toKeys   = DataKeyListToBytes(s.toDK);
+                            byte   colour   = (byte)System.Math.Max(0, System.Math.Min(255, s.colIndex));
+
+                            var toEvList = s.toEv;
+                            if (toEvList == null) continue;
+
+                            // SoD allows one StringColours to fan out to many
+                            // toEv entries. Our wire packet is 1-to-1 so we
+                            // emit one per target.
+                            for (int t = 0; t < toEvList.Count; t++)
+                            {
+                                string toEv = toEvList[t];
+                                if (string.IsNullOrEmpty(toEv)) continue;
+
+                                var pkt = new CaseBoardStringPacket
+                                {
+                                    CaseId   = c.id,
+                                    FromEvId = fromEv,
+                                    FromKeys = fromKeys,
+                                    ToEvId   = toEv,
+                                    ToKeys   = toKeys,
+                                    Colour   = colour,
+                                };
+                                _writer.Reset();
+                                pkt.Serialize(_writer);
+                                NetworkManager.SendTo(peer, PacketType.CaseBoardString, _writer, DeliveryMethod.ReliableOrdered);
+                                strings++;
+                            }
+                        }
+                    }
+                }
+                catch { }
+
+                // ─── Resolve-question answer progress ────────────────────
+                try
+                {
+                    var qs = c.resolveQuestions;
+                    if (qs != null)
+                    {
+                        for (int j = 0; j < qs.Count; j++)
+                        {
+                            var q = qs[j];
+                            if (q == null) continue;
+                            float progress = 0f;
+                            try { progress = q.progress; } catch { }
+                            if (progress <= 0f) continue; // skip untouched
+
+                            var pkt = new CaseBoardResolveAnswerPacket
+                            {
+                                CaseId        = c.id,
+                                QuestionIndex = j,
+                                Progress      = progress,
+                                ForceTrigger  = false,
+                            };
+                            _writer.Reset();
+                            pkt.Serialize(_writer);
+                            NetworkManager.SendTo(peer, PacketType.CaseBoardResolveAnswer, _writer, DeliveryMethod.ReliableOrdered);
+                            answers++;
+                        }
+                    }
+                }
+                catch { }
+
+                // ─── Status ──────────────────────────────────────────────
                 try
                 {
                     var pkt = new CaseBoardStatusPacket
@@ -143,12 +224,25 @@ public static class CaseBoardSync
                 catch { }
             }
 
-            Plugin.Log.LogInfo($"[CaseBoardSync] snapshot: pins={pins} statuses={statuses} → {peer.Address}:{peer.Port}");
+            Plugin.Log.LogInfo($"[CaseBoardSync] snapshot: pins={pins} strings={strings} answers={answers} statuses={statuses} → {peer.Address}:{peer.Port}");
         }
         catch (System.Exception ex)
         {
             Plugin.Log.LogWarning($"CaseBoardSync.SendSnapshotTo: {ex.Message}");
         }
+    }
+
+    private static byte[] DataKeyListToBytes(Il2CppList list)
+    {
+        try
+        {
+            int n = list?.Count ?? 0;
+            if (n == 0) return System.Array.Empty<byte>();
+            var buf = new byte[n];
+            for (int i = 0; i < n; i++) buf[i] = (byte)list[i];
+            return buf;
+        }
+        catch { return System.Array.Empty<byte>(); }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
