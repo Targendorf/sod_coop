@@ -1684,15 +1684,28 @@ public static class GamePatches
             {
                 if (__instance == null) return;
                 if (PlayerOutfitSync.IsApplyingRemote) return;
+                if (NpcOutfitSync.IsApplyingRemote) return;
 
-                // Fire only when the patched controller is the LOCAL player's.
+                // Two paths share this hook:
+                //   • Local player's controller → PlayerOutfitSync (client → host
+                //     so host's twin matches; existing behaviour).
+                //   • Anyone else's, AND we're host → NpcOutfitSync (host → all
+                //     clients so their citizens flip outfit when host's AI fires
+                //     a scheduled wardrobe change).
                 var local = global::Player.Instance;
-                if (local == null) return;
-                var localCtrl = local.outfitController;
-                if (localCtrl == null) return;
-                if (__instance.Pointer != localCtrl.Pointer) return;
+                if (local != null && local.outfitController != null
+                    && __instance.Pointer == local.outfitController.Pointer)
+                {
+                    PlayerOutfitSync.BroadcastSetOutfit((byte)category);
+                    return;
+                }
 
-                PlayerOutfitSync.BroadcastSetOutfit((byte)category);
+                // NPC path. Only host broadcasts — clients have AI disabled and
+                // wouldn't fire SetCurrentOutfit on NPCs except via our own
+                // ApplyOutfit (which is guarded above).
+                if (!NetworkManager.IsHost) return;
+                int humanId = NpcOutfitSync.ResolveOwningHumanId(__instance);
+                if (humanId > 0) NpcOutfitSync.BroadcastNpcOutfit(humanId, (byte)category);
             }
             catch (System.Exception ex)
             {

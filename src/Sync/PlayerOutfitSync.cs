@@ -1,8 +1,118 @@
 using LiteNetLib;
 using LiteNetLib.Utils;
 using SoDCoop.Network;
+using UnityEngine;
 
 namespace SoDCoop.Sync;
+
+/// <summary>
+/// Mirrors NPC outfit changes from host to clients.
+///
+/// <para>SoD citizens swap clothes during the day (work shift → uniform,
+/// home → casual, sleeping → pajamas). This runs in their AI tick, which
+/// only executes on the host (clients have NPC AI disabled). Without
+/// this broadcast, clients see the initial seeded outfit forever — a
+/// citizen wearing pajamas on the host is still in their work uniform on
+/// the client.</para>
+///
+/// <para>Wire: humanID + outfit-category byte. Receiver finds the citizen
+/// in <c>CityData.Instance.citizenDictionary</c> and replays SoD's
+/// SetCurrentOutfit under <see cref="IsApplyingRemote"/> so the patch
+/// doesn't re-broadcast.</para>
+/// </summary>
+public static class NpcOutfitSync
+{
+    public static bool IsApplyingRemote { get; private set; }
+
+    private static readonly NetDataWriter _writer = new();
+
+    public static void BroadcastNpcOutfit(int humanId, byte category)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (!NetworkManager.IsHost) return; // only host's AI drives NPC outfits
+        if (!NetworkManager.HasPeers) return;
+        if (WorldReadyGate.IsInInitGrace) return; // skip the seeded init burst
+        if (IsApplyingRemote) return;
+        if (humanId <= 0) return;
+        if (!BroadcastBudget.TryConsume("npc.outfit")) return;
+
+        try
+        {
+            var packet = new NpcOutfitPacket
+            {
+                SenderId = NetworkManager.LocalPlayerId,
+                HumanId  = humanId,
+                Category = category,
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.NpcOutfit, _writer, DeliveryMethod.ReliableOrdered);
+            Plugin.Log.LogInfo($"[NpcOutfitSync] broadcast humanID={humanId} cat={category}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"NpcOutfitSync.BroadcastNpcOutfit: {ex.Message}");
+        }
+    }
+
+    public static void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
+    {
+        if (type != PacketType.NpcOutfit) return;
+        try
+        {
+            var p = new NpcOutfitPacket();
+            p.Deserialize(reader);
+            if (p.SenderId == NetworkManager.LocalPlayerId) return;
+            ApplyOutfit(p);
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"NpcOutfitSync.OnPacketReceived: {ex.Message}");
+        }
+    }
+
+    private static void ApplyOutfit(NpcOutfitPacket p)
+    {
+        try
+        {
+            var dict = global::CityData.Instance?.citizenDictionary;
+            if (dict == null) return;
+            if (!dict.TryGetValue(p.HumanId, out var human) || human == null) return;
+            var ctrl = human.outfitController;
+            if (ctrl == null) return;
+
+            IsApplyingRemote = true;
+            try
+            {
+                ctrl.SetCurrentOutfit((ClothesPreset.OutfitCategory)p.Category, false, false, true);
+                Plugin.Log.LogInfo($"[NpcOutfitSync] applied humanID={p.HumanId} cat={p.Category}");
+            }
+            finally { IsApplyingRemote = false; }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"NpcOutfitSync.ApplyOutfit: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Reverse-lookup: given a CitizenOutfitController, find the humanID of
+    /// the owning citizen. Walks the controller's parent chain to grab the
+    /// Human component. Returns 0 on failure.
+    /// </summary>
+    public static int ResolveOwningHumanId(CitizenOutfitController ctrl)
+    {
+        if (ctrl == null) return 0;
+        try
+        {
+            var go = ctrl.gameObject;
+            if (go == null) return 0;
+            var human = go.GetComponentInParent<Human>();
+            return human?.humanID ?? 0;
+        }
+        catch { return 0; }
+    }
+}
 
 /// <summary>
 /// Mirrors player outfit / disguise changes onto the host's twin citizen.

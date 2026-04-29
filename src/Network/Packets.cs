@@ -634,5 +634,14 @@ public enum PacketType : byte
     /// </summary>
     SideJobHandInRequest = 112,
 
+    /// <summary>
+    /// NPC outfit category change (host → all). When the host's NPC AI
+    /// flips a citizen into work / sleep / casual clothes (scheduled
+    /// shift change, etc.), broadcast it so clients update their copy
+    /// of that citizen — clients have AI disabled and would otherwise
+    /// stay on the initial seeded outfit.
+    /// </summary>
+    NpcOutfit = 113,
+
     #endregion
 }

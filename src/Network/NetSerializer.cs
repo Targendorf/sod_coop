@@ -1172,6 +1172,35 @@ public struct EvidenceDiscoveryAddPacket : INetPacket
 }
 
 /// <summary>
+/// NPC outfit category change (host → all). Carries the citizen's
+/// stable humanID + the new <c>ClothesPreset.OutfitCategory</c> as a
+/// byte. Receiver looks the citizen up in city dictionary and replays
+/// SetCurrentOutfit so the visual matches.
+/// </summary>
+public struct NpcOutfitPacket : INetPacket
+{
+    public PacketType Type => PacketType.NpcOutfit;
+
+    public int  SenderId;
+    public int  HumanId;
+    public byte Category;
+
+    public void Serialize(NetDataWriter w)
+    {
+        w.Put(SenderId);
+        w.Put(HumanId);
+        w.Put(Category);
+    }
+
+    public void Deserialize(NetDataReader r)
+    {
+        SenderId = r.GetInt();
+        HumanId  = r.GetInt();
+        Category = r.GetByte();
+    }
+}
+
+/// <summary>
 /// Player outfit category. Client-only outbound: when the local player's
 /// <c>CitizenOutfitController.SetCurrentOutfit</c> is called, host applies
 /// the same category to the sender's twin so guard / co-worker checks see

@@ -197,6 +197,11 @@ public static class SyncManager
             {
                 PlayerOutfitSync.OnPacketReceived(type, reader, senderId);
             }
+            // NPC scheduled outfit change (113) — host → clients.
+            else if (type == PacketType.NpcOutfit)
+            {
+                NpcOutfitSync.OnPacketReceived(type, reader, senderId);
+            }
             // Elevator floor call (32).
             else if (type == PacketType.ElevatorCall)
             {
