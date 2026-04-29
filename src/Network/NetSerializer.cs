@@ -1176,28 +1176,20 @@ public struct EvidenceDiscoveryAddPacket : INetPacket
 /// stable humanID + the new <c>ClothesPreset.OutfitCategory</c> as a
 /// byte. Receiver looks the citizen up in city dictionary and replays
 /// SetCurrentOutfit so the visual matches.
+///
+/// <para><b>Source-generated:</b> Serialize / Deserialize are emitted by
+/// <c>SoDCoop.Generators.NetPacketGenerator</c> from the public field
+/// declarations below. Adding a field automatically updates both
+/// methods on next build — see <see cref="NetPacketAttribute"/>.</para>
 /// </summary>
-public struct NpcOutfitPacket : INetPacket
+[NetPacket]
+public partial struct NpcOutfitPacket : INetPacket
 {
     public PacketType Type => PacketType.NpcOutfit;
 
     public int  SenderId;
     public int  HumanId;
     public byte Category;
-
-    public void Serialize(NetDataWriter w)
-    {
-        w.Put(SenderId);
-        w.Put(HumanId);
-        w.Put(Category);
-    }
-
-    public void Deserialize(NetDataReader r)
-    {
-        SenderId = r.GetInt();
-        HumanId  = r.GetInt();
-        Category = r.GetByte();
-    }
 }
 
 /// <summary>

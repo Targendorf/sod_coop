@@ -15,6 +15,15 @@
     </RestoreAdditionalProjectSources>
     <!-- Gale mod manager profile path -->
     <BepInExPath>$(APPDATA)\com.kesomannen.gale\shadows-of-doubt\profiles\Default\BepInEx</BepInExPath>
+
+    <!--
+      Dump source-generator output to disk under obj/<Cfg>/generated/ so
+      contributors can read the emitted Serialize/Deserialize bodies for
+      [NetPacket] structs. Pure debugging convenience — generator output
+      is compiled into the DLL whether this is on or off.
+    -->
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)$(Configuration)\generated</CompilerGeneratedFilesOutputPath>
   </PropertyGroup>
 
   <!-- Exclude the Assembly-CSharp dump folder — it is for reference only, not compilation -->
@@ -23,11 +32,35 @@
     <None Include="Assembly-CSharp_Dump\**" />
   </ItemGroup>
 
+  <!--
+    Exclude the source-generator subproject from the main project's default
+    *.cs glob. It compiles separately as netstandard2.0 (different
+    Roslyn-required TFM) and is wired in below via Analyzer ProjectReference.
+  -->
+  <ItemGroup>
+    <Compile Remove="SoDCoop.Generators\**" />
+    <None Include="SoDCoop.Generators\**\*.cs" />
+    <None Include="SoDCoop.Generators\**\*.csproj" />
+  </ItemGroup>
+
   <!-- BepInEx IL2CPP Dependencies -->
   <ItemGroup>
     <PackageReference Include="BepInEx.Unity.IL2CPP" Version="6.0.0-be.*" IncludeAssets="compile" />
     <PackageReference Include="BepInEx.PluginInfoProps" Version="2.*" />
     <PackageReference Include="LiteNetLib" Version="1.2.0" />
+  </ItemGroup>
+
+  <!--
+    Source generator project. Referenced as an Analyzer so its DLL runs at
+    compile time emitting Serialize/Deserialize for [NetPacket] partial
+    structs, but never ships in the runtime plugin DLL.
+    ReferenceOutputAssembly=false keeps the generator's dependencies from
+    bleeding into the build output.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="SoDCoop.Generators\SoDCoop.Generators.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <!-- IL2CPP Interop References from Gale mod manager -->
