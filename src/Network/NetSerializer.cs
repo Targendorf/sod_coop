@@ -89,26 +89,46 @@ public static class NetSerializerExtensions
         byte header = reader.GetByte();
         int largestIndex = header & 0x03;
         float sign = (header & 0x04) != 0 ? -1f : 1f;
-        
-        float[] components = new float[4];
+
+        // Allocation-free: read into stack locals, not a heap float[]. At 20Hz
+        // × N players this saves visible GC pressure on the receiver hot path.
+        float c0 = 0f, c1 = 0f, c2 = 0f, c3 = 0f;
         float sumSquares = 0f;
-        
         for (int i = 0; i < 4; i++)
         {
-            if (i != largestIndex)
-            {
-                components[i] = reader.GetShort() / 32767f;
-                sumSquares += components[i] * components[i];
-            }
+            if (i == largestIndex) continue;
+            float v = reader.GetShort() / 32767f;
+            sumSquares += v * v;
+            switch (i) { case 0: c0 = v; break; case 1: c1 = v; break; case 2: c2 = v; break; case 3: c3 = v; break; }
         }
-        
-        components[largestIndex] = Mathf.Sqrt(1f - sumSquares) * sign;
-        
-        return new Quaternion(components[0], components[1], components[2], components[3]);
+        float reconstructed = Mathf.Sqrt(Mathf.Max(0f, 1f - sumSquares)) * sign;
+        switch (largestIndex) { case 0: c0 = reconstructed; break; case 1: c1 = reconstructed; break; case 2: c2 = reconstructed; break; case 3: c3 = reconstructed; break; }
+
+        return new Quaternion(c0, c1, c2, c3);
     }
-    
+
+    /// <summary>
+    /// Pack a velocity / small-magnitude vector as 3× int16 with 0.01 m
+    /// scale: range ±327.67 m/s, precision 1 cm/s. Plenty for player /
+    /// citizen movement (max walking ~6 m/s, running ~10 m/s in SoD).
+    /// 6 bytes vs the 12 of an uncompressed Vector3 — half the wire cost
+    /// per high-rate position packet.
+    /// </summary>
+    public static void PutCompressed(this NetDataWriter writer, Vector3 v)
+    {
+        writer.Put((short)Mathf.Clamp(Mathf.RoundToInt(v.x * 100f), short.MinValue, short.MaxValue));
+        writer.Put((short)Mathf.Clamp(Mathf.RoundToInt(v.y * 100f), short.MinValue, short.MaxValue));
+        writer.Put((short)Mathf.Clamp(Mathf.RoundToInt(v.z * 100f), short.MinValue, short.MaxValue));
+    }
+
+    public static Vector3 GetCompressedVector3(this NetDataReader reader)
+    {
+        short x = reader.GetShort(), y = reader.GetShort(), z = reader.GetShort();
+        return new Vector3(x * 0.01f, y * 0.01f, z * 0.01f);
+    }
+
     #endregion
-    
+
     #region Color
     
     public static void Put(this NetDataWriter writer, Color color)
@@ -181,8 +201,8 @@ public struct PlayerPositionPacket : INetPacket
         writer.Put(Sequence);
         writer.Put(Flags);
         writer.Put(Position);
-        writer.PutCompressed(Rotation);
-        writer.Put(Velocity);
+        writer.PutCompressed(Rotation);   // 7 bytes (smallest-three)
+        writer.PutCompressed(Velocity);   // 6 bytes (int16 × 0.01 m scale)
         writer.Put(Timestamp);
     }
 
@@ -193,7 +213,7 @@ public struct PlayerPositionPacket : INetPacket
         Flags     = reader.GetByte();
         Position  = reader.GetVector3();
         Rotation  = reader.GetCompressedQuaternion();
-        Velocity  = reader.GetVector3();
+        Velocity  = reader.GetCompressedVector3();
         Timestamp = reader.GetFloat();
     }
 
