@@ -48,6 +48,109 @@ public static class CaseBoardSync
     /// </summary>
     private static readonly Dictionary<long, int> _lastMoveSender = new();
 
+    /// <summary>
+    /// Push every active case's pinned-card state and status to a freshly-
+    /// joined peer. Without this, a mid-session client sees an empty case
+    /// board even though the host has been investigating for hours — and
+    /// since pins are the most visible "we know X" signal in coop, this
+    /// is the most impactful late-join snapshot of all.
+    ///
+    /// <para>Sent per active case:</para>
+    /// <list type="bullet">
+    ///   <item>One <c>CaseBoardPin</c> per <c>caseElement</c> — carries
+    ///         evID, DataKey set, board position, auto-pin flag.</item>
+    ///   <item>One <c>CaseBoardStatus</c> for the case's current
+    ///         <c>SetStatus</c> value (active / solved / failed).</item>
+    /// </list>
+    ///
+    /// <para>What's NOT yet snapshot'd (TODO): coloured strings between
+    /// pinned cards, hidden-fact toggles (Case.SetHidden), per-fact
+    /// custom names (Fact.SetCustomName), resolve-question answers.
+    /// Each is small distinct state — extend by walking the matching
+    /// per-case sub-collections and reusing the existing packet helpers.</para>
+    /// </summary>
+    public static void SendSnapshotTo(NetPeer peer)
+    {
+        if (peer == null) return;
+        if (!NetworkManager.IsHost) return;
+
+        try
+        {
+            var cpc = global::CasePanelController.Instance;
+            var cases = cpc?.activeCases;
+            if (cases == null || cases.Count == 0) return;
+
+            int pins = 0, statuses = 0;
+
+            for (int i = 0; i < cases.Count; i++)
+            {
+                var c = cases[i];
+                if (c == null) continue;
+
+                // Pinned cards.
+                try
+                {
+                    var els = c.caseElements;
+                    if (els != null)
+                    {
+                        for (int j = 0; j < els.Count; j++)
+                        {
+                            var el = els[j];
+                            if (el == null) continue;
+                            if (string.IsNullOrEmpty(el.id)) continue;
+
+                            byte[] keyBytes;
+                            try
+                            {
+                                var dk = el.dk;
+                                int n = dk?.Count ?? 0;
+                                keyBytes = new byte[n];
+                                for (int k = 0; k < n; k++) keyBytes[k] = (byte)dk[k];
+                            }
+                            catch { keyBytes = System.Array.Empty<byte>(); }
+
+                            var pkt = new CaseBoardPinPacket
+                            {
+                                CaseId       = c.id,
+                                EvId         = el.id,
+                                DataKeys     = keyBytes,
+                                Position     = el.v,
+                                ForceAutoPin = el.ap,
+                            };
+                            _writer.Reset();
+                            pkt.Serialize(_writer);
+                            NetworkManager.SendTo(peer, PacketType.CaseBoardPin, _writer, DeliveryMethod.ReliableOrdered);
+                            pins++;
+                        }
+                    }
+                }
+                catch { }
+
+                // Status.
+                try
+                {
+                    var pkt = new CaseBoardStatusPacket
+                    {
+                        CaseId           = c.id,
+                        Status           = (byte)c.caseStatus,
+                        CancelObjectives = false,
+                    };
+                    _writer.Reset();
+                    pkt.Serialize(_writer);
+                    NetworkManager.SendTo(peer, PacketType.CaseBoardStatus, _writer, DeliveryMethod.ReliableOrdered);
+                    statuses++;
+                }
+                catch { }
+            }
+
+            Plugin.Log.LogInfo($"[CaseBoardSync] snapshot: pins={pins} statuses={statuses} → {peer.Address}:{peer.Port}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"CaseBoardSync.SendSnapshotTo: {ex.Message}");
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     //  Outbound
     // ─────────────────────────────────────────────────────────────────────────

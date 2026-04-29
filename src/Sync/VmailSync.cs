@@ -129,6 +129,57 @@ public static class VmailSync
         }
     }
 
+    /// <summary>
+    /// Push every existing vmail thread to a freshly-joined peer. Apply path
+    /// is idempotent (skips already-known threadIDs), so a deterministic
+    /// gen-side dedup happens naturally on the receiver. Only thread state
+    /// is sent — listening / read flags aren't tracked by SoD's
+    /// MessageThreadSave anyway.
+    /// </summary>
+    public static void SendSnapshotTo(NetPeer peer)
+    {
+        if (peer == null) return;
+        if (!NetworkManager.IsHost) return;
+
+        try
+        {
+            var gc = GameplayController.Instance;
+            var dict = gc?.messageThreads;
+            if (dict == null || dict.Count == 0) return;
+
+            int sent = 0;
+            foreach (var kv in dict)
+            {
+                var thread = kv.Value;
+                if (thread == null) continue;
+
+                var packet = new VmailCreatedPacket
+                {
+                    SenderId      = NetworkManager.LocalPlayerId,
+                    ThreadId      = thread.threadID,
+                    TreeId        = thread.treeID ?? "",
+                    FromHumanId   = thread.participantA,
+                    ToAHumanId    = thread.participantB,
+                    ToBHumanId    = thread.participantC,
+                    ToCHumanId    = thread.participantD,
+                    TimeStamp     = thread.time,
+                    Progress      = 0,
+                    DataSource    = (byte)thread.ds,
+                    DataSourceId  = thread.dsID,
+                };
+                _writer.Reset();
+                packet.Serialize(_writer);
+                NetworkManager.SendTo(peer, PacketType.VmailCreated, _writer, DeliveryMethod.ReliableOrdered);
+                sent++;
+            }
+            Plugin.Log.LogInfo($"[VmailSync] snapshot: sent {sent} vmail thread(s) to peer {peer.Address}:{peer.Port}.");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"VmailSync.SendSnapshotTo: {ex.Message}");
+        }
+    }
+
     private static Human ResolveHuman(int humanId)
     {
         if (humanId < 0) return null;

@@ -132,6 +132,66 @@ public static class EvidenceSync
     // ─────────────────────────────────────────────────────────────────────────
 
     /// <summary>
+    /// Push every Evidence's discoveryProgress + custom-name + sticky-note
+    /// state to a freshly-joined peer. Discovery is the big one for
+    /// investigation continuity — without this, late-joiner's case-board
+    /// shows everything as "unknown" until they personally re-discover
+    /// each fact, even if the host already cracked the case.
+    ///
+    /// <para>Idempotency: ApplyDiscovery dedups against existing
+    /// discoveryProgress, ApplySetNote / ApplyCustomName overwrite (which
+    /// matches what the originating broadcast would have done anyway).</para>
+    /// </summary>
+    public static void SendSnapshotTo(NetPeer peer)
+    {
+        if (peer == null) return;
+        if (!NetworkManager.IsHost) return;
+
+        try
+        {
+            var dict = GameplayController.Instance?.evidenceDictionary;
+            if (dict == null || dict.Count == 0) return;
+
+            int discoveries = 0;
+            foreach (var kv in dict)
+            {
+                var ev = kv.Value;
+                if (ev == null) continue;
+                string evId = ev.evID;
+                if (string.IsNullOrEmpty(evId)) continue;
+
+                // Discovery progress.
+                try
+                {
+                    var prog = ev.discoveryProgress;
+                    if (prog != null && prog.Count > 0)
+                    {
+                        for (int i = 0; i < prog.Count; i++)
+                        {
+                            var p = new EvidenceDiscoveryAddPacket
+                            {
+                                SenderId  = NetworkManager.LocalPlayerId,
+                                EvId      = evId,
+                                Discovery = (byte)prog[i],
+                            };
+                            _writer.Reset();
+                            p.Serialize(_writer);
+                            NetworkManager.SendTo(peer, PacketType.EvidenceDiscoveryAdd, _writer, DeliveryMethod.ReliableOrdered);
+                            discoveries++;
+                        }
+                    }
+                }
+                catch { }
+            }
+            Plugin.Log.LogInfo($"[EvidenceSync] snapshot: sent {discoveries} discovery record(s) to peer {peer.Address}:{peer.Port}.");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"EvidenceSync.SendSnapshotTo: {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// Host-only star-topology remap. Re-serialises an EvidenceCreate from
     /// raw <paramref name="body"/> bytes with <c>WriterHumanId</c> rewritten
     /// to the sender's twin humanID. Owner / Receiver fields are semantic

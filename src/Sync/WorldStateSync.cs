@@ -112,6 +112,102 @@ public static class WorldStateSync
         }
     }
 
+    /// <summary>
+    /// Walk the city's interactableDirectory and push current door / light /
+    /// switch state to a freshly-joined peer so they don't see the world
+    /// frozen in its initial-load configuration. Lockpick-opened doors,
+    /// player-toggled lights, opened drawers all converge to the host's
+    /// authoritative state.
+    ///
+    /// <para>Cost: O(N) over interactables (~5k–15k in a typical city) once
+    /// per join. Each entry checks a couple of component refs and
+    /// optionally fires one SendTo. Negligible CPU; bandwidth bounded by
+    /// the number of items in non-default state.</para>
+    /// </summary>
+    public static void SendSnapshotTo(NetPeer peer)
+    {
+        if (peer == null) return;
+        if (!NetworkManager.IsHost) return;
+
+        try
+        {
+            var dir = CityData.Instance?.interactableDirectory;
+            if (dir == null) return;
+
+            int doors = 0, locks = 0, lights = 0, switches = 0;
+
+            for (int i = 0; i < dir.Count; i++)
+            {
+                var inter = dir[i];
+                if (inter == null) continue;
+
+                // Door state: open/closed and locked/unlocked.
+                NewDoor door = null;
+                try { door = inter.spawnedObject?.GetComponent<NewDoor>(); } catch { }
+                if (door != null)
+                {
+                    try
+                    {
+                        var pkt = new DoorStatePacket { InteractableId = inter.id, IsClosed = door.isClosed };
+                        _writer.Reset();
+                        pkt.Serialize(_writer);
+                        NetworkManager.SendTo(peer, PacketType.DoorState, _writer, DeliveryMethod.ReliableOrdered);
+                        doors++;
+                    } catch { }
+
+                    try
+                    {
+                        if (door.isLocked)
+                        {
+                            var pkt = new DoorLockStatePacket { InteractableId = inter.id, IsLocked = true, PlaySound = false };
+                            _writer.Reset();
+                            pkt.Serialize(_writer);
+                            NetworkManager.SendTo(peer, PacketType.DoorLockState, _writer, DeliveryMethod.ReliableOrdered);
+                            locks++;
+                        }
+                    } catch { }
+                    continue; // doors aren't switches
+                }
+
+                // Light state: each LightController owns an Interactable.
+                LightController light = null;
+                try { light = inter.spawnedObject?.GetComponentInChildren<LightController>(true); } catch { }
+                if (light != null)
+                {
+                    try
+                    {
+                        var pkt = new LightStatePacket { InteractableId = inter.id, IsOn = light.isOn };
+                        _writer.Reset();
+                        pkt.Serialize(_writer);
+                        NetworkManager.SendTo(peer, PacketType.LightState, _writer, DeliveryMethod.ReliableOrdered);
+                        lights++;
+                    } catch { }
+                    continue;
+                }
+
+                // Generic switch state (drawers, fridges, cabinets, etc.).
+                // Only send when non-default to keep snapshot bandwidth bounded.
+                try
+                {
+                    if (inter.sw0)
+                    {
+                        var pkt = new SwitchStatePacket { InteractableId = inter.id, IsOn = true };
+                        _writer.Reset();
+                        pkt.Serialize(_writer);
+                        NetworkManager.SendTo(peer, PacketType.SwitchState, _writer, DeliveryMethod.ReliableOrdered);
+                        switches++;
+                    }
+                } catch { }
+            }
+
+            Plugin.Log.LogInfo($"[WorldStateSync] snapshot: doors={doors} locks={locks} lights={lights} switches={switches} → {peer.Address}:{peer.Port}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"WorldStateSync.SendSnapshotTo: {ex.Message}");
+        }
+    }
+
     // -------------------------------------------------------------------------
     //  Inbound
     // -------------------------------------------------------------------------

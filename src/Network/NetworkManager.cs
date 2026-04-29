@@ -543,10 +543,13 @@ public static class NetworkManager
 
                 Plugin.Log.LogInfo($"[NetworkManager] reconnect: restored playerId={existingId} ({existingInfo.PlayerName}) from {peer.Address}:{peer.Port}");
 
-                // Push the side-job snapshot again — they may have missed
-                // updates while away.
-                try { SoDCoop.Sync.SideJobSync.SendSnapshotTo(peer); }
-                catch (System.Exception ex) { Plugin.Log.LogWarning($"SideJobSync.SendSnapshotTo (reconnect): {ex.Message}"); }
+                // Re-push every late-join snapshot — they may have missed
+                // updates during the disconnect grace.
+                try { SoDCoop.Sync.SideJobSync   .SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"SideJobSync.SendSnapshotTo (reconnect): {ex.Message}"); }
+                try { SoDCoop.Sync.VmailSync     .SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"VmailSync.SendSnapshotTo (reconnect): {ex.Message}"); }
+                try { SoDCoop.Sync.EvidenceSync  .SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"EvidenceSync.SendSnapshotTo (reconnect): {ex.Message}"); }
+                try { SoDCoop.Sync.WorldStateSync.SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"WorldStateSync.SendSnapshotTo (reconnect): {ex.Message}"); }
+                try { SoDCoop.Sync.CaseBoardSync .SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"CaseBoardSync.SendSnapshotTo (reconnect): {ex.Message}"); }
                 return;
             }
 
@@ -676,12 +679,19 @@ public static class NetworkManager
         Plugin.Log.LogInfo($"Player '{info.PlayerName}' (ID: {playerId}) fully joined. Total: {_clients.Count + 1}");
         OnPlayerJoined?.Invoke(playerId, info.PlayerName);
 
-        // Phase SJ.2: push current side-job state to the freshly-joined peer
-        // so they see all jobs that already exist (we only broadcast on
-        // create / state-change otherwise — mid-session joiners would miss
-        // everything generated before they connected).
-        try { SoDCoop.Sync.SideJobSync.SendSnapshotTo(peer); }
-        catch (Exception ex) { Plugin.Log.LogWarning($"SideJobSync.SendSnapshotTo: {ex.Message}"); }
+        // Late-join snapshots — push current authoritative state of every
+        // system that holds runtime mutations (i.e. anything not pure
+        // seed-deterministic). Without these, a mid-session joiner sees
+        // their world frozen in load-time configuration:
+        //   • Side jobs already created
+        //   • Vmail threads (also catches player-triggered vmails)
+        //   • Evidence discoveries (so they don't re-discover everything)
+        //   • Door / light / switch states (open doors stay open)
+        try { SoDCoop.Sync.SideJobSync   .SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"SideJobSync.SendSnapshotTo: {ex.Message}"); }
+        try { SoDCoop.Sync.VmailSync     .SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"VmailSync.SendSnapshotTo: {ex.Message}"); }
+        try { SoDCoop.Sync.EvidenceSync  .SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"EvidenceSync.SendSnapshotTo: {ex.Message}"); }
+        try { SoDCoop.Sync.WorldStateSync.SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"WorldStateSync.SendSnapshotTo: {ex.Message}"); }
+        try { SoDCoop.Sync.CaseBoardSync .SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"CaseBoardSync.SendSnapshotTo: {ex.Message}"); }
     }
     
     private static void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)
