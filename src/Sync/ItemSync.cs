@@ -129,6 +129,64 @@ public static class ItemSync
         }
     }
 
+    /// <summary>
+    /// Late-join snapshot. Walk the city's interactableDirectory and tell
+    /// the freshly-joined peer which items have been picked up (i.e. are
+    /// currently in someone's inventory) so they hide the in-world copies
+    /// to match the host's authoritative state. Without this, host's
+    /// pre-connect pickups stay visible on the client and both players
+    /// can race to grab the same coin / document.
+    ///
+    /// <para>Only emits for items where <c>inInventory != null</c> — that
+    /// matches the live <see cref="BroadcastPickup"/> path. Items that were
+    /// picked up and dropped at a non-default location aren't covered (no
+    /// stable "default position" reference field in Interactable to diff
+    /// against). In practice players see misaligned drop positions only
+    /// for items host moved before the client connected — an acceptable
+    /// gap for v1.</para>
+    /// </summary>
+    public static void SendSnapshotTo(NetPeer peer)
+    {
+        if (peer == null) return;
+        if (!NetworkManager.IsHost) return;
+
+        try
+        {
+            var dir = CityData.Instance?.interactableDirectory;
+            if (dir == null) return;
+
+            int picked = 0;
+            for (int i = 0; i < dir.Count; i++)
+            {
+                var inter = dir[i];
+                if (inter == null) continue;
+
+                // "Picked up" = held by someone. Apply on receiver hides the
+                // spawnedObject; SetActive(false) on an already-hidden item
+                // is harmless, so this is idempotent vs the client's own
+                // save-restored state.
+                Human holder = null;
+                try { holder = inter.inInventory; } catch { }
+                if (holder == null) continue;
+
+                var pkt = new ItemPickupPacket
+                {
+                    PlayerId       = NetworkManager.LocalPlayerId,
+                    InteractableId = inter.id,
+                };
+                _writer.Reset();
+                pkt.Serialize(_writer);
+                NetworkManager.SendTo(peer, PacketType.PlayerPickup, _writer, DeliveryMethod.ReliableOrdered);
+                picked++;
+            }
+            Plugin.Log.LogInfo($"[ItemSync] snapshot: pickups={picked} → {peer.Address}:{peer.Port}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"ItemSync.SendSnapshotTo: {ex.Message}");
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     //  Inbound
     // ─────────────────────────────────────────────────────────────────────────

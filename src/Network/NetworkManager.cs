@@ -550,6 +550,8 @@ public static class NetworkManager
                 try { SoDCoop.Sync.EvidenceSync  .SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"EvidenceSync.SendSnapshotTo (reconnect): {ex.Message}"); }
                 try { SoDCoop.Sync.WorldStateSync.SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"WorldStateSync.SendSnapshotTo (reconnect): {ex.Message}"); }
                 try { SoDCoop.Sync.CaseBoardSync .SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"CaseBoardSync.SendSnapshotTo (reconnect): {ex.Message}"); }
+                try { SoDCoop.Sync.ItemSync      .SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"ItemSync.SendSnapshotTo (reconnect): {ex.Message}"); }
+                try { SoDCoop.Sync.FootprintSync .SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"FootprintSync.SendSnapshotTo (reconnect): {ex.Message}"); }
                 return;
             }
 
@@ -692,6 +694,8 @@ public static class NetworkManager
         try { SoDCoop.Sync.EvidenceSync  .SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"EvidenceSync.SendSnapshotTo: {ex.Message}"); }
         try { SoDCoop.Sync.WorldStateSync.SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"WorldStateSync.SendSnapshotTo: {ex.Message}"); }
         try { SoDCoop.Sync.CaseBoardSync .SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"CaseBoardSync.SendSnapshotTo: {ex.Message}"); }
+        try { SoDCoop.Sync.ItemSync      .SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"ItemSync.SendSnapshotTo: {ex.Message}"); }
+        try { SoDCoop.Sync.FootprintSync .SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"FootprintSync.SendSnapshotTo: {ex.Message}"); }
     }
     
     private static void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)

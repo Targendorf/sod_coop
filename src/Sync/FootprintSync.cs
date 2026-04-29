@@ -92,6 +92,61 @@ public static class FootprintSync
     // ─────────────────────────────────────────────────────────────────────────
 
     /// <summary>
+    /// Late-join snapshot of every active footprint. Walks
+    /// <c>GameplayController.Instance.footprintsList</c> and emits one
+    /// FootprintAdd packet per entry. Receiver replays them via
+    /// <see cref="ApplyAdd"/> exactly like a live broadcast.
+    ///
+    /// <para>Dedup: receiver's footprintsList is fresh (client must be on
+    /// main menu to join, so no save-side prints exist on their machine).
+    /// Sending host's snapshot directly populates client's list with
+    /// matching entries — no duplicates in practice.</para>
+    ///
+    /// <para>Cost: bounded by footprintsList.Count (typically dozens to
+    /// low hundreds). Each entry → one packet of ~50 bytes.</para>
+    /// </summary>
+    public static void SendSnapshotTo(NetPeer peer)
+    {
+        if (peer == null) return;
+        if (!NetworkManager.IsHost) return;
+
+        try
+        {
+            var gc = global::GameplayController.Instance;
+            var list = gc?.footprintsList;
+            if (list == null || list.Count == 0) return;
+
+            int sent = 0;
+            for (int i = 0; i < list.Count; i++)
+            {
+                var fp = list[i];
+                if (fp == null) continue;
+
+                var pkt = new FootprintAddPacket
+                {
+                    HumanId   = fp.hID,
+                    RoomId    = fp.rID,
+                    Position  = fp.wP,
+                    EulerRot  = fp.eU,
+                    Dirt      = fp.str,
+                    Blood     = fp.bl,
+                    Timestamp = fp.t,
+                    SenderId  = NetworkManager.LocalPlayerId,
+                };
+                _writer.Reset();
+                pkt.Serialize(_writer);
+                NetworkManager.SendTo(peer, PacketType.FootprintAdd, _writer, DeliveryMethod.ReliableOrdered);
+                sent++;
+            }
+            Plugin.Log.LogInfo($"[FootprintSync] snapshot: footprints={sent} → {peer.Address}:{peer.Port}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"FootprintSync.SendSnapshotTo: {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// Host-only star-topology remap. Re-serialises a FootprintAdd from
     /// raw <paramref name="body"/> bytes with <c>HumanId</c> rewritten to
     /// the sender's twin humanID. Returns null if no remap needed.
