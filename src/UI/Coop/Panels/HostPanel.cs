@@ -1,3 +1,4 @@
+using SoDCoop.Localization;
 using SoDCoop.Network;
 using SoDCoop.Sync;
 using UnityEngine;
@@ -12,7 +13,7 @@ namespace SoDCoop.UI.Coop.Panels;
 /// </summary>
 public class HostPanel : CoopPanelBase
 {
-    protected override string Title => "Host a session";
+    protected override string Title => L.Get("host.title");
 
     private InputField _portInput;
     private Text       _identityLabel;
@@ -24,17 +25,17 @@ public class HostPanel : CoopPanelBase
 
     protected override void BuildBody()
     {
-        WrappedBodyLabel("You'll host as your existing in-game character. Your name is read from the loaded save — make sure you're in-game before starting.",
+        WrappedBodyLabel(L.Get("host.tagline"),
             CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelMuted);
         Spacer(8f);
 
-        BodyLabel("Playing as", CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
-        _identityLabel = WrappedBodyLabel("(reading from game…)",
+        BodyLabel(L.Get("host.label.playingAs"), CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
+        _identityLabel = WrappedBodyLabel(L.Get("host.identity.reading"),
             CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelOk, TextAnchor.MiddleLeft, FontStyle.Bold);
 
         Spacer(6f);
 
-        BodyLabel("Port", CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
+        BodyLabel(L.Get("host.label.port"), CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
         _portInput = CoopMenuFactory.TextInput("PortInput", Body, "9050", "9050",
             CoopMenuTheme.PanelWidth - CoopMenuTheme.Padding * 2);
         _portInput.contentType = InputField.ContentType.IntegerNumber;
@@ -42,28 +43,28 @@ public class HostPanel : CoopPanelBase
 
         Spacer(8f);
 
-        _startBtn = CoopMenuFactory.MenuButton("Start", Body, "▶  Start Hosting", OnStartClick);
-        _stopBtn  = CoopMenuFactory.MenuButton("Stop",  Body, "■  Stop Hosting",  OnStopClick);
+        _startBtn = CoopMenuFactory.MenuButton("Start", Body, L.Get("host.btn.start"), OnStartClick);
+        _stopBtn  = CoopMenuFactory.MenuButton("Stop",  Body, L.Get("host.btn.stop"),  OnStopClick);
         _stopBtn.gameObject.SetActive(false);
 
         Spacer(8f);
 
-        _statusLabel = WrappedBodyLabel("Status: not hosting",
+        _statusLabel = WrappedBodyLabel(L.Get("host.status.notHosting"),
             CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
 
-        BodyLabel("Join Code (paste this to your friend)",
+        BodyLabel(L.Get("host.label.joinCode"),
             CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader);
 
-        _joinCodeLabel = WrappedBodyLabel("(start hosting to generate)",
+        _joinCodeLabel = WrappedBodyLabel(L.Get("host.code.notReady"),
             CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelOk);
         _joinCodeLabel.fontStyle = FontStyle.Italic;
 
-        _copyBtn = CoopMenuFactory.MenuButton("Copy", Body, "📋  Copy code to clipboard", OnCopyClick);
+        _copyBtn = CoopMenuFactory.MenuButton("Copy", Body, L.Get("host.btn.copy"), OnCopyClick);
         _copyBtn.gameObject.SetActive(false);
 
         Spacer(20f);
 
-        CoopMenuFactory.MenuButton("Back", Body, "←  Back",
+        CoopMenuFactory.MenuButton("Back", Body, L.Get("host.btn.back"),
             () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Main));
     }
 
@@ -106,7 +107,7 @@ public class HostPanel : CoopPanelBase
             }
             else if (!inGame)
             {
-                display = "⚠ Load a save first — your character is read from the loaded game.";
+                display = L.Get("host.identity.noSave");
                 _identityLabel.color = CoopMenuTheme.LabelWarn;
             }
             else
@@ -114,7 +115,7 @@ public class HostPanel : CoopPanelBase
                 var (fn, sn) = CharacterStore.ReadHostCharacter();
                 if (string.IsNullOrEmpty(fn) && string.IsNullOrEmpty(sn))
                 {
-                    display = "(no save loaded — will host as 'Host')";
+                    display = L.Get("host.identity.fallback");
                     _identityLabel.color = CoopMenuTheme.LabelWarn;
                 }
                 else
@@ -131,17 +132,17 @@ public class HostPanel : CoopPanelBase
             if (hosting)
             {
                 int conns = NetworkManager.Players?.Count ?? 0;
-                _statusLabel.text = $"Status: hosting — {conns} peer(s) connected";
+                _statusLabel.text = L.Get("host.status.hosting", conns);
                 _statusLabel.color = CoopMenuTheme.LabelOk;
             }
             else if (!inGame)
             {
-                _statusLabel.text = "Status: in main menu — start or load a save before hosting.";
+                _statusLabel.text = L.Get("host.status.mainMenu");
                 _statusLabel.color = CoopMenuTheme.LabelWarn;
             }
             else
             {
-                _statusLabel.text = "Status: not hosting";
+                _statusLabel.text = L.Get("host.status.notHosting");
                 _statusLabel.color = CoopMenuTheme.LabelMuted;
             }
         }
@@ -156,7 +157,7 @@ public class HostPanel : CoopPanelBase
             }
             else
             {
-                _joinCodeLabel.text = "(start hosting to generate)";
+                _joinCodeLabel.text = L.Get("host.code.notReady");
                 _joinCodeLabel.color = CoopMenuTheme.LabelMuted;
                 _joinCodeLabel.fontStyle = FontStyle.Italic;
             }
@@ -187,7 +188,7 @@ public class HostPanel : CoopPanelBase
             {
                 if (_statusLabel != null)
                 {
-                    _statusLabel.text = "⚠ You must be in-game to host. Load a save first, then come back.";
+                    _statusLabel.text = L.Get("host.warn.noSave");
                     _statusLabel.color = CoopMenuTheme.LabelWarn;
                 }
                 Plugin.Log.LogWarning("[HostPanel] Start Hosting rejected: world not ready (still on main menu / loading).");
@@ -221,7 +222,7 @@ public class HostPanel : CoopPanelBase
             if (!string.IsNullOrEmpty(code)) GUIUtility.systemCopyBuffer = code;
             if (_statusLabel != null)
             {
-                _statusLabel.text = "Status: code copied!";
+                _statusLabel.text = L.Get("host.status.codeCopied");
                 _statusLabel.color = CoopMenuTheme.LabelOk;
             }
         }

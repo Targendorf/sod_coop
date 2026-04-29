@@ -1,3 +1,4 @@
+using SoDCoop.Localization;
 using SoDCoop.Network;
 using SoDCoop.Sync;
 using UnityEngine;
@@ -19,7 +20,7 @@ namespace SoDCoop.UI.Coop.Panels;
 /// </summary>
 public class CreateCharacterPanel : CoopPanelBase
 {
-    protected override string Title => "Create your character";
+    protected override string Title => L.Get("create.title");
 
     private Text       _contextLabel;
     private InputField _firstInput;
@@ -49,48 +50,48 @@ public class CreateCharacterPanel : CoopPanelBase
     public void ShowRejection(string reason)
     {
         if (_statusLabel == null) return;
-        _statusLabel.text  = string.IsNullOrEmpty(reason) ? "Host rejected the name." : $"Host rejected: {reason}";
+        _statusLabel.text  = string.IsNullOrEmpty(reason)
+            ? L.Get("create.reject.generic")
+            : L.Get("create.reject.with", reason);
         _statusLabel.color = CoopMenuTheme.LabelError;
     }
 
     protected override void BuildBody()
     {
-        _contextLabel = WrappedBodyLabel("Connecting…", CoopMenuTheme.FontSizeBody,
+        _contextLabel = WrappedBodyLabel("…", CoopMenuTheme.FontSizeBody,
             CoopMenuTheme.LabelMuted, TextAnchor.MiddleCenter, FontStyle.Italic);
         Spacer(10f);
 
-        BodyLabel("First name", CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
+        BodyLabel(L.Get("create.label.first"), CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
         _firstInput = CoopMenuFactory.TextInput("FirstNameInput", Body,
-            "", "e.g. Alex", CoopMenuTheme.PanelWidth - CoopMenuTheme.Padding * 2);
+            "", L.Get("create.placeholder.first"), CoopMenuTheme.PanelWidth - CoopMenuTheme.Padding * 2);
         AddLayoutHeight(_firstInput.gameObject, 36f);
 
-        BodyLabel("Surname", CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
+        BodyLabel(L.Get("create.label.surname"), CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
         _surInput = CoopMenuFactory.TextInput("SurnameInput", Body,
-            "", "e.g. Reyes", CoopMenuTheme.PanelWidth - CoopMenuTheme.Padding * 2);
+            "", L.Get("create.placeholder.sur"), CoopMenuTheme.PanelWidth - CoopMenuTheme.Padding * 2);
         AddLayoutHeight(_surInput.gameObject, 36f);
 
         Spacer(8f);
 
         _submitBtn = CoopMenuFactory.MenuButton("Submit", Body,
-            "✓  Create character & join", OnSubmitClick);
+            L.Get("create.btn.submit"), OnSubmitClick);
 
         _statusLabel = WrappedBodyLabel("", CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
 
         Spacer(20f);
 
-        CoopMenuFactory.MenuButton("Cancel", Body, "✕  Cancel & disconnect", OnCancelClick);
+        CoopMenuFactory.MenuButton("Cancel", Body, L.Get("create.btn.cancel"), OnCancelClick);
     }
 
     private void RefreshContext()
     {
         if (_contextLabel == null) return;
         string host = string.IsNullOrEmpty(_hostSur) ? _hostFirst : $"{_hostFirst} {_hostSur}";
-        if (string.IsNullOrEmpty(host)) host = "the host";
-        string city = string.IsNullOrEmpty(_cityName) ? "this world" : _cityName;
+        if (string.IsNullOrEmpty(host)) host = "—";
+        string city = string.IsNullOrEmpty(_cityName) ? "—" : _cityName;
 
-        _contextLabel.text = $"Welcome to {city}! You're joining {host}.\n" +
-                             "This name will be used by NPCs, ID papers, and case files for your character. " +
-                             "It cannot be empty and is saved by the host for future visits.";
+        _contextLabel.text = L.Get("create.context", city, host);
         _contextLabel.color = CoopMenuTheme.LabelMuted;
     }
 
@@ -120,7 +121,7 @@ public class CreateCharacterPanel : CoopPanelBase
 
             if (_statusLabel != null)
             {
-                _statusLabel.text = $"Submitting \"{first} {sur}\" to host…";
+                _statusLabel.text = L.Get("create.status.submitting", first, sur);
                 _statusLabel.color = CoopMenuTheme.LabelWarn;
             }
 

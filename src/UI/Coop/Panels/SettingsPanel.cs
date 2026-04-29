@@ -1,4 +1,5 @@
 using BepInEx.Configuration;
+using SoDCoop.Localization;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -17,7 +18,7 @@ namespace SoDCoop.UI.Coop.Panels;
 /// </summary>
 public class SettingsPanel : CoopPanelBase
 {
-    protected override string Title => "Settings";
+    protected override string Title => L.Get("settings.title");
 
     private Button _statusBtn;
     private Button _chatBtn;
@@ -26,29 +27,40 @@ public class SettingsPanel : CoopPanelBase
 
     protected override void BuildBody()
     {
-        WrappedBodyLabel("Show or hide each in-world overlay. Settings persist across game restarts.",
+        WrappedBodyLabel(L.Get("settings.tagline"),
             CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelMuted);
         Spacer(12f);
 
+        string lblStatus  = L.Get("settings.toggle.statusHud");
+        string lblChat    = L.Get("settings.toggle.chat");
+        string lblNames   = L.Get("settings.toggle.nameTags");
+        string lblBanners = L.Get("settings.toggle.banners");
+
         _statusBtn = CoopMenuFactory.MenuButton("ToggleStatus", Body,
-            BuildLabel("Top-right player list (vitals)", CoopSettings.ShowStatusHUD),
-            () => Toggle(CoopSettings.ShowStatusHUD, _statusBtn, "Top-right player list (vitals)"));
+            BuildLabel(lblStatus, CoopSettings.ShowStatusHUD),
+            () => Toggle(CoopSettings.ShowStatusHUD, _statusBtn, lblStatus));
 
         _chatBtn = CoopMenuFactory.MenuButton("ToggleChat", Body,
-            BuildLabel("Chat window (bottom-left)", CoopSettings.ShowChatWindow),
-            () => Toggle(CoopSettings.ShowChatWindow, _chatBtn, "Chat window (bottom-left)"));
+            BuildLabel(lblChat, CoopSettings.ShowChatWindow),
+            () => Toggle(CoopSettings.ShowChatWindow, _chatBtn, lblChat));
 
         _nameTagsBtn = CoopMenuFactory.MenuButton("ToggleNameTags", Body,
-            BuildLabel("Nametags above other players", CoopSettings.ShowNameTags),
-            () => Toggle(CoopSettings.ShowNameTags, _nameTagsBtn, "Nametags above other players"));
+            BuildLabel(lblNames, CoopSettings.ShowNameTags),
+            () => Toggle(CoopSettings.ShowNameTags, _nameTagsBtn, lblNames));
 
         _bannersBtn = CoopMenuFactory.MenuButton("ToggleBanners", Body,
-            BuildLabel("Sleep / phone / status banners", CoopSettings.ShowOverlayBanners),
-            () => Toggle(CoopSettings.ShowOverlayBanners, _bannersBtn, "Sleep / phone / status banners"));
+            BuildLabel(lblBanners, CoopSettings.ShowOverlayBanners),
+            () => Toggle(CoopSettings.ShowOverlayBanners, _bannersBtn, lblBanners));
+
+        Spacer(8f);
+
+        BodyLabel(L.Get("settings.label.language"), CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
+        WrappedBodyLabel(L.Get("settings.lang.note"),
+            CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
 
         Spacer(20f);
 
-        CoopMenuFactory.MenuButton("Back", Body, "←  Back",
+        CoopMenuFactory.MenuButton("Back", Body, L.Get("settings.btn.back"),
             () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Main));
     }
 
@@ -62,10 +74,10 @@ public class SettingsPanel : CoopPanelBase
 
     private void RefreshAll()
     {
-        SetButtonLabel(_statusBtn,   BuildLabel("Top-right player list (vitals)",  CoopSettings.ShowStatusHUD));
-        SetButtonLabel(_chatBtn,     BuildLabel("Chat window (bottom-left)",       CoopSettings.ShowChatWindow));
-        SetButtonLabel(_nameTagsBtn, BuildLabel("Nametags above other players",    CoopSettings.ShowNameTags));
-        SetButtonLabel(_bannersBtn,  BuildLabel("Sleep / phone / status banners", CoopSettings.ShowOverlayBanners));
+        SetButtonLabel(_statusBtn,   BuildLabel(L.Get("settings.toggle.statusHud"), CoopSettings.ShowStatusHUD));
+        SetButtonLabel(_chatBtn,     BuildLabel(L.Get("settings.toggle.chat"),      CoopSettings.ShowChatWindow));
+        SetButtonLabel(_nameTagsBtn, BuildLabel(L.Get("settings.toggle.nameTags"),  CoopSettings.ShowNameTags));
+        SetButtonLabel(_bannersBtn,  BuildLabel(L.Get("settings.toggle.banners"),   CoopSettings.ShowOverlayBanners));
     }
 
     private static void Toggle(ConfigEntry<bool> entry, Button btn, string baseLabel)

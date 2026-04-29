@@ -1,3 +1,4 @@
+using SoDCoop.Localization;
 using SoDCoop.Network;
 using SoDCoop.Sync;
 using UnityEngine;
@@ -12,7 +13,7 @@ namespace SoDCoop.UI.Coop.Panels;
 /// </summary>
 public class JoinPanel : CoopPanelBase
 {
-    protected override string Title => "Join a session";
+    protected override string Title => L.Get("join.title");
 
     private InputField _codeInput;
     private InputField _ipInput;
@@ -23,8 +24,7 @@ public class JoinPanel : CoopPanelBase
 
     protected override void BuildBody()
     {
-        WrappedBodyLabel("Paste a join code, or enter the host's IP and port manually. " +
-                         "If this is your first time on the host's world, you'll be asked to create your character after connecting.",
+        WrappedBodyLabel(L.Get("join.tagline"),
             CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelMuted);
         Spacer(8f);
 
@@ -32,10 +32,10 @@ public class JoinPanel : CoopPanelBase
             CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
         Spacer(4f);
 
-        BodyLabel("Join code (recommended)", CoopMenuTheme.FontSizeSmall,
+        BodyLabel(L.Get("join.label.code"), CoopMenuTheme.FontSizeSmall,
             CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
         _codeInput = CoopMenuFactory.TextInput("Code", Body, "",
-            "Paste join code here", CoopMenuTheme.PanelWidth - CoopMenuTheme.Padding * 2, 38f);
+            L.Get("join.code.placeholder"), CoopMenuTheme.PanelWidth - CoopMenuTheme.Padding * 2, 38f);
         AddLayoutHeight(_codeInput.gameObject, 38f);
 
         // Auto-fill on text change.
@@ -50,11 +50,11 @@ public class JoinPanel : CoopPanelBase
 
         Spacer(6f);
 
-        BodyLabel("Or enter manually", CoopMenuTheme.FontSizeSmall,
+        BodyLabel(L.Get("join.label.manual"), CoopMenuTheme.FontSizeSmall,
             CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
 
         _ipInput = CoopMenuFactory.TextInput("IP", Body,
-            "127.0.0.1", "Host IP", CoopMenuTheme.PanelWidth - CoopMenuTheme.Padding * 2);
+            "127.0.0.1", L.Get("join.placeholder.ip"), CoopMenuTheme.PanelWidth - CoopMenuTheme.Padding * 2);
         AddLayoutHeight(_ipInput.gameObject, 36f);
 
         _portInput = CoopMenuFactory.TextInput("Port", Body,
@@ -64,14 +64,14 @@ public class JoinPanel : CoopPanelBase
 
         Spacer(8f);
 
-        _connectBtn = CoopMenuFactory.MenuButton("Connect", Body, "🔌  Connect", OnConnectClick);
+        _connectBtn = CoopMenuFactory.MenuButton("Connect", Body, L.Get("join.btn.connect"), OnConnectClick);
 
         _statusLabel = WrappedBodyLabel("",
             CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
 
         Spacer(20f);
 
-        CoopMenuFactory.MenuButton("Back", Body, "←  Back",
+        CoopMenuFactory.MenuButton("Back", Body, L.Get("join.btn.back"),
             () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Main));
     }
 
@@ -90,8 +90,8 @@ public class JoinPanel : CoopPanelBase
             if (_statusLabel != null)
             {
                 _statusLabel.text = string.IsNullOrEmpty(cityName)
-                    ? $"Code OK — {ip}:{port}"
-                    : $"Code OK — {ip}:{port} (city: {cityName})";
+                    ? L.Get("join.status.codeOk", ip, port)
+                    : L.Get("join.status.codeOkCity", ip, port, cityName);
                 _statusLabel.color = CoopMenuTheme.LabelOk;
             }
         }
@@ -99,7 +99,7 @@ public class JoinPanel : CoopPanelBase
         {
             if (_statusLabel != null)
             {
-                _statusLabel.text = "Code unrecognised — paste manually if needed.";
+                _statusLabel.text = L.Get("join.status.codeBad");
                 _statusLabel.color = CoopMenuTheme.LabelWarn;
             }
         }
@@ -119,7 +119,7 @@ public class JoinPanel : CoopPanelBase
             {
                 if (_statusLabel != null)
                 {
-                    _statusLabel.text = "⚠ Return to the main menu first — you can't join while your own save is loaded.";
+                    _statusLabel.text = L.Get("join.warn.haveSave");
                     _statusLabel.color = CoopMenuTheme.LabelWarn;
                 }
                 Plugin.Log.LogWarning("[JoinPanel] Connect rejected: client has a save loaded; must be on main menu.");
@@ -131,7 +131,7 @@ public class JoinPanel : CoopPanelBase
 
             if (_statusLabel != null)
             {
-                _statusLabel.text = $"Connecting to {ip}:{port}…";
+                _statusLabel.text = L.Get("join.status.connecting", ip, port);
                 _statusLabel.color = CoopMenuTheme.LabelWarn;
             }
 
@@ -141,7 +141,7 @@ public class JoinPanel : CoopPanelBase
             // and routes us to the right panel when the host responds.
             if (!NetworkManager.Connect(ip, port) && _statusLabel != null)
             {
-                _statusLabel.text = "Connect failed — check IP / port.";
+                _statusLabel.text = L.Get("join.status.failed");
                 _statusLabel.color = CoopMenuTheme.LabelError;
             }
             else
@@ -180,12 +180,12 @@ public class JoinPanel : CoopPanelBase
         {
             if (inGame)
             {
-                _gameStateLabel.text = "⚠ A save is currently loaded. Return to the main menu before joining.";
+                _gameStateLabel.text = L.Get("join.state.haveSave");
                 _gameStateLabel.color = CoopMenuTheme.LabelWarn;
             }
             else
             {
-                _gameStateLabel.text = "✔ On main menu — ready to join.";
+                _gameStateLabel.text = L.Get("join.state.menuOk");
                 _gameStateLabel.color = CoopMenuTheme.LabelOk;
             }
         }

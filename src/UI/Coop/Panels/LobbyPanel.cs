@@ -1,3 +1,4 @@
+using SoDCoop.Localization;
 using SoDCoop.Network;
 using SoDCoop.Player;
 using SoDCoop.Sync;
@@ -15,10 +16,15 @@ namespace SoDCoop.UI.Coop.Panels;
 ///   • "Host on main menu — waiting…"
 ///   • "Host loading world…"
 ///   • "Host in game: New Babylon, Day 3 14:32"
+///
+/// Note: dynamic phase / status strings (loading / in-game / day+time) stay
+/// in English right now — they're displayed briefly and would balloon the
+/// translation set. Localised buttons + main labels handle the bulk of
+/// what the user sees.
 /// </summary>
 public class LobbyPanel : CoopPanelBase
 {
-    protected override string Title => "Lobby";
+    protected override string Title => L.Get("lobby.title");
 
     private Text _hostHeader;
     private Text _hostPhase;
@@ -48,7 +54,7 @@ public class LobbyPanel : CoopPanelBase
         Spacer(40f);
 
         _disconnectBtn = CoopMenuFactory.MenuButton("Disconnect", Body,
-            "🚪  Disconnect", OnDisconnectClick);
+            "🚪  " + L.Get("lobby.btn.disconnect"), OnDisconnectClick);
 
         Spacer(6f);
 
@@ -64,7 +70,7 @@ public class LobbyPanel : CoopPanelBase
 
         Spacer(6f);
 
-        CoopMenuFactory.MenuButton("Settings", Body, "⚙  Settings",
+        CoopMenuFactory.MenuButton("Settings", Body, L.Get("lobby.btn.settings"),
             () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Settings));
 
         Spacer(4f);

@@ -37,7 +37,7 @@ public static class L
     /// All known languages. Add new dicts in <see cref="Translations"/> and
     /// register them here. Order = dropdown order in any future picker.
     /// </summary>
-    public static readonly string[] SupportedLanguages = { "en", "ru", "uk", "es", "zh", "de" };
+    public static readonly string[] SupportedLanguages = { "en", "ru", "uk", "es", "zh", "de", "fr", "it" };
 
     private static Dictionary<string, string> _active = Translations.En;
     private static readonly Dictionary<string, string> _fallback = Translations.En;
@@ -130,6 +130,8 @@ public static class L
         if (s.StartsWith("spa") || s.StartsWith("esp") || s.Contains("español")) return "es";
         if (s.StartsWith("zh")  || s.StartsWith("chi") || s.Contains("中文") || s.Contains("汉")) return "zh";
         if (s.StartsWith("ger") || s.StartsWith("deu") || s.Contains("deutsch")) return "de";
+        if (s.StartsWith("fre") || s.StartsWith("fra") || s.Contains("français") || s.Contains("francais")) return "fr";
+        if (s.StartsWith("ita") || s.Contains("italiano")) return "it";
 
         return "en";
     }
@@ -144,6 +146,8 @@ public static class L
             case "es": return Translations.Es;
             case "zh": return Translations.Zh;
             case "de": return Translations.De;
+            case "fr": return Translations.Fr;
+            case "it": return Translations.It;
             default:   return null;
         }
     }

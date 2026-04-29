@@ -1,4 +1,5 @@
 using System.Threading.Tasks;
+using SoDCoop.Localization;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -11,7 +12,7 @@ namespace SoDCoop.UI.Coop.Panels;
 /// </summary>
 public class IpInfoPanel : CoopPanelBase
 {
-    protected override string Title => "Your IP";
+    protected override string Title => L.Get("ipinfo.title");
 
     private Text _localIpLabel;
     private Text _externalIpLabel;
@@ -51,7 +52,7 @@ public class IpInfoPanel : CoopPanelBase
 
         Spacer(20f);
 
-        CoopMenuFactory.MenuButton("Back", Body, "←  Back",
+        CoopMenuFactory.MenuButton("Back", Body, L.Get("ipinfo.btn.back"),
             () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Main));
     }
 

@@ -511,6 +511,200 @@ public static class Translations
     };
 
     // ─────────────────────────────────────────────────────────────────────
+    //  French
+    // ─────────────────────────────────────────────────────────────────────
+
+    public static readonly Dictionary<string, string> Fr = new()
+    {
+        // Main panel
+        ["main.title"]              = "Multijoueur coopératif",
+        ["main.tagline"]            = "Rejoins un coéquipier pour enquêter ensemble.",
+        ["main.btn.host"]           = "🛜  Héberger une session",
+        ["main.btn.join"]           = "🔌  Rejoindre une session",
+        ["main.btn.showIp"]         = "📡  Afficher mon IP",
+        ["main.btn.settings"]       = "⚙  Paramètres",
+        ["main.btn.close"]          = "✕  Fermer le menu",
+
+        // Host panel
+        ["host.title"]              = "Héberger une session",
+        ["host.tagline"]            = "Tu hébergeras avec ton personnage existant. Le nom est lu depuis la sauvegarde chargée — assure-toi d'être en jeu avant de démarrer.",
+        ["host.label.playingAs"]    = "Tu joues",
+        ["host.identity.reading"]   = "(lecture depuis le jeu…)",
+        ["host.identity.noSave"]    = "⚠ Charge d'abord une sauvegarde — le nom est lu depuis le jeu chargé.",
+        ["host.identity.fallback"]  = "(aucune sauvegarde chargée — hébergera sous 'Host')",
+        ["host.label.port"]         = "Port",
+        ["host.btn.start"]          = "▶  Démarrer l'hébergement",
+        ["host.btn.stop"]           = "■  Arrêter l'hébergement",
+        ["host.btn.copy"]           = "📋  Copier le code dans le presse-papiers",
+        ["host.btn.back"]           = "←  Retour",
+        ["host.status.notHosting"]  = "Statut : pas d'hébergement",
+        ["host.status.mainMenu"]    = "Statut : menu principal — charge une sauvegarde avant d'héberger.",
+        ["host.status.hosting"]     = "Statut : hébergement — {0} pair(s) connecté(s)",
+        ["host.status.codeCopied"]  = "Statut : code copié !",
+        ["host.label.joinCode"]     = "Code de connexion (envoie-le à ton ami)",
+        ["host.code.notReady"]      = "(démarre l'hébergement pour générer)",
+        ["host.warn.noSave"]        = "⚠ Tu dois être en jeu pour héberger. Charge une sauvegarde et reviens.",
+
+        // Join panel
+        ["join.title"]              = "Rejoindre une session",
+        ["join.tagline"]            = "Colle un code de connexion, ou saisis l'IP et le port de l'hôte manuellement. Si c'est ta première fois dans le monde de l'hôte, on te demandera de créer ton personnage après la connexion.",
+        ["join.label.code"]         = "Code de connexion (recommandé)",
+        ["join.code.placeholder"]   = "Colle le code ici",
+        ["join.label.manual"]       = "Ou saisir manuellement",
+        ["join.placeholder.ip"]     = "IP de l'hôte",
+        ["join.btn.connect"]        = "🔌  Se connecter",
+        ["join.btn.back"]           = "←  Retour",
+        ["join.status.connecting"]  = "Connexion à {0}:{1}…",
+        ["join.status.failed"]      = "Échec de connexion — vérifie l'IP / le port.",
+        ["join.status.codeOk"]      = "Code OK — {0}:{1}",
+        ["join.status.codeOkCity"]  = "Code OK — {0}:{1} (ville : {2})",
+        ["join.status.codeBad"]     = "Code non reconnu — saisis manuellement.",
+        ["join.warn.haveSave"]      = "⚠ Retourne d'abord au menu principal — impossible de rejoindre tant que ta sauvegarde est chargée.",
+        ["join.state.haveSave"]     = "⚠ Une sauvegarde est chargée. Retourne au menu principal avant de rejoindre.",
+        ["join.state.menuOk"]       = "✔ Au menu principal — prêt à rejoindre.",
+
+        // Lobby panel
+        ["lobby.title"]              = "Salon",
+        ["lobby.btn.disconnect"]     = "Se déconnecter",
+        ["lobby.btn.close"]          = "Fermer (rester connecté)",
+        ["lobby.btn.settings"]       = "⚙  Paramètres",
+        ["lobby.label.players"]      = "Joueurs :",
+        ["lobby.label.you"]          = "(toi)",
+        ["lobby.label.host"]         = "[HÔTE]",
+
+        // Create-character panel
+        ["create.title"]             = "Créer ton personnage",
+        ["create.context"]           = "Bienvenue à {0} ! Tu rejoins {1}.\nCe nom sera utilisé par les PNJ, les papiers d'identité et les dossiers d'enquête de ton personnage. Il ne peut pas être vide et l'hôte le sauvegarde pour les visites futures.",
+        ["create.label.first"]       = "Prénom",
+        ["create.label.surname"]     = "Nom",
+        ["create.placeholder.first"] = "ex. Alex",
+        ["create.placeholder.sur"]   = "ex. Reyes",
+        ["create.btn.submit"]        = "✓  Créer le personnage et rejoindre",
+        ["create.btn.cancel"]        = "✕  Annuler et déconnecter",
+        ["create.status.submitting"] = "Envoi de « {0} {1} » à l'hôte…",
+        ["create.reject.generic"]    = "L'hôte a rejeté le nom.",
+        ["create.reject.with"]       = "L'hôte a rejeté : {0}",
+
+        // Settings panel
+        ["settings.title"]           = "Paramètres",
+        ["settings.tagline"]         = "Les bascules persistent entre les lancements du jeu.",
+        ["settings.toggle.statusHud"]   = "Afficher la liste des joueurs (en haut à droite)",
+        ["settings.toggle.chat"]        = "Afficher la fenêtre de chat (en bas à gauche)",
+        ["settings.toggle.nameTags"]    = "Afficher les pseudos au-dessus des joueurs",
+        ["settings.toggle.banners"]     = "Afficher les bannières (sommeil / téléphone)",
+        ["settings.label.language"]     = "Langue (redémarrage requis)",
+        ["settings.lang.note"]          = "Modifie BepInEx/config/com.sodcoop.mod.cfg → [General] → LanguageOverride. « auto » suit la langue du jeu.",
+        ["settings.btn.back"]           = "←  Retour",
+
+        // IpInfo panel
+        ["ipinfo.title"]             = "Tes adresses IP",
+        ["ipinfo.btn.back"]          = "←  Retour",
+
+        // Chat / system messages
+        ["chat.system.connected"]    = "Connecté à la session !",
+        ["chat.system.disconnected"] = "Déconnecté : {0}",
+        ["chat.system.joined"]       = "{0} a rejoint la partie.",
+        ["chat.system.left"]         = "{0} a quitté la partie.",
+    };
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Italian
+    // ─────────────────────────────────────────────────────────────────────
+
+    public static readonly Dictionary<string, string> It = new()
+    {
+        // Main panel
+        ["main.title"]              = "Multigiocatore cooperativo",
+        ["main.tagline"]            = "Connettiti con un compagno per indagare insieme.",
+        ["main.btn.host"]           = "🛜  Ospita una sessione",
+        ["main.btn.join"]           = "🔌  Unisciti a una sessione",
+        ["main.btn.showIp"]         = "📡  Mostra il mio IP",
+        ["main.btn.settings"]       = "⚙  Impostazioni",
+        ["main.btn.close"]          = "✕  Chiudi menu",
+
+        // Host panel
+        ["host.title"]              = "Ospita una sessione",
+        ["host.tagline"]            = "Ospiterai con il tuo personaggio esistente. Il nome viene letto dal salvataggio caricato — assicurati di essere in gioco prima di iniziare.",
+        ["host.label.playingAs"]    = "Stai giocando come",
+        ["host.identity.reading"]   = "(lettura dal gioco…)",
+        ["host.identity.noSave"]    = "⚠ Carica prima un salvataggio — il nome viene letto dal gioco caricato.",
+        ["host.identity.fallback"]  = "(nessun salvataggio caricato — ospiterà come 'Host')",
+        ["host.label.port"]         = "Porta",
+        ["host.btn.start"]          = "▶  Avvia hosting",
+        ["host.btn.stop"]           = "■  Ferma hosting",
+        ["host.btn.copy"]           = "📋  Copia il codice negli appunti",
+        ["host.btn.back"]           = "←  Indietro",
+        ["host.status.notHosting"]  = "Stato: non in hosting",
+        ["host.status.mainMenu"]    = "Stato: nel menu principale — carica un salvataggio prima di ospitare.",
+        ["host.status.hosting"]     = "Stato: in hosting — {0} compagno(i) connesso(i)",
+        ["host.status.codeCopied"]  = "Stato: codice copiato!",
+        ["host.label.joinCode"]     = "Codice di connessione (invialo a un amico)",
+        ["host.code.notReady"]      = "(avvia l'hosting per generare)",
+        ["host.warn.noSave"]        = "⚠ Devi essere in gioco per ospitare. Carica un salvataggio e torna.",
+
+        // Join panel
+        ["join.title"]              = "Unisciti a una sessione",
+        ["join.tagline"]            = "Incolla un codice di connessione, o inserisci manualmente l'IP e la porta dell'host. Se è la tua prima volta nel mondo dell'host, ti verrà chiesto di creare il tuo personaggio dopo la connessione.",
+        ["join.label.code"]         = "Codice di connessione (consigliato)",
+        ["join.code.placeholder"]   = "Incolla qui il codice",
+        ["join.label.manual"]       = "O inserisci manualmente",
+        ["join.placeholder.ip"]     = "IP dell'host",
+        ["join.btn.connect"]        = "🔌  Connetti",
+        ["join.btn.back"]           = "←  Indietro",
+        ["join.status.connecting"]  = "Connessione a {0}:{1}…",
+        ["join.status.failed"]      = "Connessione fallita — controlla IP / porta.",
+        ["join.status.codeOk"]      = "Codice OK — {0}:{1}",
+        ["join.status.codeOkCity"]  = "Codice OK — {0}:{1} (città: {2})",
+        ["join.status.codeBad"]     = "Codice non riconosciuto — inseriscilo manualmente.",
+        ["join.warn.haveSave"]      = "⚠ Torna prima al menu principale — non puoi unirti mentre il tuo salvataggio è caricato.",
+        ["join.state.haveSave"]     = "⚠ È caricato un salvataggio. Torna al menu principale prima di unirti.",
+        ["join.state.menuOk"]       = "✔ Nel menu principale — pronto per unirti.",
+
+        // Lobby panel
+        ["lobby.title"]              = "Lobby",
+        ["lobby.btn.disconnect"]     = "Disconnetti",
+        ["lobby.btn.close"]          = "Chiudi (resta connesso)",
+        ["lobby.btn.settings"]       = "⚙  Impostazioni",
+        ["lobby.label.players"]      = "Giocatori:",
+        ["lobby.label.you"]          = "(tu)",
+        ["lobby.label.host"]         = "[HOST]",
+
+        // Create-character panel
+        ["create.title"]             = "Crea il tuo personaggio",
+        ["create.context"]           = "Benvenuto a {0}! Ti stai unendo a {1}.\nQuesto nome verrà usato dagli NPC, dai documenti d'identità e dai fascicoli del caso del tuo personaggio. Non può essere vuoto e l'host lo salva per le visite future.",
+        ["create.label.first"]       = "Nome",
+        ["create.label.surname"]     = "Cognome",
+        ["create.placeholder.first"] = "es. Alex",
+        ["create.placeholder.sur"]   = "es. Rossi",
+        ["create.btn.submit"]        = "✓  Crea personaggio e unisciti",
+        ["create.btn.cancel"]        = "✕  Annulla e disconnetti",
+        ["create.status.submitting"] = "Invio di «{0} {1}» all'host…",
+        ["create.reject.generic"]    = "L'host ha rifiutato il nome.",
+        ["create.reject.with"]       = "L'host ha rifiutato: {0}",
+
+        // Settings panel
+        ["settings.title"]           = "Impostazioni",
+        ["settings.tagline"]         = "Le opzioni rimangono salvate tra gli avvii del gioco.",
+        ["settings.toggle.statusHud"]   = "Mostra elenco giocatori (in alto a destra)",
+        ["settings.toggle.chat"]        = "Mostra finestra chat (in basso a sinistra)",
+        ["settings.toggle.nameTags"]    = "Mostra nick sopra i giocatori",
+        ["settings.toggle.banners"]     = "Mostra banner (sonno / telefono)",
+        ["settings.label.language"]     = "Lingua (riavvio richiesto)",
+        ["settings.lang.note"]          = "Modifica BepInEx/config/com.sodcoop.mod.cfg → [General] → LanguageOverride. \"auto\" segue la lingua del gioco.",
+        ["settings.btn.back"]           = "←  Indietro",
+
+        // IpInfo panel
+        ["ipinfo.title"]             = "I tuoi indirizzi IP",
+        ["ipinfo.btn.back"]          = "←  Indietro",
+
+        // Chat / system messages
+        ["chat.system.connected"]    = "Connesso alla sessione!",
+        ["chat.system.disconnected"] = "Disconnesso: {0}",
+        ["chat.system.joined"]       = "{0} è entrato in partita.",
+        ["chat.system.left"]         = "{0} è uscito dalla partita.",
+    };
+
+    // ─────────────────────────────────────────────────────────────────────
     //  German
     // ─────────────────────────────────────────────────────────────────────
 
