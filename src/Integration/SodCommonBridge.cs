@@ -82,11 +82,16 @@ public static class SodCommonBridge
                     // evidence chain seeding, etc.) often runs for 5+ minutes
                     // after the WorldReadyGate flips — and during that whole
                     // window we want patches OFF so SoD can hammer its
-                    // patched methods at native speed. OnAfterLoad fires only
-                    // when SoD has truly finished restoring state, so it's
-                    // the safe point to re-detour everything.
-                    Plugin.ResumePatchesAfterLoad();
-                    SoDCoop.Sync.SyncGate.Open();
+                    // patched methods at native speed.
+                    //
+                    // We DO NOT call Plugin.ResumePatchesAfterLoad() directly
+                    // here. The OnAfterLoad event runs deep inside SoD's
+                    // load-completion code path; re-detouring a method that's
+                    // currently on the call stack corrupts the trampoline
+                    // chain and freezes the game. Instead, schedule the
+                    // resume to fire ~2s later from CoopUpdateRunner.Update,
+                    // which runs on the main Unity tick at a clean stack.
+                    Plugin.SchedulePatchResume();
                 }
                 catch (Exception ex) { Plugin.Log.LogError($"OnAfterLoad handler: {ex.Message}"); }
             };

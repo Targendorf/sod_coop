@@ -202,6 +202,14 @@ public class Plugin : BasePlugin
     /// <summary>True while patches are temporarily uninstalled.</summary>
     public static bool IsPatchPaused { get; private set; }
 
+    /// <summary>If &gt; 0, the time in <c>Time.unscaledTime</c> at which
+    /// <see cref="DrainPendingResume"/> should fire <see cref="ResumePatchesAfterLoad"/>.
+    /// We defer resume by ~2s after the OnAfterLoad event so SoD has time to
+    /// exit whatever load-cleanup methods it might still be in — re-detouring
+    /// a method that's currently on the call stack can corrupt the trampoline
+    /// and freeze the game.</summary>
+    private static float _pendingResumeAt;
+
     /// <summary>Called from <c>SodCommonBridge.OnBeforeLoad</c>. Removes all
     /// Harmony patches so SoD's save-load pipeline runs at vanilla speed
     /// (no IL2CPP wrapper trampolines on the heavy state-restore methods).</summary>
@@ -271,6 +279,30 @@ public class Plugin : BasePlugin
     public static int  PatchTypesTotal     => 0;
     public static void DrainPatchInstaller() { /* no-op — install is synchronous at plugin load */ }
     public static void StartProgressiveInstall() { /* no-op — patches already live */ }
+
+    /// <summary>Schedules the patch resume to fire ~2 seconds from now in the
+    /// main Unity Update loop. Called from the OnAfterLoad event handler
+    /// instead of doing the PatchAll synchronously inside that callback —
+    /// the callback runs deep inside SoD's load-completion code path, and
+    /// re-detouring a method that's still on the active call stack can
+    /// corrupt the trampoline and freeze the game.</summary>
+    public static void SchedulePatchResume()
+    {
+        if (!IsPatchPaused) return;
+        _pendingResumeAt = UnityEngine.Time.unscaledTime + 2.0f;
+        Log.LogInfo("Patch resume scheduled for ~2s from now (deferred to next Update tick to avoid mid-call detour corruption).");
+    }
+
+    /// <summary>Called every frame from <see cref="CoopUpdateRunner.Update"/>.
+    /// Fires the deferred PatchAll once the scheduled time has elapsed.</summary>
+    public static void DrainPendingResume()
+    {
+        if (_pendingResumeAt <= 0f) return;
+        if (UnityEngine.Time.unscaledTime < _pendingResumeAt) return;
+        _pendingResumeAt = 0f;
+        ResumePatchesAfterLoad();
+        SoDCoop.Sync.SyncGate.Open();
+    }
 
     private void InitializeSystems()
     {
@@ -368,6 +400,7 @@ public class CoopUpdateRunner : MonoBehaviour
             // IL2CPP-marshalled patches doesn't freeze the UI when the user
             // clicks Host / Join.
             Plugin.DrainPatchInstaller();
+            Plugin.DrainPendingResume();
 
             WorldReadyGate.Tick();
             NetworkManager.Update();
