@@ -26,6 +26,12 @@ public class LobbyPanel : CoopPanelBase
 {
     protected override string Title => L.Get("lobby.title");
 
+    // Lobby has many rows (host status block + 4 action buttons + reset
+    // explanation paragraph) that don't fit in the default 520px panel.
+    // Scrollable + taller so Customize / Settings / Hide stay reachable.
+    protected override float PanelHeight   => 700f;
+    protected override bool  ScrollableBody => true;
+
     private Text _hostHeader;
     private Text _hostPhase;
     private Text _hostCity;
