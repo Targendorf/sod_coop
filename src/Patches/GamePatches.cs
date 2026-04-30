@@ -131,6 +131,11 @@ public static class GamePatches
         public static void Postfix(Case toCase, Evidence ev, Evidence.DataKey evKey,
                                    bool forceAutoPin, Vector2 localPostion)
         {
+            // Cheap-bail FIRST — case-board init during save load fires this
+            // for every seeded card. IL2CPP only marshals __args declared
+            // here (Case ref, Evidence ref, enum, bool, Vector2) — all light
+            // — so this signature is fine to keep with the bail upfront.
+            if (!NetworkManager.IsConnected) return;
             try
             {
                 if (toCase == null || ev == null) return;
@@ -146,6 +151,28 @@ public static class GamePatches
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  CasePanelController.PinToCasePanel(List<DataKey>) overload patch
+    //  is INTENTIONALLY DISABLED.
+    //
+    //  IL2CPP marshals every declared parameter on entry, including the
+    //  `Il2CppSystem.Collections.Generic.List<DataKey>` argument here. SoD
+    //  invokes this overload for every multi-key fact card it pins during
+    //  case-board restoration in the save load pipeline (a few hundred
+    //  calls per saved case-board). The marshalling cost dominates and
+    //  there's no way to bail before it runs.
+    //
+    //  Loss: multi-key fact-card auto-pin events during ACTIVE coop won't
+    //  sync. Single-key pin (the user's mouse-click action) still syncs
+    //  via the overload above. This is an awareness regression for fact-
+    //  card sub-keys but doesn't break gameplay — case-board card layout
+    //  state syncs via CaseBoardSync.SendSnapshotTo on connect / reconnect.
+    //
+    //  If we ever need this back, drop the List arg from the Postfix
+    //  signature and read the card's pinned keys from
+    //  `toCase.pinnedFacts` (the Case's internal pin tracking) post-call.
+    // ─────────────────────────────────────────────────────────────────────────
+    /*
     [HarmonyPatch(typeof(CasePanelController), nameof(CasePanelController.PinToCasePanel),
         new System.Type[]
         {
@@ -160,6 +187,7 @@ public static class GamePatches
                                    Il2CppSystem.Collections.Generic.List<Evidence.DataKey> evKeys,
                                    bool forceAutoPin, Vector2 localPostion)
         {
+            if (!NetworkManager.IsConnected) return;
             try
             {
                 if (toCase == null || ev == null || evKeys == null) return;
@@ -172,7 +200,12 @@ public static class GamePatches
             }
         }
     }
+    */
 
+    // Same disable rationale as the List-variant Pin patch above. Multi-key
+    // unpin events won't sync during gameplay; single-key user unpins go
+    // via Case.UnpinFromCasePanel(DataKey) elsewhere if/when SoD calls it.
+    /*
     [HarmonyPatch(typeof(CasePanelController), nameof(CasePanelController.UnPinFromCasePanel))]
     public static class CPC_UnPinFromCasePanel_Patch
     {
@@ -180,6 +213,7 @@ public static class GamePatches
         public static void Postfix(Case thisCase, Evidence ev,
                                    Il2CppSystem.Collections.Generic.List<Evidence.DataKey> evKeys)
         {
+            if (!NetworkManager.IsConnected) return;
             try
             {
                 if (thisCase == null || ev == null) return;
@@ -192,6 +226,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     [HarmonyPatch(typeof(PinnedItemController), nameof(PinnedItemController.SetPostion))]
     public static class PIC_SetPostion_Patch
