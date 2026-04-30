@@ -1151,6 +1151,31 @@ public static class GamePatches
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Evidence.SetNote patch is INTENTIONALLY DISABLED.
+    //
+    //  In IL2CPP every Harmony-patched call marshals each declared parameter
+    //  from native to managed before the body runs — including the
+    //  early-bail path. SetNote's signature carries
+    //  `Il2CppSystem.Collections.Generic.List<DataKey>` which is expensive
+    //  to wrap, and SoD invokes SetNote tens of thousands of times during
+    //  seeded citizen-name init / save load. With the patch active, even
+    //  `if (!NetworkManager.IsConnected) return;` doesn't help because the
+    //  marshalling already happened. Net cost: SP world generation ~5x
+    //  slower and save loads visibly stutter for minutes.
+    //
+    //  Trade-off accepted: player-typed notes on Evidence (right-click on
+    //  a card → "Set note") stay LOCAL — each peer sees only the notes
+    //  they typed themselves. The case-board fact custom-name path (a
+    //  separate sync, much cheaper signature) remains active, so
+    //  fact-card custom labels still sync.
+    //
+    //  If we ever need this back, the right path is to drop the heavy
+    //  args from the Postfix signature and read notes off `__instance.notes`
+    //  (Dictionary<DataKey, string>) post-fact, broadcasting full state.
+    //  Listed below for reference.
+    // ─────────────────────────────────────────────────────────────────────────
+    /*
     [HarmonyPatch(typeof(Evidence), nameof(Evidence.SetNote))]
     public static class Evidence_SetNote_Patch
     {
@@ -1159,9 +1184,6 @@ public static class GamePatches
                                    Il2CppSystem.Collections.Generic.List<Evidence.DataKey> keys,
                                    string str)
         {
-            // Cheap-bail gates first: SetNote fires thousands of times during
-            // SoD's seeded citizen-name init; skipping marshaling here is the
-            // single biggest load-time win.
             if (!NetworkManager.IsConnected) return;
             if (!NetworkManager.HasPeers) return;
             if (WorldReadyGate.IsInInitGrace) return;
@@ -1179,6 +1201,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     [HarmonyPatch(typeof(Evidence), nameof(Evidence.AddOrSetCustomName),
                   typeof(Evidence.DataKey), typeof(string))]

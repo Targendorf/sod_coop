@@ -170,9 +170,11 @@ public class Plugin : BasePlugin
         // us from broadcasting work during SP, but per-call IL2CPP
         // marshalling cost remains. World gen is acceptably slower than
         // vanilla but the game doesn't freeze or crash.
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         _harmony.PatchAll(Assembly.GetExecutingAssembly());
+        sw.Stop();
         _patchesApplied = true;
-        Log.LogInfo($"Applied {_harmony.GetPatchedMethods().Count()} Harmony patches at plugin load.");
+        Log.LogInfo($"Applied {_harmony.GetPatchedMethods().Count()} Harmony patches at plugin load in {sw.Elapsed.TotalSeconds:F2}s.");
     }
 
     // The progressive-installer accessors were removed alongside the lazy
