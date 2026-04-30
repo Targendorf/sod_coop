@@ -185,6 +185,19 @@ public class Plugin : BasePlugin
     private static int _totalPatchTypesQueued;
     private static bool _patchInstallerRunning;
 
+    // ─── Public progress accessors for the install-progress banner UI ────
+    /// <summary>True while the progressive patcher is mid-flight. UI uses
+    /// this to gate the loading-bar banner.</summary>
+    public static bool IsInstallingPatches => _patchInstallerRunning;
+
+    /// <summary>Number of patch types still pending. Decreases each frame
+    /// as <see cref="DrainPatchInstaller"/> drains the queue.</summary>
+    public static int PatchTypesRemaining => _pendingPatchTypes.Count;
+
+    /// <summary>Total number of patch types queued at the start of the
+    /// current install run. Banner shows X / Total.</summary>
+    public static int PatchTypesTotal => _totalPatchTypesQueued;
+
     /// <summary>
     /// Kick off the progressive patcher. Idempotent; subsequent calls while
     /// installation is still draining are no-ops. After full drain, sets

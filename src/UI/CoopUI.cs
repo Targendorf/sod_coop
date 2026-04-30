@@ -110,6 +110,71 @@ public static class CoopUI
         // a heads-up so the player doesn't think the game froze.
         if (NetworkManager.State == SoDCoop.Network.ConnectionState.Reconnecting)
             DrawReconnectBanner();
+
+        // Patch-install banner: visible while the progressive Harmony
+        // installer is draining its queue right after Host / Join was
+        // clicked. Tells the user "I'm still setting things up" so a
+        // half-second of laggy menu doesn't look like a freeze.
+        if (Plugin.IsInstallingPatches)
+            DrawPatchInstallBanner();
+    }
+
+    private static void DrawPatchInstallBanner()
+    {
+        try
+        {
+            int total     = Mathf.Max(1, Plugin.PatchTypesTotal);
+            int remaining = Plugin.PatchTypesRemaining;
+            int done      = Mathf.Clamp(total - remaining, 0, total);
+            float frac    = (float)done / total;
+
+            float w = 380f;
+            float h = 56f;
+            // Position lower than the reconnect banner so they can co-exist
+            // visually if both fire (rare — but the install one is most
+            // common right after click-Host on a fresh session).
+            float yOffset = NetworkManager.State == SoDCoop.Network.ConnectionState.Reconnecting ? 130f : 60f;
+            var rect = new Rect((Screen.width - w) * 0.5f, yOffset, w, h);
+
+            var prevColor = GUI.color;
+
+            // Backdrop.
+            GUI.color = new Color(0f, 0f, 0f, 0.85f);
+            GUI.DrawTexture(rect, Texture2D.whiteTexture);
+
+            // Amber border.
+            GUI.color = new Color(0.95f, 0.62f, 0.20f, 1f);
+            GUI.DrawTexture(new Rect(rect.x, rect.y, rect.width, 2f), Texture2D.whiteTexture);
+            GUI.DrawTexture(new Rect(rect.x, rect.y + rect.height - 2f, rect.width, 2f), Texture2D.whiteTexture);
+            GUI.DrawTexture(new Rect(rect.x, rect.y, 2f, rect.height), Texture2D.whiteTexture);
+            GUI.DrawTexture(new Rect(rect.x + rect.width - 2f, rect.y, 2f, rect.height), Texture2D.whiteTexture);
+
+            // Progress bar inside, near the bottom edge.
+            var barOuter = new Rect(rect.x + 12f, rect.y + rect.height - 14f, rect.width - 24f, 6f);
+            GUI.color = new Color(0.20f, 0.20f, 0.24f, 1f);
+            GUI.DrawTexture(barOuter, Texture2D.whiteTexture);
+            var barFill = new Rect(barOuter.x, barOuter.y, barOuter.width * frac, barOuter.height);
+            GUI.color = new Color(0.95f, 0.62f, 0.20f, 1f);
+            GUI.DrawTexture(barFill, Texture2D.whiteTexture);
+
+            // Label.
+            GUI.color = new Color(0.96f, 0.94f, 0.86f, 1f);
+            var style = new GUIStyle(GUI.skin.label)
+            {
+                alignment = TextAnchor.UpperCenter,
+                fontSize = 14,
+                fontStyle = FontStyle.Bold,
+                wordWrap = false,
+            };
+            var labelRect = new Rect(rect.x, rect.y + 6f, rect.width, 22f);
+            GUI.Label(labelRect, $"🔧  Setting up co-op sync…  {done} / {total}", style);
+
+            GUI.color = prevColor;
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"DrawPatchInstallBanner: {ex.Message}");
+        }
     }
 
     private static void DrawReconnectBanner()
