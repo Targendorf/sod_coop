@@ -36,6 +36,15 @@ public class Plugin : BasePlugin
     /// Harmony instance for patching.
     /// </summary>
     private Harmony _harmony;
+
+    /// <summary>
+    /// Whether <see cref="_harmony"/> currently has its 66 sync patches
+    /// applied. We install lazily on the first <c>OnConnected</c> and
+    /// remove on <c>OnDisconnected</c> so single-player world generation
+    /// doesn't pay the per-call IL2CPP marshalling cost of patches whose
+    /// bodies would early-bail anyway.
+    /// </summary>
+    private static bool _patchesApplied;
     
     /// <summary>
     /// GameObject that persists across scenes for network updates.
@@ -139,10 +148,61 @@ public class Plugin : BasePlugin
 
     private void InitializeHarmony()
     {
-        Log.LogInfo("Initializing Harmony patches...");
+        Log.LogInfo("Initializing Harmony (lazy-patch mode)...");
         _harmony = new Harmony(PluginInfo.PLUGIN_GUID);
-        _harmony.PatchAll(Assembly.GetExecutingAssembly());
-        Log.LogInfo($"Applied {_harmony.GetPatchedMethods().Count()} Harmony patches.");
+
+        // We do NOT call PatchAll here. The 66 sync-related patches all
+        // perform a `!NetworkManager.IsConnected` early-bail in their
+        // bodies — but in IL2CPP, Harmony marshals every declared
+        // parameter (e.g. `Il2CppSystem.Collections.Generic.List<DataKey>`
+        // for Evidence.SetNote) BEFORE the body runs. During SoD's
+        // single-player new-world generation those methods are called
+        // tens of thousands of times, and the cumulative marshalling
+        // overhead is enough to balloon a 3-minute world-gen into 15+
+        // minutes (verified by user report).
+        //
+        // Instead, defer PatchAll to the moment we actually start
+        // hosting or successfully join — when at least one of those
+        // patches has work to do — and unpatch on disconnect so a
+        // subsequent world reload returns to native speed. See
+        // `EnsurePatchesApplied` / `RemovePatches`.
+        NetworkManager.OnConnected    += EnsurePatchesApplied;
+        NetworkManager.OnDisconnected += RemovePatchesOnDisconnect;
+
+        Log.LogInfo("Harmony ready — patches will install on first connect / host.");
+    }
+
+    /// <summary>Apply all sync patches in this assembly. Idempotent.</summary>
+    private void EnsurePatchesApplied()
+    {
+        if (_patchesApplied || _harmony == null) return;
+        try
+        {
+            _harmony.PatchAll(Assembly.GetExecutingAssembly());
+            _patchesApplied = true;
+            Log.LogInfo($"Applied {_harmony.GetPatchedMethods().Count()} Harmony sync patches (on connect).");
+        }
+        catch (System.Exception ex)
+        {
+            Log.LogError($"PatchAll on connect failed: {ex}");
+        }
+    }
+
+    private void RemovePatchesOnDisconnect(string _) => RemovePatches();
+
+    private void RemovePatches()
+    {
+        if (!_patchesApplied || _harmony == null) return;
+        try
+        {
+            _harmony.UnpatchSelf();
+            _patchesApplied = false;
+            Log.LogInfo("Removed Harmony sync patches (disconnected).");
+        }
+        catch (System.Exception ex)
+        {
+            Log.LogError($"UnpatchSelf on disconnect failed: {ex}");
+        }
     }
 
     private void InitializeSystems()
