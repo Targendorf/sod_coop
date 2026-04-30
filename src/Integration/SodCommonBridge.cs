@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 
 namespace SoDCoop.Integration;
 
@@ -6,14 +7,27 @@ namespace SoDCoop.Integration;
 /// Thin wrapper over SOD.Common (Venomaus). All access is reflection-soft via try/catch
 /// so the mod still loads if SOD.Common is missing or the API changes.
 ///
-/// MVP usage: just confirm we can reach Lib.SaveGame events and log fires.
-/// Future: hook OnAfterSave on host → ship save file to clients;
-///         hook OnBeforeLoad on client → swap in the host's save.
+/// Currently used for two things:
+///   1. Diagnostic timing of save load / save write (wall-clock so we can
+///      see the actual cost of our Harmony patches during the bulk-init
+///      phase, when "since plugin load" timestamps are dominated by user
+///      idle time on the title screen).
+///   2. Future: hook OnAfterSave on host → ship save file to clients;
+///      hook OnBeforeLoad on client → swap in the host's save.
 /// </summary>
 public static class SodCommonBridge
 {
     public static bool IsAvailable { get; private set; }
     private static bool _hooked;
+
+    /// <summary>Wall-clock seconds the most recent OnBeforeLoad → OnAfterLoad
+    /// span took. Useful for narrowing down "is save load the slow bit, or
+    /// something else?" without staring at relative log timestamps.</summary>
+    public static double LastLoadSeconds { get; private set; }
+    public static double LastSaveSeconds { get; private set; }
+
+    private static readonly Stopwatch _loadSw = new();
+    private static readonly Stopwatch _saveSw = new();
 
     public static void Initialize()
     {
@@ -31,22 +45,40 @@ public static class SodCommonBridge
 
             lib.OnBeforeLoad += (sender, args) =>
             {
-                try { Plugin.Log.LogInfo($"[SODCommon] OnBeforeLoad: {args?.FilePath}"); }
+                try
+                {
+                    _loadSw.Restart();
+                    Plugin.Log.LogInfo($"[SODCommon] OnBeforeLoad: {args?.FilePath} — timer started");
+                }
                 catch (Exception ex) { Plugin.Log.LogError($"OnBeforeLoad handler: {ex.Message}"); }
             };
             lib.OnAfterLoad += (sender, args) =>
             {
-                try { Plugin.Log.LogInfo($"[SODCommon] OnAfterLoad: {args?.FilePath}"); }
+                try
+                {
+                    _loadSw.Stop();
+                    LastLoadSeconds = _loadSw.Elapsed.TotalSeconds;
+                    Plugin.Log.LogInfo($"[SODCommon] OnAfterLoad: {args?.FilePath} — save-load wall-clock {LastLoadSeconds:F2}s");
+                }
                 catch (Exception ex) { Plugin.Log.LogError($"OnAfterLoad handler: {ex.Message}"); }
             };
             lib.OnBeforeSave += (sender, args) =>
             {
-                try { Plugin.Log.LogInfo($"[SODCommon] OnBeforeSave: {args?.FilePath}"); }
+                try
+                {
+                    _saveSw.Restart();
+                    Plugin.Log.LogInfo($"[SODCommon] OnBeforeSave: {args?.FilePath} — timer started");
+                }
                 catch (Exception ex) { Plugin.Log.LogError($"OnBeforeSave handler: {ex.Message}"); }
             };
             lib.OnAfterSave += (sender, args) =>
             {
-                try { Plugin.Log.LogInfo($"[SODCommon] OnAfterSave: {args?.FilePath}"); }
+                try
+                {
+                    _saveSw.Stop();
+                    LastSaveSeconds = _saveSw.Elapsed.TotalSeconds;
+                    Plugin.Log.LogInfo($"[SODCommon] OnAfterSave: {args?.FilePath} — save-write wall-clock {LastSaveSeconds:F2}s");
+                }
                 catch (Exception ex) { Plugin.Log.LogError($"OnAfterSave handler: {ex.Message}"); }
             };
 
