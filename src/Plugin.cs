@@ -168,6 +168,43 @@ public class Plugin : BasePlugin
 
         Log.LogInfo("Initializing SOD.Common bridge...");
         SodCommonBridge.Initialize();
+
+        // Record successful client-side joins so the main menu can offer
+        // one-click rejoin in future sessions.
+        NetworkManager.OnConnected += RecordCurrentSessionToHistory;
+    }
+
+    /// <summary>
+    /// Persists "I just successfully joined this host" into
+    /// <see cref="SoDCoop.Network.SessionStore"/> so the main menu can
+    /// surface the host as a one-click "rejoin" entry next time the user
+    /// opens the menu (even days later, after restarting SoD).
+    /// </summary>
+    private static void RecordCurrentSessionToHistory()
+    {
+        try
+        {
+            if (NetworkManager.IsHost) return;          // we're hosting, nothing to record
+            string ip   = NetworkManager.LastHostIp;
+            int    port = NetworkManager.LastHostPort;
+            if (string.IsNullOrEmpty(ip) || port <= 0) return;
+
+            // Pull host's display name out of the player roster (if any).
+            string hostName = "Host";
+            foreach (var p in NetworkManager.Players.Values)
+            {
+                if (p != null && p.IsHost && !string.IsNullOrEmpty(p.PlayerName))
+                {
+                    hostName = p.PlayerName;
+                    break;
+                }
+            }
+            SoDCoop.Network.SessionStore.Record(ip, port, hostName);
+        }
+        catch (System.Exception ex)
+        {
+            Log.LogWarning($"RecordCurrentSessionToHistory: {ex.Message}");
+        }
     }
 
     private void CreateUpdateRunner()

@@ -1,3 +1,4 @@
+using System;
 using SoDCoop.Localization;
 using SoDCoop.Network;
 using SoDCoop.Player;
@@ -7,27 +8,28 @@ using UnityEngine.UI;
 namespace SoDCoop.UI.Coop.Panels;
 
 /// <summary>
-/// Root menu — entry point with active profile selector + Host / Join /
-/// Show My IP / Settings.
-///
-/// <para>The active-profile chip lives at the top: it shows whoever was
-/// last picked in the <see cref="ProfilesPanel"/>, and clicking
-/// <c>Manage profiles</c> opens that panel. The Host / Join buttons use
-/// the active profile's <c>ClientGuid</c> + name + appearance for the
-/// connection — so switching profiles is the way to "play as someone
-/// else" with a separate twin / case-board on the same server.</para>
+/// Root menu — entry point with active profile selector, recent-sessions
+/// quick-rejoin, and Host / Join / Show My IP / Settings.
 /// </summary>
 public class MainPanel : CoopPanelBase
 {
     protected override string Title => L.Get("main.title");
 
-    private Text _activeProfileLabel;
+    // Bump height + scrollable body so the recent-sessions block + any
+    // future affordances don't push lower buttons off-screen on small
+    // viewports.
+    protected override float PanelHeight   => 720f;
+    protected override bool  ScrollableBody => true;
+
+    private Text       _activeProfileLabel;
+    private GameObject _sessionsContainer;
+    private Text       _sessionsHeader;
 
     protected override void BuildBody()
     {
         WrappedBodyLabel(L.Get("main.tagline"),
             CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelMuted);
-        Spacer(12f);
+        Spacer(8f);
 
         // Active profile chip.
         _activeProfileLabel = WrappedBodyLabel("", CoopMenuTheme.FontSizeBody,
@@ -36,7 +38,28 @@ public class MainPanel : CoopPanelBase
             L.Get("main.btn.profiles"),
             () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Profiles));
 
-        Spacer(16f);
+        Spacer(12f);
+
+        // Recent sessions block — built once, repopulated on Show().
+        _sessionsHeader = BodyLabel(L.Get("main.sessions.header"),
+            CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted, TextAnchor.MiddleLeft, FontStyle.Italic);
+
+        _sessionsContainer = CoopMenuFactory.Group("RecentSessions", Body);
+        var sRt = _sessionsContainer.GetComponent<RectTransform>();
+        sRt.sizeDelta = new(0, 0);
+        var sLe = _sessionsContainer.AddComponent<LayoutElement>();
+        sLe.preferredHeight = 0f;
+        sLe.flexibleWidth = 1f;
+        var sVl = _sessionsContainer.AddComponent<VerticalLayoutGroup>();
+        sVl.childAlignment = TextAnchor.UpperCenter;
+        sVl.childControlHeight = false;
+        sVl.childControlWidth = true;
+        sVl.childForceExpandHeight = false;
+        sVl.childForceExpandWidth = true;
+        sVl.spacing = 4f;
+        _sessionsContainer.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+        Spacer(12f);
 
         CoopMenuFactory.MenuButton("Host",   Body,
             L.Get("main.btn.host"),
@@ -54,7 +77,7 @@ public class MainPanel : CoopPanelBase
             L.Get("main.btn.settings"),
             () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Settings));
 
-        Spacer(20f);
+        Spacer(16f);
 
         CoopMenuFactory.MenuButton("Close",  Body,
             L.Get("main.btn.close"),
@@ -71,6 +94,7 @@ public class MainPanel : CoopPanelBase
         }
         base.Show();
         RefreshActiveProfile();
+        RebuildSessionsList();
     }
 
     private void RefreshActiveProfile()
@@ -95,5 +119,125 @@ public class MainPanel : CoopPanelBase
         {
             Plugin.Log.LogWarning($"MainPanel.RefreshActiveProfile: {ex.Message}");
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Recent sessions
+    // ─────────────────────────────────────────────────────────────────────
+
+    private void RebuildSessionsList()
+    {
+        if (_sessionsContainer == null) return;
+        try
+        {
+            // Wipe.
+            for (int i = _sessionsContainer.transform.childCount - 1; i >= 0; i--)
+                UnityEngine.Object.Destroy(_sessionsContainer.transform.GetChild(i).gameObject);
+
+            var all = SessionStore.All;
+            if (_sessionsHeader != null)
+                _sessionsHeader.gameObject.SetActive(all.Count > 0);
+
+            if (all.Count == 0) return;
+
+            // Show up to 5 most recent.
+            int show = Mathf.Min(5, all.Count);
+            for (int i = 0; i < show; i++) BuildSessionRow(all[i]);
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"MainPanel.RebuildSessionsList: {ex.Message}");
+        }
+    }
+
+    private void BuildSessionRow(SessionStore.Entry e)
+    {
+        var row = CoopMenuFactory.Group($"Session_{e.Endpoint}", _sessionsContainer.transform);
+        var rt = row.GetComponent<RectTransform>();
+        rt.sizeDelta = new(0, 40f);
+        var le = row.AddComponent<LayoutElement>();
+        le.preferredHeight = 40f;
+        le.flexibleWidth = 1f;
+
+        var bg = row.AddComponent<Image>();
+        bg.color = new Color(0.10f, 0.12f, 0.16f, 0.85f);
+        bg.raycastTarget = false;
+
+        var hl = row.AddComponent<HorizontalLayoutGroup>();
+        hl.childAlignment = TextAnchor.MiddleLeft;
+        hl.childControlHeight = true;
+        hl.childControlWidth = false;
+        hl.childForceExpandHeight = true;
+        hl.childForceExpandWidth = false;
+        hl.spacing = 6f;
+        hl.padding = new RectOffset(10, 6, 4, 4);
+
+        // Endpoint + host name + ago — left side.
+        string label = string.IsNullOrEmpty(e.HostName)
+            ? $"{e.Endpoint}\n  <i>{SessionStore.FormatAgo(e)}</i>"
+            : $"{e.HostName}  <color=#888><size=11>{e.Endpoint}</size></color>\n  <i>{SessionStore.FormatAgo(e)}</i>";
+
+        var nameGo = new GameObject("Label");
+        nameGo.transform.SetParent(row.transform, false);
+        var nameRt = nameGo.AddComponent<RectTransform>();
+        var nameLe = nameGo.AddComponent<LayoutElement>();
+        nameLe.flexibleWidth = 1f;
+        nameLe.minWidth = 200f;
+        var nameText = nameGo.AddComponent<Text>();
+        nameText.font = CoopMenuTheme.GetFont();
+        nameText.fontSize = CoopMenuTheme.FontSizeSmall;
+        nameText.color = CoopMenuTheme.LabelHeader;
+        nameText.alignment = TextAnchor.MiddleLeft;
+        nameText.text = label;
+        nameText.supportRichText = true;
+        nameText.raycastTarget = false;
+
+        AddMiniButton(row.transform, L.Get("main.sessions.btn.connect"), () => OnQuickConnect(e), 90f, true);
+        AddMiniButton(row.transform, "✕",                               () => OnForget(e),       30f, false);
+    }
+
+    private Button AddMiniButton(Transform parent, string label, Action onClick, float width, bool primary)
+    {
+        var btn = CoopMenuFactory.MenuButton(label, parent, label, onClick, widthOverride: width);
+        var le = btn.gameObject.AddComponent<LayoutElement>();
+        le.preferredWidth = width; le.minWidth = width;
+        le.preferredHeight = 32f;  le.minHeight = 32f;
+        var rt = btn.GetComponent<RectTransform>();
+        rt.sizeDelta = new(width, 32f);
+        if (!primary)
+        {
+            var t = btn.GetComponentInChildren<Text>();
+            if (t != null) t.color = CoopMenuTheme.LabelMuted;
+        }
+        return btn;
+    }
+
+    private void OnQuickConnect(SessionStore.Entry e)
+    {
+        try
+        {
+            if (e == null) return;
+            // Reuse the same code-path as the manual Join panel.
+            if (NetworkManager.Connect(e.Ip, e.Port))
+            {
+                Plugin.Log.LogInfo($"[MainPanel] quick-connecting to last session: {e.HostName} @ {e.Endpoint}");
+                // Connecting state — wait for OnConnected to route to Lobby.
+            }
+            else
+            {
+                Plugin.Log.LogWarning($"[MainPanel] quick-connect failed for {e.Endpoint}.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogError($"MainPanel.OnQuickConnect: {ex}");
+        }
+    }
+
+    private void OnForget(SessionStore.Entry e)
+    {
+        if (e == null) return;
+        SessionStore.Forget(e.Ip, e.Port);
+        RebuildSessionsList();
     }
 }

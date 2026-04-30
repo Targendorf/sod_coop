@@ -197,6 +197,11 @@ public static class NetworkManager
     /// <summary>Saved at successful Connect so we can retry if the link drops.</summary>
     private static string _lastHostIp;
     private static int    _lastHostPort;
+    /// <summary>IP / port the local client successfully (or most recently) connected to.
+    /// Used by <see cref="SessionStore"/> to remember "where I was last playing" for
+    /// one-click rejoin from the main menu.</summary>
+    public  static string LastHostIp   => _lastHostIp;
+    public  static int    LastHostPort => _lastHostPort;
     /// <summary>Set by <see cref="Disconnect"/> so the OnPeerDisconnected handler
     /// distinguishes a user-initiated tear-down from a transient network drop.</summary>
     private static bool   _userInitiatedDisconnect;
