@@ -59,6 +59,14 @@ public static class SodCommonBridge
                     _loadSw.Stop();
                     LastLoadSeconds = _loadSw.Elapsed.TotalSeconds;
                     Plugin.Log.LogInfo($"[SODCommon] OnAfterLoad: {args?.FilePath} — save-load wall-clock {LastLoadSeconds:F2}s");
+
+                    // Kick off the deferred progressive Harmony install.
+                    // Save load itself ran with no patches active (vanilla
+                    // speed); now that the world is settled, install one
+                    // patch type per frame from the pre-cached list. The
+                    // banner in CoopUI.OnGUI watches Plugin.IsInstallingPatches
+                    // and shows progress.
+                    Plugin.StartProgressiveInstall();
                 }
                 catch (Exception ex) { Plugin.Log.LogError($"OnAfterLoad handler: {ex.Message}"); }
             };

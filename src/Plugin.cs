@@ -148,41 +148,118 @@ public class Plugin : BasePlugin
 
     private void InitializeHarmony()
     {
-        Log.LogInfo("Initializing Harmony patches at plugin load...");
+        // Iteration history:
+        //   v1: PatchAll synchronously at plugin load → stable, but SP
+        //       world-gen / save-load is ~5x slower because IL2CPP marshals
+        //       heavy parameter types on every call regardless of our
+        //       `!IsConnected` early-bail.
+        //   v2: lazy install on first OnConnected, unpatch on disconnect →
+        //       fast SP, but ate a 5-10 min synchronous freeze on click-Host.
+        //   v3: progressive (one type per frame) at click-Host → fast SP,
+        //       no freeze, BUT MonoMod's IL2CPP detour backend crashed with
+        //       a fatal "Internal CLR error 0x80131506" inside
+        //       CompileMethodHook. Suspect: Assembly.GetTypes() /
+        //       GetCustomAttributes called on a "warm" runtime triggered
+        //       JIT compilation that MonoMod was hooking unsafely.
+        //
+        //   v4 (this): pre-cache the patch type list NOW (cold runtime —
+        //       MonoMod state is stable), but DON'T apply yet. The
+        //       progressive installer kicks in on SOD.Common's OnAfterLoad
+        //       (right after the user finishes loading any save), draining
+        //       one type per frame from the cache. This way:
+        //         • Save load itself runs without our patches active —
+        //           the user gets vanilla load times.
+        //         • Patches install in the gameplay phase, with a visible
+        //           banner showing progress; the menu / world stay
+        //           responsive.
+        //         • The fragile reflection (GetTypes / GetCustomAttributes)
+        //           runs ONCE at plugin load on a cold JIT, not at game-
+        //           time when MonoMod's hook state can be unstable.
+        Log.LogInfo("Initializing Harmony (deferred-progressive install)...");
         _harmony = new Harmony(PluginInfo.PLUGIN_GUID);
 
-        // History on this code path:
-        //   v1: PatchAll synchronously here → stable, but SP world generation
-        //       is ~5x slower because IL2CPP marshals heavy parameter types
-        //       (e.g. `Il2CppSystem.Collections.Generic.List<DataKey>` on
-        //       Evidence.SetNote) on every call regardless of our early-bail.
-        //   v2: lazy install on first OnConnected, unpatch on disconnect →
-        //       fast SP, but eats a 5-10 min synchronous freeze on click-Host.
-        //   v3: progressive (one type per frame) → fast SP, no freeze, BUT
-        //       MonoMod's IL2CPP detour platform crashed with a fatal
-        //       `Internal CLR error 0x80131506` inside CompileMethodHook
-        //       when patches were applied lazily after the runtime had
-        //       warmed up. Reproducible on first click-Host.
-        //
-        // v3 was untenable (full game crash). Reverted to v1 — install
-        // synchronously at plugin load while the runtime is in a known-good
-        // state. The early-bail (`!NetworkManager.IsConnected`) still saves
-        // us from broadcasting work during SP, but per-call IL2CPP
-        // marshalling cost remains. World gen is acceptably slower than
-        // vanilla but the game doesn't freeze or crash.
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        _harmony.PatchAll(Assembly.GetExecutingAssembly());
-        sw.Stop();
-        _patchesApplied = true;
-        Log.LogInfo($"Applied {_harmony.GetPatchedMethods().Count()} Harmony patches at plugin load in {sw.Elapsed.TotalSeconds:F2}s.");
+        var swScan = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            var asm = Assembly.GetExecutingAssembly();
+            foreach (var t in asm.GetTypes())
+            {
+                if (t.GetCustomAttributes(typeof(HarmonyPatch), inherit: true).Length > 0)
+                    _cachedPatchTypes.Add(t);
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Log.LogError($"Cold-JIT patch-type scan failed: {ex}");
+        }
+        swScan.Stop();
+
+        Log.LogInfo($"Pre-cached {_cachedPatchTypes.Count} Harmony patch type(s) in {swScan.Elapsed.TotalSeconds:F2}s. Install starts on first save load.");
     }
 
-    // The progressive-installer accessors were removed alongside the lazy
-    // patch path; the install banner in CoopUI just watches these stubs.
-    public static bool IsInstallingPatches => false;
-    public static int  PatchTypesRemaining => 0;
-    public static int  PatchTypesTotal     => 0;
-    public static void DrainPatchInstaller() { /* no-op — install is now synchronous at plugin load */ }
+    // ─── Deferred progressive installer ──────────────────────────────────
+    private static readonly System.Collections.Generic.List<System.Type> _cachedPatchTypes = new();
+    private static readonly System.Collections.Generic.Queue<System.Type> _pendingPatchTypes = new();
+    private static int  _totalPatchTypesQueued;
+    private static bool _patchInstallerRunning;
+    private static System.Diagnostics.Stopwatch _installSw;
+
+    public static bool IsInstallingPatches => _patchInstallerRunning;
+    public static int  PatchTypesRemaining => _pendingPatchTypes.Count;
+    public static int  PatchTypesTotal     => _totalPatchTypesQueued;
+
+    /// <summary>
+    /// Called from the SOD.Common <c>OnAfterLoad</c> hook the first time
+    /// the user finishes loading a save in this session. Queues every
+    /// pre-cached patch type for progressive install on the main update
+    /// loop; <see cref="DrainPatchInstaller"/> processes one per frame.
+    /// Idempotent — subsequent saves don't re-queue.
+    /// </summary>
+    public static void StartProgressiveInstall()
+    {
+        if (_patchesApplied || _patchInstallerRunning) return;
+        if (_cachedPatchTypes.Count == 0)
+        {
+            Log.LogWarning("StartProgressiveInstall: no cached patch types — was InitializeHarmony skipped?");
+            return;
+        }
+        _pendingPatchTypes.Clear();
+        foreach (var t in _cachedPatchTypes) _pendingPatchTypes.Enqueue(t);
+        _totalPatchTypesQueued = _pendingPatchTypes.Count;
+        _patchInstallerRunning = true;
+        _installSw = System.Diagnostics.Stopwatch.StartNew();
+        Log.LogInfo($"Progressive Harmony install: queued {_totalPatchTypesQueued} type(s) — one per frame.");
+    }
+
+    /// <summary>Called every frame from <c>CoopUpdateRunner.Update</c>.</summary>
+    public static void DrainPatchInstaller()
+    {
+        if (!_patchInstallerRunning) return;
+        var inst = Instance;
+        if (inst == null || inst._harmony == null) { _patchInstallerRunning = false; return; }
+
+        if (_pendingPatchTypes.Count == 0)
+        {
+            _patchInstallerRunning = false;
+            _patchesApplied = true;
+            int actuallyApplied = 0;
+            try { actuallyApplied = inst._harmony.GetPatchedMethods().Count(); } catch { }
+            double dt = _installSw?.Elapsed.TotalSeconds ?? 0;
+            Log.LogInfo($"Progressive Harmony install: done. {actuallyApplied} patch method(s) live (across {_totalPatchTypesQueued} types) in {dt:F2}s.");
+            return;
+        }
+
+        var t = _pendingPatchTypes.Dequeue();
+        try
+        {
+            inst._harmony.CreateClassProcessor(t).Patch();
+        }
+        catch (System.Exception ex)
+        {
+            // Log and continue — one bad patch shouldn't doom the rest.
+            Log.LogWarning($"Progressive patcher: skipped {t?.FullName} ({ex.GetType().Name}: {ex.Message}).");
+        }
+    }
 
     private void InitializeSystems()
     {
