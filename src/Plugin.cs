@@ -148,146 +148,39 @@ public class Plugin : BasePlugin
 
     private void InitializeHarmony()
     {
-        Log.LogInfo("Initializing Harmony (lazy-patch mode)...");
+        Log.LogInfo("Initializing Harmony patches at plugin load...");
         _harmony = new Harmony(PluginInfo.PLUGIN_GUID);
 
-        // We do NOT call PatchAll here. The 66 sync-related patches all
-        // perform a `!NetworkManager.IsConnected` early-bail in their
-        // bodies — but in IL2CPP, Harmony marshals every declared
-        // parameter (e.g. `Il2CppSystem.Collections.Generic.List<DataKey>`
-        // for Evidence.SetNote) BEFORE the body runs. During SoD's
-        // single-player new-world generation those methods are called
-        // tens of thousands of times, and the cumulative marshalling
-        // overhead is enough to balloon a 3-minute world-gen into 15+
-        // minutes (verified by user report).
+        // History on this code path:
+        //   v1: PatchAll synchronously here → stable, but SP world generation
+        //       is ~5x slower because IL2CPP marshals heavy parameter types
+        //       (e.g. `Il2CppSystem.Collections.Generic.List<DataKey>` on
+        //       Evidence.SetNote) on every call regardless of our early-bail.
+        //   v2: lazy install on first OnConnected, unpatch on disconnect →
+        //       fast SP, but eats a 5-10 min synchronous freeze on click-Host.
+        //   v3: progressive (one type per frame) → fast SP, no freeze, BUT
+        //       MonoMod's IL2CPP detour platform crashed with a fatal
+        //       `Internal CLR error 0x80131506` inside CompileMethodHook
+        //       when patches were applied lazily after the runtime had
+        //       warmed up. Reproducible on first click-Host.
         //
-        // Instead, defer PatchAll to the moment we actually start
-        // hosting or successfully join — when at least one of those
-        // patches has work to do — and unpatch on disconnect so a
-        // subsequent world reload returns to native speed. See
-        // `EnsurePatchesApplied` / `RemovePatches`.
-        NetworkManager.OnConnected    += EnsurePatchesApplied;
-        NetworkManager.OnDisconnected += RemovePatchesOnDisconnect;
-
-        Log.LogInfo("Harmony ready — patches will install on first connect / host.");
+        // v3 was untenable (full game crash). Reverted to v1 — install
+        // synchronously at plugin load while the runtime is in a known-good
+        // state. The early-bail (`!NetworkManager.IsConnected`) still saves
+        // us from broadcasting work during SP, but per-call IL2CPP
+        // marshalling cost remains. World gen is acceptably slower than
+        // vanilla but the game doesn't freeze or crash.
+        _harmony.PatchAll(Assembly.GetExecutingAssembly());
+        _patchesApplied = true;
+        Log.LogInfo($"Applied {_harmony.GetPatchedMethods().Count()} Harmony patches at plugin load.");
     }
 
-    // ─── Progressive patch installer ─────────────────────────────────────
-    // PatchAll across 67 IL2CPP-marshalled patches blocks the main thread
-    // for many seconds (the SideJob constructor patch in particular hits a
-    // failed-init retry loop that's even slower). Doing it synchronously
-    // on the OnConnected event froze the game for minutes after clicking
-    // Host. Instead we drain a queue one type per frame from the main
-    // Update loop — the user just sees a brief log of progress and the
-    // menu stays interactive throughout.
-
-    private static readonly System.Collections.Generic.Queue<System.Type> _pendingPatchTypes = new();
-    private static int _totalPatchTypesQueued;
-    private static bool _patchInstallerRunning;
-
-    // ─── Public progress accessors for the install-progress banner UI ────
-    /// <summary>True while the progressive patcher is mid-flight. UI uses
-    /// this to gate the loading-bar banner.</summary>
-    public static bool IsInstallingPatches => _patchInstallerRunning;
-
-    /// <summary>Number of patch types still pending. Decreases each frame
-    /// as <see cref="DrainPatchInstaller"/> drains the queue.</summary>
-    public static int PatchTypesRemaining => _pendingPatchTypes.Count;
-
-    /// <summary>Total number of patch types queued at the start of the
-    /// current install run. Banner shows X / Total.</summary>
-    public static int PatchTypesTotal => _totalPatchTypesQueued;
-
-    /// <summary>
-    /// Kick off the progressive patcher. Idempotent; subsequent calls while
-    /// installation is still draining are no-ops. After full drain, sets
-    /// <see cref="_patchesApplied"/> = true.
-    /// </summary>
-    private void EnsurePatchesApplied()
-    {
-        if (_patchesApplied || _harmony == null) return;
-        if (_patchInstallerRunning) return;
-        try
-        {
-            // Discover every type carrying [HarmonyPatch] in our assembly.
-            var asm = Assembly.GetExecutingAssembly();
-            int queued = 0;
-            foreach (var t in asm.GetTypes())
-            {
-                if (t.GetCustomAttributes(typeof(HarmonyPatch), inherit: true).Length > 0)
-                {
-                    _pendingPatchTypes.Enqueue(t);
-                    queued++;
-                }
-            }
-            _totalPatchTypesQueued = queued;
-            _patchInstallerRunning = queued > 0;
-            Log.LogInfo($"Progressive Harmony patcher: queued {queued} patch type(s) — installing one per frame.");
-        }
-        catch (System.Exception ex)
-        {
-            Log.LogError($"EnsurePatchesApplied (queueing): {ex}");
-            _patchInstallerRunning = false;
-        }
-    }
-
-    /// <summary>
-    /// Drains one patch type per frame from the queue. Called from
-    /// <see cref="CoopUpdateRunner.Update"/>. When the queue empties, marks
-    /// <see cref="_patchesApplied"/> true so other code paths know syncing
-    /// is fully wired up. Errors on individual patches are logged and
-    /// skipped so a single bad signature can't stall the entire install.
-    /// </summary>
-    public static void DrainPatchInstaller()
-    {
-        if (!_patchInstallerRunning) return;
-        var inst = Instance;
-        if (inst == null || inst._harmony == null) { _patchInstallerRunning = false; return; }
-
-        if (_pendingPatchTypes.Count == 0)
-        {
-            _patchInstallerRunning = false;
-            _patchesApplied = true;
-            int actuallyApplied = 0;
-            try { actuallyApplied = inst._harmony.GetPatchedMethods().Count(); } catch { }
-            Log.LogInfo($"Progressive Harmony patcher: done. {actuallyApplied} patch method(s) live (across {_totalPatchTypesQueued} types).");
-            return;
-        }
-
-        var t = _pendingPatchTypes.Dequeue();
-        try
-        {
-            inst._harmony.CreateClassProcessor(t).Patch();
-        }
-        catch (System.Exception ex)
-        {
-            // Log and continue — one bad patch shouldn't doom the rest.
-            Log.LogWarning($"Progressive patcher: skipped {t?.FullName} ({ex.GetType().Name}: {ex.Message}).");
-        }
-    }
-
-    private void RemovePatchesOnDisconnect(string _) => RemovePatches();
-
-    private void RemovePatches()
-    {
-        // Always reset the progressive-installer state so a half-finished
-        // install on a previous connect doesn't keep draining patches into
-        // a now-disconnected session.
-        _pendingPatchTypes.Clear();
-        _patchInstallerRunning = false;
-
-        if (_harmony == null) return;
-        try
-        {
-            _harmony.UnpatchSelf();
-            if (_patchesApplied) Log.LogInfo("Removed Harmony sync patches (disconnected).");
-            _patchesApplied = false;
-        }
-        catch (System.Exception ex)
-        {
-            Log.LogError($"UnpatchSelf on disconnect failed: {ex}");
-        }
-    }
+    // The progressive-installer accessors were removed alongside the lazy
+    // patch path; the install banner in CoopUI just watches these stubs.
+    public static bool IsInstallingPatches => false;
+    public static int  PatchTypesRemaining => 0;
+    public static int  PatchTypesTotal     => 0;
+    public static void DrainPatchInstaller() { /* no-op — install is now synchronous at plugin load */ }
 
     private void InitializeSystems()
     {
