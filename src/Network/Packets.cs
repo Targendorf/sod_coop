@@ -643,5 +643,15 @@ public enum PacketType : byte
     /// </summary>
     NpcOutfit = 113,
 
+    /// <summary>
+    /// Player appearance customization (twin citizen overrides). Sent by a
+    /// client after the player commits choices in <c>AppearancePanel</c>;
+    /// host applies the overrides to the sender's twin and re-broadcasts to
+    /// the other peers so every machine renders the customized twin
+    /// identically. Appearance also persists in <c>CharacterStore</c> so
+    /// reconnects keep the same look without re-customization.
+    /// </summary>
+    PlayerAppearance = 114,
+
     #endregion
 }

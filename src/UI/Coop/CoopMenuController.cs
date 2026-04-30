@@ -36,9 +36,17 @@ public static class CoopMenuController
     private static IpInfoPanel            _ipPanel;
     private static CreateCharacterPanel   _createCharacterPanel;
     private static SettingsPanel          _settingsPanel;
+    private static AppearancePanel        _appearancePanel;
+    private static ProfilesPanel          _profilesPanel;
+    private static EditProfilePanel       _editProfilePanel;
+
+    /// <summary>If set, the next OnConnected after a character submit will route
+    /// to <see cref="PanelKind.Appearance"/> instead of <see cref="PanelKind.Lobby"/>.
+    /// Cleared after consumption.</summary>
+    private static bool _showAppearanceAfterConnect;
 
     /// <summary>Current visible panel, or null when menu is hidden.</summary>
-    public enum PanelKind { None, Main, Host, Join, Lobby, IpInfo, CreateCharacter, Settings }
+    public enum PanelKind { None, Main, Host, Join, Lobby, IpInfo, CreateCharacter, Settings, Appearance, Profiles, EditProfile }
     private static PanelKind _current = PanelKind.None;
 
     private static bool _eventsHooked;
@@ -92,6 +100,24 @@ public static class CoopMenuController
         try
         {
             if (_root == null) BuildCanvas();
+
+            // Profile-driven auto-submit: if the active profile already has a
+            // first name, ship it to the host immediately and skip the manual
+            // creation panel. The user picked this identity in the main menu;
+            // the host just hadn't seen it on this seed before.
+            var prof = SoDCoop.Player.ProfileStore.Active;
+            if (prof != null && prof.HasName)
+            {
+                Plugin.Log.LogInfo($"[CoopMenu] auto-submitting active profile \"{prof.DisplayName}\" → \"{prof.FullName}\"");
+                NetworkManager.SubmitCharacter(prof.FirstName, prof.Surname);
+                // We'll broadcast the appearance after handshake completes
+                // (OnNetworkConnected). No panel switch here — stay on whatever
+                // is showing; OnConnected will route to Lobby.
+                return;
+            }
+
+            // Profile has no name yet — fall back to the manual panel so the
+            // user can fill it in. Keeps the legacy / first-time flow alive.
             _createCharacterPanel?.Configure(hostFirst, hostSur, cityName);
             SetVisible(true);
             ShowPanel(PanelKind.CreateCharacter);
@@ -112,6 +138,28 @@ public static class CoopMenuController
         {
             if (_root == null) BuildCanvas();
             if (NetworkManager.IsHost) return;
+
+            // Push the active profile's appearance to the host so peers see
+            // our customized twin from the moment we step into the world.
+            // No-op if appearance is the unmodified default.
+            try
+            {
+                var prof = SoDCoop.Player.ProfileStore.Active;
+                if (prof != null && prof.Appearance.IsCustomized)
+                    SoDCoop.Sync.AppearanceSync.BroadcastLocal(prof.Appearance);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"OnNetworkConnected appearance auto-broadcast: {ex.Message}");
+            }
+
+            if (_showAppearanceAfterConnect)
+            {
+                _showAppearanceAfterConnect = false;
+                _appearancePanel?.Configure(SoDCoop.Player.AppearanceConfig.Default, firstTimeFlow: true);
+                ShowPanel(PanelKind.Appearance);
+                return;
+            }
             ShowPanel(PanelKind.Lobby);
         }
         catch (System.Exception ex)
@@ -154,6 +202,13 @@ public static class CoopMenuController
         IsVisible = show;
         _root.SetActive(show);
         if (show && _current == PanelKind.None) ShowPanel(PanelKind.Main);
+
+        // Hiding the menu must release the borrowed appearance pawn so the
+        // citizen returns to their schedule. Showing again will re-lease.
+        if (!show)
+        {
+            try { AppearancePreviewStage.End(); } catch { }
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -233,6 +288,9 @@ public static class CoopMenuController
             _ipPanel              = new IpInfoPanel();           _ipPanel.Build(_panelContainer.transform);
             _createCharacterPanel = new CreateCharacterPanel();  _createCharacterPanel.Build(_panelContainer.transform);
             _settingsPanel        = new SettingsPanel();         _settingsPanel.Build(_panelContainer.transform);
+            _appearancePanel      = new AppearancePanel();       _appearancePanel.Build(_panelContainer.transform);
+            _profilesPanel        = new ProfilesPanel();         _profilesPanel.Build(_panelContainer.transform);
+            _editProfilePanel     = new EditProfilePanel();      _editProfilePanel.Build(_panelContainer.transform);
 
             HideAllPanels();
             Plugin.Log.LogInfo("[CoopMenu] canvas built");
@@ -260,6 +318,9 @@ public static class CoopMenuController
             case PanelKind.IpInfo:          _ipPanel?.Show();               break;
             case PanelKind.CreateCharacter: _createCharacterPanel?.Show();  break;
             case PanelKind.Settings:        _settingsPanel?.Show();         break;
+            case PanelKind.Appearance:      _appearancePanel?.Show();       break;
+            case PanelKind.Profiles:        _profilesPanel?.Show();         break;
+            case PanelKind.EditProfile:     _editProfilePanel?.Show();      break;
         }
     }
 
@@ -272,5 +333,64 @@ public static class CoopMenuController
         _ipPanel?.Hide();
         _createCharacterPanel?.Hide();
         _settingsPanel?.Hide();
+        _appearancePanel?.Hide();
+        _profilesPanel?.Hide();
+        _editProfilePanel?.Hide();
     }
+
+    /// <summary>Open the edit panel for a given profile (preconfigured).</summary>
+    public static void OpenProfileEdit(SoDCoop.Player.ProfileStore.Profile profile)
+    {
+        if (_root == null) BuildCanvas();
+        _editProfilePanel?.Configure(profile);
+        SetVisible(true);
+        ShowPanel(PanelKind.EditProfile);
+    }
+
+    /// <summary>Open the appearance panel in profile-edit mode (callbacks decide
+    /// what to do on Confirm / Cancel; nothing is broadcast).</summary>
+    public static void OpenAppearanceForProfileEdit(
+        SoDCoop.Player.AppearanceConfig initial,
+        System.Action<SoDCoop.Player.AppearanceConfig> onConfirm,
+        System.Action onCancel)
+    {
+        if (_root == null) BuildCanvas();
+        _appearancePanel?.ConfigureProfileEdit(initial, onConfirm, onCancel);
+        SetVisible(true);
+        ShowPanel(PanelKind.Appearance);
+    }
+
+    /// <summary>
+    /// Open the appearance panel from the lobby. Loads the locally-known
+    /// appearance (from the host's CharacterStore if we are the host, or
+    /// from the last-confirmed local cache otherwise) so existing choices
+    /// are preserved when re-opening.
+    /// </summary>
+    public static void OpenAppearance(bool firstTimeFlow)
+    {
+        if (_root == null) BuildCanvas();
+        var initial = LoadKnownAppearance();
+        _appearancePanel?.Configure(initial, firstTimeFlow);
+        SetVisible(true);
+        ShowPanel(PanelKind.Appearance);
+    }
+
+    private static SoDCoop.Player.AppearanceConfig LoadKnownAppearance()
+    {
+        try
+        {
+            if (Network.NetworkManager.IsHost)
+            {
+                var seed = SoDCoop.Sync.CharacterStore.CurrentSeed();
+                var rec  = SoDCoop.Sync.CharacterStore.TryGet(seed, SoDCoop.Player.CharacterIdentity.ClientGuid);
+                if (rec != null) return rec.Appearance;
+            }
+        }
+        catch { }
+        return SoDCoop.Player.AppearanceConfig.Default;
+    }
+
+    /// <summary>Set by <c>CreateCharacterPanel</c> just before submitting so the
+    /// post-handshake routing knows to land on the appearance panel.</summary>
+    public static void RequestAppearanceAfterConnect() => _showAppearanceAfterConnect = true;
 }

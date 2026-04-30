@@ -164,6 +164,7 @@ public class Plugin : BasePlugin
         Log.LogInfo("Initializing UI...");
         CoopUI.Initialize();
         SoDCoop.UI.Coop.CoopMenuController.Initialize();
+        SoDCoop.UI.Coop.AppearancePreviewStage.Initialize();
 
         Log.LogInfo("Initializing SOD.Common bridge...");
         SodCommonBridge.Initialize();

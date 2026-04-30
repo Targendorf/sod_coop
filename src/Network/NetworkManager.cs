@@ -18,7 +18,10 @@ public enum ConnectionState
     Disconnected,
     Connecting,
     Connected,
-    Hosting
+    Hosting,
+    /// <summary>Client lost the socket and is auto-retrying. World state is
+    /// frozen but preserved so a successful reconnect resumes seamlessly.</summary>
+    Reconnecting
 }
 
 /// <summary>
@@ -42,7 +45,19 @@ public static class NetworkManager
     /// player is finalised: removed from _players, PlayerLeft broadcast.
     /// </summary>
     private const float RECONNECT_GRACE_S = 5f;
-    
+
+    /// <summary>How long the client keeps trying to re-establish a dropped
+    /// session before giving up and routing back to the main menu. Tuned
+    /// so a typical wifi blip / route flap is invisible to the user — the
+    /// host's reconnect-grace covers the first 5s seamlessly, retries past
+    /// that recover via a fresh handshake (CharacterStore record persists,
+    /// so identity is preserved).</summary>
+    private const float RECONNECT_TIMEOUT_S = 30f;
+
+    /// <summary>Seconds between reconnect attempts during the
+    /// <see cref="ConnectionState.Reconnecting"/> window.</summary>
+    private const float RECONNECT_RETRY_INTERVAL_S = 1.0f;
+
     #endregion
     
     #region Properties
@@ -97,6 +112,25 @@ public static class NetworkManager
     /// panel can surface it to the user.
     /// </summary>
     public static event Action<string> OnCharacterRejected;
+
+    /// <summary>
+    /// Raised on the client when an unexpected socket drop is detected and
+    /// auto-reconnect attempts begin. Carries the LiteNetLib disconnect
+    /// reason. UI consumers should show a "reconnecting…" banner; world /
+    /// sync state is intentionally <b>not</b> torn down (RemotePlayers
+    /// stay spawned, SyncManager stays subscribed) so a successful retry
+    /// resumes seamlessly via the host's snapshot resend.
+    /// </summary>
+    public static event Action<string> OnConnectionLost;
+
+    /// <summary>
+    /// Raised after auto-reconnect successfully re-establishes the socket
+    /// (and the host has finished sending the recovery handshake). UI
+    /// consumers should hide the "reconnecting…" banner. Most subscribers
+    /// don't need this — <see cref="OnConnected"/> fires too on the
+    /// recovery handshake, so init paths are idempotent.
+    /// </summary>
+    public static event Action OnReconnected;
     
     /// <summary>
     /// Connected peer (for client: the host; for host: null).
@@ -158,7 +192,27 @@ public static class NetworkManager
     /// without aliasing.</summary>
     private static readonly NetDataWriter _sendWrapper = new();
     private static int _nextPlayerId = 1;
-    
+
+    // ─── Reconnect state (client-side) ───────────────────────────────────
+    /// <summary>Saved at successful Connect so we can retry if the link drops.</summary>
+    private static string _lastHostIp;
+    private static int    _lastHostPort;
+    /// <summary>Set by <see cref="Disconnect"/> so the OnPeerDisconnected handler
+    /// distinguishes a user-initiated tear-down from a transient network drop.</summary>
+    private static bool   _userInitiatedDisconnect;
+    /// <summary>Wall-clock seconds since reconnect attempts began (current loop).</summary>
+    private static float  _reconnectStartedAt;
+    /// <summary>Time of next attempt (gated by <see cref="RECONNECT_RETRY_INTERVAL_S"/>).</summary>
+    private static float  _nextReconnectAt;
+    /// <summary>Last reason string from LiteNetLib — surfaced in the banner UI.</summary>
+    public  static string LastDisconnectReason { get; private set; } = "";
+    /// <summary>How long the current reconnect window has been active. UI uses this
+    /// to render "Reconnecting… 4s / 30s".</summary>
+    public  static float ReconnectingSeconds => State == ConnectionState.Reconnecting
+        ? Mathf.Max(0f, Time.unscaledTime - _reconnectStartedAt)
+        : 0f;
+    public  static float ReconnectingTimeoutS => RECONNECT_TIMEOUT_S;
+
     #endregion
     
     #region Initialization
@@ -313,8 +367,12 @@ public static class NetworkManager
                 State = ConnectionState.Disconnected;
                 return false;
             }
-            
+
             HostPeer = peer;
+            // Cache for the auto-reconnect loop on transient drops.
+            _lastHostIp   = ip;
+            _lastHostPort = port;
+            _userInitiatedDisconnect = false;
             Plugin.Log.LogInfo($"Connecting to {ip}:{port}...");
             return true;
         }
@@ -331,21 +389,27 @@ public static class NetworkManager
     /// </summary>
     public static void Disconnect()
     {
-        if (!IsConnected && State != ConnectionState.Connecting) return;
-        
+        if (!IsConnected && State != ConnectionState.Connecting && State != ConnectionState.Reconnecting) return;
+
         Plugin.Log.LogInfo("Disconnecting...");
-        
+
+        // Flag intent so the OnPeerDisconnected handler doesn't kick off the
+        // auto-reconnect loop when we're tearing down deliberately.
+        _userInitiatedDisconnect = true;
+
         _netManager.DisconnectAll();
         _netManager.Stop();
-        
+
         _clients.Clear();
         _players.Clear();
-        
+
         IsHost = false;
         State = ConnectionState.Disconnected;
         LocalPlayerId = -1;
         HostPeer = null;
-        
+        _lastHostIp = null;
+        _lastHostPort = 0;
+
         OnDisconnected?.Invoke("User disconnected");
     }
     
@@ -411,6 +475,58 @@ public static class NetworkManager
     {
         _netManager?.PollEvents();
         if (IsHost) FinalisePendingDisconnects();
+        else if (State == ConnectionState.Reconnecting) TickReconnect();
+    }
+
+    /// <summary>
+    /// Drives the auto-reconnect loop on the client when
+    /// <see cref="State"/> is <see cref="ConnectionState.Reconnecting"/>.
+    /// Issues a fresh <c>_netManager.Connect</c> at most once per
+    /// <see cref="RECONNECT_RETRY_INTERVAL_S"/>; gives up after
+    /// <see cref="RECONNECT_TIMEOUT_S"/> by falling through to the same
+    /// tear-down a user-initiated disconnect performs.
+    /// </summary>
+    private static void TickReconnect()
+    {
+        float now = Time.unscaledTime;
+
+        // Timed out — bail out and let the UI route to main menu.
+        if (now - _reconnectStartedAt >= RECONNECT_TIMEOUT_S)
+        {
+            Plugin.Log.LogWarning($"[NetworkManager] reconnect timed out after {RECONNECT_TIMEOUT_S}s — giving up.");
+            try { _netManager?.Stop(); } catch { }
+            State = ConnectionState.Disconnected;
+            HostPeer = null;
+            _players.Clear();
+            _lastHostIp = null;
+            _lastHostPort = 0;
+
+            string final = string.IsNullOrEmpty(LastDisconnectReason)
+                ? "Reconnect timed out"
+                : $"Reconnect timed out ({LastDisconnectReason})";
+            OnDisconnected?.Invoke(final);
+            return;
+        }
+
+        if (now < _nextReconnectAt) return;
+        _nextReconnectAt = now + RECONNECT_RETRY_INTERVAL_S;
+
+        // Issue a connect attempt with the same clientGuid as the original
+        // session. If the host's reconnect-grace window is still open, it'll
+        // restore our slot via FindPendingReconnect; if it has expired, we
+        // fall through to a fresh handshake (CharacterStore record persists,
+        // so the user keeps their identity).
+        try
+        {
+            _writer.Reset();
+            _writer.Put(CharacterIdentity.ClientGuid);
+            var peer = _netManager?.Connect(_lastHostIp, _lastHostPort, _writer);
+            if (peer != null) HostPeer = peer;
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"[NetworkManager] reconnect attempt failed: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -552,6 +668,7 @@ public static class NetworkManager
                 try { SoDCoop.Sync.CaseBoardSync .SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"CaseBoardSync.SendSnapshotTo (reconnect): {ex.Message}"); }
                 try { SoDCoop.Sync.ItemSync      .SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"ItemSync.SendSnapshotTo (reconnect): {ex.Message}"); }
                 try { SoDCoop.Sync.FootprintSync .SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"FootprintSync.SendSnapshotTo (reconnect): {ex.Message}"); }
+                try { SoDCoop.Sync.AppearanceSync.SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"AppearanceSync.SendSnapshotTo (reconnect): {ex.Message}"); }
                 return;
             }
 
@@ -592,8 +709,19 @@ public static class NetworkManager
             // yet — that waits until the full Handshake arrives (which the
             // host sends either immediately or after our CharacterSubmit
             // round-trip).
+            bool wasReconnecting = State == ConnectionState.Reconnecting;
             State = ConnectionState.Connected;
-            Plugin.Log.LogInfo($"Connected to host at {peer.Address}:{peer.Port} (waiting for handshake / character flow)");
+            HostPeer = peer;
+
+            if (wasReconnecting)
+            {
+                Plugin.Log.LogInfo($"[NetworkManager] reconnected to {peer.Address}:{peer.Port} after {Time.unscaledTime - _reconnectStartedAt:F1}s — awaiting recovery handshake.");
+                try { OnReconnected?.Invoke(); } catch (Exception ex) { Plugin.Log.LogWarning($"OnReconnected handler: {ex.Message}"); }
+            }
+            else
+            {
+                Plugin.Log.LogInfo($"Connected to host at {peer.Address}:{peer.Port} (waiting for handshake / character flow)");
+            }
         }
     }
 
@@ -696,8 +824,9 @@ public static class NetworkManager
         try { SoDCoop.Sync.CaseBoardSync .SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"CaseBoardSync.SendSnapshotTo: {ex.Message}"); }
         try { SoDCoop.Sync.ItemSync      .SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"ItemSync.SendSnapshotTo: {ex.Message}"); }
         try { SoDCoop.Sync.FootprintSync .SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"FootprintSync.SendSnapshotTo: {ex.Message}"); }
+        try { SoDCoop.Sync.AppearanceSync.SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"AppearanceSync.SendSnapshotTo: {ex.Message}"); }
     }
-    
+
     private static void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)
     {
         if (IsHost)
@@ -739,13 +868,43 @@ public static class NetworkManager
         }
         else
         {
-            // Client: disconnected from host
+            // Client: disconnected from host. Two paths:
+            //
+            //  • User initiated (clicked Disconnect / Reset character) →
+            //    full tear-down, route to MainPanel.
+            //  • Network drop (timeout, route flap, etc.) → enter
+            //    Reconnecting state and try to silently re-establish for
+            //    RECONNECT_TIMEOUT_S. World state, RemotePlayer GameObjects,
+            //    SyncManager subscriptions all stay alive across the gap so
+            //    a successful retry resumes seamlessly.
+            string reason = disconnectInfo.Reason.ToString();
+            LastDisconnectReason = reason;
+
+            bool userInitiated = _userInitiatedDisconnect
+                              || disconnectInfo.Reason == LiteNetLib.DisconnectReason.DisconnectPeerCalled;
+
+            if (!userInitiated && !string.IsNullOrEmpty(_lastHostIp))
+            {
+                State = ConnectionState.Reconnecting;
+                HostPeer = null;
+                _reconnectStartedAt = Time.unscaledTime;
+                _nextReconnectAt    = Time.unscaledTime;   // first attempt fires on next Update tick
+
+                Plugin.Log.LogWarning($"[NetworkManager] connection lost ({reason}) — auto-reconnecting to {_lastHostIp}:{_lastHostPort} for up to {RECONNECT_TIMEOUT_S}s.");
+                OnConnectionLost?.Invoke(reason);
+                // Note: do NOT clear _players or fire OnDisconnected — world
+                // / sync state stays put for the duration of the retry window.
+                return;
+            }
+
+            // Final disconnect path.
             State = ConnectionState.Disconnected;
             HostPeer = null;
             _players.Clear();
-            
-            Plugin.Log.LogInfo($"Disconnected from host: {disconnectInfo.Reason}");
-            OnDisconnected?.Invoke(disconnectInfo.Reason.ToString());
+            _userInitiatedDisconnect = false;
+
+            Plugin.Log.LogInfo($"Disconnected from host: {reason}");
+            OnDisconnected?.Invoke(reason);
         }
     }
     
@@ -879,9 +1038,10 @@ public static class NetworkManager
                 {
                     NetDataWriter remapped = packetType switch
                     {
-                        PacketType.FingerprintAdd => SoDCoop.Sync.FingerprintSync.RemapForForward(forwardBody, forwardBodyLen, senderId, _remapScratch),
-                        PacketType.FootprintAdd   => SoDCoop.Sync.FootprintSync  .RemapForForward(forwardBody, forwardBodyLen, senderId, _remapScratch),
-                        PacketType.EvidenceCreate => SoDCoop.Sync.EvidenceSync   .RemapForForward(forwardBody, forwardBodyLen, senderId, _remapScratch),
+                        PacketType.FingerprintAdd    => SoDCoop.Sync.FingerprintSync.RemapForForward(forwardBody, forwardBodyLen, senderId, _remapScratch),
+                        PacketType.FootprintAdd      => SoDCoop.Sync.FootprintSync  .RemapForForward(forwardBody, forwardBodyLen, senderId, _remapScratch),
+                        PacketType.EvidenceCreate    => SoDCoop.Sync.EvidenceSync   .RemapForForward(forwardBody, forwardBodyLen, senderId, _remapScratch),
+                        PacketType.PlayerAppearance  => SoDCoop.Sync.AppearanceSync .RemapForForward(forwardBody, forwardBodyLen, senderId, _remapScratch),
                         _ => null,
                     };
 

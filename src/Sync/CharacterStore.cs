@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using BepInEx;
+using SoDCoop.Player;
 
 namespace SoDCoop.Sync;
 
@@ -40,6 +41,14 @@ public static class CharacterStore
         /// use, then re-applies on every host startup.
         /// </summary>
         public int HumanID;
+
+        /// <summary>
+        /// Per-client appearance customization (debug-override fields applied
+        /// to the twin citizen on every machine). Defaults to
+        /// <see cref="AppearanceConfig.Default"/> with <c>IsCustomized=false</c>
+        /// — meaning the twin retains its seeded vanilla look.
+        /// </summary>
+        public AppearanceConfig Appearance = AppearanceConfig.Default;
     }
 
     /// <summary>seed → (clientGuid → record). Lazily loaded on first access per seed.</summary>
@@ -163,6 +172,9 @@ public static class CharacterStore
                         Surname       = parts[2],
                         CreatedAtUnix = parts.Length > 3 && long.TryParse(parts[3], out var t) ? t : 0,
                         HumanID       = parts.Length > 4 && int.TryParse(parts[4], out var h) ? h : 0,
+                        Appearance    = (parts.Length > 5 && !string.IsNullOrEmpty(parts[5]))
+                                            ? DecodeAppearance(parts[5])
+                                            : AppearanceConfig.Default,
                     };
                     if (!string.IsNullOrEmpty(rec.ClientGuid))
                         bucket[rec.ClientGuid] = rec;
@@ -186,16 +198,46 @@ public static class CharacterStore
         {
             using var sw = new StreamWriter(path, append: false);
             sw.WriteLine($"# SoDCoop characters for seed \"{seed}\"");
-            sw.WriteLine("# format: clientGuid|firstName|surName|createdAtUnix|humanID");
+            sw.WriteLine("# format v6: clientGuid|firstName|surName|createdAtUnix|humanID|appearanceB64");
             foreach (var rec in bucket.Values)
             {
-                sw.WriteLine($"{rec.ClientGuid}|{rec.FirstName}|{rec.Surname}|{rec.CreatedAtUnix}|{rec.HumanID}");
+                string appB64 = EncodeAppearance(rec.Appearance);
+                sw.WriteLine($"{rec.ClientGuid}|{rec.FirstName}|{rec.Surname}|{rec.CreatedAtUnix}|{rec.HumanID}|{appB64}");
             }
         }
         catch (Exception ex)
         {
             Plugin.Log.LogError($"[CharacterStore] write \"{path}\" failed: {ex.Message}");
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Appearance helpers
+    // ─────────────────────────────────────────────────────────────────────
+
+    private static string EncodeAppearance(AppearanceConfig cfg)
+    {
+        try { return Convert.ToBase64String(cfg.ToBytes()); }
+        catch { return ""; }
+    }
+
+    private static AppearanceConfig DecodeAppearance(string b64)
+    {
+        try { return AppearanceConfig.FromBytes(Convert.FromBase64String(b64)); }
+        catch { return AppearanceConfig.Default; }
+    }
+
+    /// <summary>
+    /// Update the stored appearance for a client and persist the seed file.
+    /// Returns true if the record existed and was updated.
+    /// </summary>
+    public static bool SetAppearance(string seed, string clientGuid, AppearanceConfig cfg)
+    {
+        var bucket = LoadSeed(seed);
+        if (!bucket.TryGetValue(clientGuid, out var rec)) return false;
+        rec.Appearance = cfg;
+        WriteSeedFile(seed, bucket);
+        return true;
     }
 
     // ─────────────────────────────────────────────────────────────────────

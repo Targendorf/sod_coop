@@ -104,6 +104,58 @@ public static class CoopUI
             if (CoopSettings.ShowStatusHUD?.Value     ?? true) DrawPlayerListHUD();
             if (CoopSettings.ShowChatWindow?.Value    ?? true) DrawChatWindow();
         }
+
+        // Reconnect banner: visible only while the auto-reconnect loop is
+        // actively retrying. World state is preserved beneath; this is just
+        // a heads-up so the player doesn't think the game froze.
+        if (NetworkManager.State == SoDCoop.Network.ConnectionState.Reconnecting)
+            DrawReconnectBanner();
+    }
+
+    private static void DrawReconnectBanner()
+    {
+        try
+        {
+            float elapsed = NetworkManager.ReconnectingSeconds;
+            float total   = NetworkManager.ReconnectingTimeoutS;
+            string reason = NetworkManager.LastDisconnectReason;
+
+            float w = 380f;
+            float h = 56f;
+            var rect = new Rect((Screen.width - w) * 0.5f, 60f, w, h);
+
+            var prevColor = GUI.color;
+
+            // Soft black backdrop.
+            GUI.color = new Color(0f, 0f, 0f, 0.85f);
+            GUI.DrawTexture(rect, Texture2D.whiteTexture);
+
+            // Amber border (use a thin overlay rect for a 2px outline feel).
+            GUI.color = new Color(0.95f, 0.62f, 0.20f, 1f);
+            GUI.DrawTexture(new Rect(rect.x, rect.y, rect.width, 2f), Texture2D.whiteTexture);
+            GUI.DrawTexture(new Rect(rect.x, rect.y + rect.height - 2f, rect.width, 2f), Texture2D.whiteTexture);
+            GUI.DrawTexture(new Rect(rect.x, rect.y, 2f, rect.height), Texture2D.whiteTexture);
+            GUI.DrawTexture(new Rect(rect.x + rect.width - 2f, rect.y, 2f, rect.height), Texture2D.whiteTexture);
+
+            GUI.color = new Color(0.96f, 0.94f, 0.86f, 1f);
+            var style = new GUIStyle(GUI.skin.label)
+            {
+                alignment = TextAnchor.MiddleCenter,
+                fontSize = 16,
+                fontStyle = FontStyle.Bold,
+                wordWrap = true,
+            };
+            string body = string.IsNullOrEmpty(reason)
+                ? $"🔌  Connection lost — reconnecting…  {elapsed:F0}s / {total:F0}s"
+                : $"🔌  Connection lost ({reason}) — reconnecting…  {elapsed:F0}s / {total:F0}s";
+            GUI.Label(rect, body, style);
+
+            GUI.color = prevColor;
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"DrawReconnectBanner: {ex.Message}");
+        }
     }
     
     private static void DrawMainWindow(int windowId)

@@ -125,6 +125,9 @@ public class CreateCharacterPanel : CoopPanelBase
                 _statusLabel.color = CoopMenuTheme.LabelWarn;
             }
 
+            // After the host completes the handshake, route the client to the
+            // appearance panel for first-time customization (instead of Lobby).
+            CoopMenuController.RequestAppearanceAfterConnect();
             NetworkManager.SubmitCharacter(first, sur);
         }
         catch (System.Exception ex)

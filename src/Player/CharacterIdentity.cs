@@ -4,66 +4,65 @@ using UnityEngine;
 namespace SoDCoop.Player;
 
 /// <summary>
-/// Stable per-installation identifier used to recognise a returning client
-/// across reconnections. LiteNetLib only gives us IPs, which can change
-/// (NAT, network swap, port), so we mint a GUID once and store it in
-/// PlayerPrefs. The host keeps a (worldSeed → clientGuid → character)
-/// map so the same human always lands in the same in-game character.
+/// Stable per-profile identifier used to recognise a returning client across
+/// reconnections. With the multi-profile refactor, this is a thin proxy
+/// over <see cref="ProfileStore.Active"/>.<c>ClientGuid</c> — each profile
+/// owns its own guid so the host treats them as separate identities.
 ///
-/// This is purely an identifier — no character info lives here. The
-/// character record (first name / surname) is owned by the host's
-/// <see cref="SoDCoop.Sync.CharacterStore"/>.
+/// <para>Backwards compatibility: the legacy single-installation guid
+/// (PlayerPrefs key <c>SoDCoop_ClientGuid</c>) is migrated into a starter
+/// profile by <see cref="ProfileStore"/> on first access. If no profile
+/// has been created yet (e.g. the user wiped their config), an in-memory
+/// fallback guid is minted so connection logic doesn't crash; the user
+/// will be steered to create a profile in the menu.</para>
 /// </summary>
 public static class CharacterIdentity
 {
-    private const string PREF_KEY = "SoDCoop_ClientGuid";
+    private const string LEGACY_PREF_KEY = "SoDCoop_ClientGuid";
 
-    private static string _cached;
+    private static string _fallback;
 
     /// <summary>
-    /// Returns this installation's stable client GUID. Generated on first
-    /// access and persisted in PlayerPrefs forever (until the player
-    /// manually wipes it).
+    /// Active profile's guid, or a one-shot fallback if no profile exists.
     /// </summary>
     public static string ClientGuid
     {
         get
         {
-            if (!string.IsNullOrEmpty(_cached)) return _cached;
             try
             {
-                _cached = PlayerPrefs.GetString(PREF_KEY, "");
-                if (string.IsNullOrEmpty(_cached))
-                {
-                    _cached = Guid.NewGuid().ToString("N");
-                    PlayerPrefs.SetString(PREF_KEY, _cached);
-                    PlayerPrefs.Save();
-                    Plugin.Log.LogInfo($"[CharacterIdentity] new clientGuid minted: {_cached}");
-                }
+                var p = ProfileStore.Active;
+                if (p != null && !string.IsNullOrEmpty(p.ClientGuid)) return p.ClientGuid;
             }
             catch (Exception ex)
             {
-                Plugin.Log.LogWarning($"[CharacterIdentity] PlayerPrefs failed: {ex.Message} — falling back to in-memory GUID (will reset on game restart).");
-                _cached = Guid.NewGuid().ToString("N");
+                Plugin.Log.LogWarning($"[CharacterIdentity] ProfileStore lookup failed: {ex.Message}");
             }
-            return _cached;
+
+            if (string.IsNullOrEmpty(_fallback))
+            {
+                _fallback = Guid.NewGuid().ToString("N");
+                Plugin.Log.LogWarning($"[CharacterIdentity] no active profile — using volatile fallback guid {_fallback}");
+            }
+            return _fallback;
         }
     }
 
     /// <summary>
-    /// Drops the cached identity. Used by the future "Reset character"
-    /// button in the menu when the player wants to be a different person
-    /// in the host's world.
+    /// Wipes the legacy PlayerPrefs guid. Profiles themselves are managed
+    /// via <see cref="ProfileStore"/>; this remains for the existing
+    /// "Reset coop identity" UI button which now nudges the user back to
+    /// the profile picker.
     /// </summary>
     public static void Reset()
     {
         try
         {
-            PlayerPrefs.DeleteKey(PREF_KEY);
+            PlayerPrefs.DeleteKey(LEGACY_PREF_KEY);
             PlayerPrefs.Save();
         }
         catch { }
-        _cached = null;
-        Plugin.Log.LogInfo("[CharacterIdentity] reset — next access will mint a new GUID.");
+        _fallback = null;
+        Plugin.Log.LogInfo("[CharacterIdentity] legacy clientGuid wiped.");
     }
 }

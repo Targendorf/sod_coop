@@ -2251,3 +2251,32 @@ public struct CitizenOwnershipPacket : INetPacket
         OwnerId   = reader.GetInt();
     }
 }
+
+/// <summary>
+/// Player appearance customization. Wire = senderId + 9 bytes packed by
+/// <see cref="SoDCoop.Player.AppearanceConfig.Write"/>. Host re-broadcasts
+/// to other peers (with senderId preserved) so receivers can apply the
+/// overrides to the corresponding twin citizen on their local machine.
+/// </summary>
+public struct PlayerAppearancePacket : INetPacket
+{
+    public PacketType Type => PacketType.PlayerAppearance;
+
+    public int SenderId;
+    public int TwinHumanId;   // 0 from client; host fills in via RemapForForward
+    public SoDCoop.Player.AppearanceConfig Config;
+
+    public void Serialize(NetDataWriter writer)
+    {
+        writer.Put(SenderId);
+        writer.Put(TwinHumanId);
+        Config.Write(writer);
+    }
+
+    public void Deserialize(NetDataReader reader)
+    {
+        SenderId    = reader.GetInt();
+        TwinHumanId = reader.GetInt();
+        Config.Read(reader);
+    }
+}

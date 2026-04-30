@@ -202,6 +202,11 @@ public static class SyncManager
             {
                 NpcOutfitSync.OnPacketReceived(type, reader, senderId);
             }
+            // Player appearance customization (114) — client → host → all peers.
+            else if (type == PacketType.PlayerAppearance)
+            {
+                AppearanceSync.OnPacketReceived(type, reader, senderId);
+            }
             // Elevator floor call (32).
             else if (type == PacketType.ElevatorCall)
             {

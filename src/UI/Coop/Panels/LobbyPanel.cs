@@ -70,6 +70,11 @@ public class LobbyPanel : CoopPanelBase
 
         Spacer(6f);
 
+        CoopMenuFactory.MenuButton("Customize", Body, L.Get("lobby.btn.appearance"),
+            () => CoopMenuController.OpenAppearance(firstTimeFlow: false));
+
+        Spacer(4f);
+
         CoopMenuFactory.MenuButton("Settings", Body, L.Get("lobby.btn.settings"),
             () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Settings));
 

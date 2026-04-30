@@ -20,10 +20,18 @@ public abstract class CoopPanelBase
     /// <summary>Override to fill the body area (called once on Build).</summary>
     protected abstract void BuildBody();
 
+    /// <summary>Per-panel height override. Panels with lots of content
+    /// (Appearance, EditProfile) bump this higher than the default.</summary>
+    protected virtual float PanelHeight => CoopMenuTheme.PanelHeightMain;
+
+    /// <summary>If true, <see cref="Body"/> is wrapped in a ScrollRect so
+    /// content taller than the panel scrolls on mouse wheel.</summary>
+    protected virtual bool ScrollableBody => false;
+
     public void Build(Transform parent)
     {
         Root = CoopMenuFactory.Panel(GetType().Name, parent,
-            CoopMenuTheme.PanelWidth, CoopMenuTheme.PanelHeightMain,
+            CoopMenuTheme.PanelWidth, PanelHeight,
             CoopMenuTheme.PanelBg);
         var rt = Root.GetComponent<RectTransform>();
         rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
@@ -45,6 +53,17 @@ public abstract class CoopPanelBase
             TextAnchor.MiddleCenter, FontStyle.Bold);
 
         // Body area — fills below title with padding.
+        if (ScrollableBody)
+            BuildScrollableBody();
+        else
+            BuildPlainBody();
+
+        BuildBody();
+        Hide();
+    }
+
+    private void BuildPlainBody()
+    {
         var bodyGo = CoopMenuFactory.Group("Body", Root.transform);
         var bodyRt = bodyGo.GetComponent<RectTransform>();
         bodyRt.anchorMin = new(0f, 0f);
@@ -53,7 +72,6 @@ public abstract class CoopPanelBase
         bodyRt.offsetMax = new(-CoopMenuTheme.Padding, -80f);
         Body = bodyGo.transform;
 
-        // Vertical stacker so children stack neatly.
         var stack = bodyGo.AddComponent<VerticalLayoutGroup>();
         stack.childAlignment = TextAnchor.UpperCenter;
         stack.childControlHeight = false;
@@ -61,9 +79,62 @@ public abstract class CoopPanelBase
         stack.childForceExpandHeight = false;
         stack.childForceExpandWidth  = true;
         stack.spacing = CoopMenuTheme.ButtonGap;
+    }
 
-        BuildBody();
-        Hide();
+    private void BuildScrollableBody()
+    {
+        // ScrollRect → Viewport (mask) → Content (this is Body).
+        var scrollGo = new GameObject("Scroll");
+        scrollGo.transform.SetParent(Root.transform, false);
+        var scrollRt = scrollGo.AddComponent<RectTransform>();
+        scrollRt.anchorMin = new(0f, 0f);
+        scrollRt.anchorMax = new(1f, 1f);
+        scrollRt.offsetMin = new(CoopMenuTheme.Padding, CoopMenuTheme.Padding);
+        scrollRt.offsetMax = new(-CoopMenuTheme.Padding, -80f);
+
+        var scrollBg = scrollGo.AddComponent<Image>();
+        scrollBg.color = new Color(0f, 0f, 0f, 0.001f); // invisible but raycasts for wheel events
+
+        var scroll = scrollGo.AddComponent<ScrollRect>();
+        scroll.horizontal = false;
+        scroll.vertical   = true;
+        scroll.movementType = ScrollRect.MovementType.Clamped;
+        scroll.scrollSensitivity = 24f;
+
+        var viewportGo = new GameObject("Viewport");
+        viewportGo.transform.SetParent(scrollGo.transform, false);
+        var viewRt = viewportGo.AddComponent<RectTransform>();
+        viewRt.anchorMin = Vector2.zero; viewRt.anchorMax = Vector2.one;
+        viewRt.offsetMin = viewRt.offsetMax = Vector2.zero;
+        var viewImg = viewportGo.AddComponent<Image>();
+        viewImg.color = new Color(0f, 0f, 0f, 0.001f);
+        var mask = viewportGo.AddComponent<Mask>();
+        mask.showMaskGraphic = false;
+        scroll.viewport = viewRt;
+
+        var contentGo = new GameObject("Content");
+        contentGo.transform.SetParent(viewportGo.transform, false);
+        var contentRt = contentGo.AddComponent<RectTransform>();
+        contentRt.anchorMin = new(0f, 1f);
+        contentRt.anchorMax = new(1f, 1f);
+        contentRt.pivot     = new(0.5f, 1f);
+        contentRt.anchoredPosition = Vector2.zero;
+        contentRt.sizeDelta = new(0, 0);
+
+        var fitter = contentGo.AddComponent<ContentSizeFitter>();
+        fitter.verticalFit   = ContentSizeFitter.FitMode.PreferredSize;
+        fitter.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
+
+        var stack = contentGo.AddComponent<VerticalLayoutGroup>();
+        stack.childAlignment = TextAnchor.UpperCenter;
+        stack.childControlHeight = false;
+        stack.childControlWidth  = true;
+        stack.childForceExpandHeight = false;
+        stack.childForceExpandWidth  = true;
+        stack.spacing = CoopMenuTheme.ButtonGap;
+
+        scroll.content = contentRt;
+        Body = contentGo.transform;
     }
 
     public virtual void Show() => Root?.SetActive(true);
