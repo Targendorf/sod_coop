@@ -48,7 +48,11 @@ public static class SodCommonBridge
                 try
                 {
                     _loadSw.Restart();
-                    Plugin.Log.LogInfo($"[SODCommon] OnBeforeLoad: {args?.FilePath} — timer started");
+                    // Close the patch gate before SoD starts hammering the
+                    // patched methods during state restoration. Saves the
+                    // per-call IL2CPP wrapper from doing any work in body.
+                    SoDCoop.Sync.SyncGate.Close();
+                    Plugin.Log.LogInfo($"[SODCommon] OnBeforeLoad: {args?.FilePath} — timer started, SyncGate closed");
                 }
                 catch (Exception ex) { Plugin.Log.LogError($"OnBeforeLoad handler: {ex.Message}"); }
             };

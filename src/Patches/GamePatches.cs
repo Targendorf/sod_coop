@@ -29,6 +29,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(NewDoor __instance)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -49,6 +50,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(NewDoor __instance)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -74,6 +76,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix()
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 bool nowPaused = Time.timeScale == 0f;
@@ -96,6 +99,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(LightController __instance, bool val)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -135,7 +139,7 @@ public static class GamePatches
             // for every seeded card. IL2CPP only marshals __args declared
             // here (Case ref, Evidence ref, enum, bool, Vector2) — all light
             // — so this signature is fine to keep with the bail upfront.
-            if (!NetworkManager.IsConnected) return;
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (toCase == null || ev == null) return;
@@ -187,7 +191,7 @@ public static class GamePatches
                                    Il2CppSystem.Collections.Generic.List<Evidence.DataKey> evKeys,
                                    bool forceAutoPin, Vector2 localPostion)
         {
-            if (!NetworkManager.IsConnected) return;
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (toCase == null || ev == null || evKeys == null) return;
@@ -213,7 +217,7 @@ public static class GamePatches
         public static void Postfix(Case thisCase, Evidence ev,
                                    Il2CppSystem.Collections.Generic.List<Evidence.DataKey> evKeys)
         {
-            if (!NetworkManager.IsConnected) return;
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (thisCase == null || ev == null) return;
@@ -234,6 +238,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(PinnedItemController __instance, Vector2 newPos)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -265,6 +270,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Case __instance, Evidence.FactLink link, InterfaceControls.EvidenceColours col)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null || link == null) return;
@@ -294,6 +300,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Case __instance, Fact fact, bool val)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null || fact == null) return;
@@ -313,6 +320,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Case __instance, Case.CaseStatus newStatus, bool cancelObjectives)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -337,6 +345,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Case.ResolveQuestion __instance, float val, bool forceTrigger)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -365,6 +374,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Case __instance)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -437,6 +447,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(State __state)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__state == null || !__state.Valid) return;
@@ -462,7 +473,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Fact __instance, string str)
         {
-            if (!NetworkManager.IsConnected) return;
+            if (!SyncGate.IsOpen) return;
             if (!NetworkManager.HasPeers) return;
             if (WorldReadyGate.IsInInitGrace) return;
             try
@@ -490,6 +501,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Human __instance, Human killer, Interactable weapon)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -531,6 +543,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix()
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (CitizenDeathSync.IsApplyingRemote) return;
@@ -555,10 +568,11 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(TelephoneController.PhoneCall newCall)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (newCall == null) return;
-                if (!NetworkManager.IsConnected) return;
+                if (!SyncGate.IsOpen) return;
 
                 // Detect OUTGOING player call: PhoneCall.callerNS is the
                 // caller Human; if it's our local Player.Instance, this is
@@ -610,10 +624,11 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(TelephoneController.PhoneCall newCall)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (newCall == null) return;
-                if (!NetworkManager.IsConnected) return;
+                if (!SyncGate.IsOpen) return;
 
                 bool isOutgoingFromMe = false;
                 try
@@ -687,6 +702,7 @@ public static class GamePatches
             float newRain, float newWind, float newSnow, float newLightning, float newFog,
             float newTransitionSpeed, bool updateInstantly)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (WeatherSync.IsApplyingRemote) return;       // remote → don't echo
@@ -726,6 +742,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Interactable __instance, bool val)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -757,6 +774,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Interactable __instance, Human from, Interactable.PrintLife life)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null || from == null) return;
@@ -780,6 +798,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Interactable __instance)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -808,11 +827,12 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(GameplayController.Footprint newFootprint)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (newFootprint == null) return;
                 if (FootprintSync.ShouldSuppressBroadcast) return;
-                if (!NetworkManager.IsConnected) return;
+                if (!SyncGate.IsOpen) return;
 
                 // Client filter: only our local player's footsteps. NPC prints
                 // are the host's exclusive concern.
@@ -847,11 +867,12 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(SpatterSimulation __instance)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
                 if (SpatterSync.ShouldSuppressBroadcast) return;
-                if (!NetworkManager.IsConnected) return;
+                if (!SyncGate.IsOpen) return;
 
                 // Client filter: only broadcast if origin is close to our
                 // local player (i.e. the spatter probably came from us).
@@ -886,6 +907,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(bool val)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (InventorySync.IsApplyingRemote) return;
@@ -904,6 +926,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(bool val)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (InventorySync.IsApplyingRemote) return;
@@ -928,6 +951,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix()
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (InventorySync.IsApplyingRemote) return;
@@ -946,6 +970,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix()
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (InventorySync.IsApplyingRemote) return;
@@ -964,6 +989,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix()
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (InventorySync.IsApplyingRemote) return;
@@ -1001,6 +1027,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(int __state)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (InventorySync.IsApplyingRemote) return;
@@ -1022,6 +1049,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(int __state)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (InventorySync.IsApplyingRemote) return;
@@ -1043,6 +1071,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(int __state)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (InventorySync.IsApplyingRemote) return;
@@ -1064,6 +1093,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(int __state)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (InventorySync.IsApplyingRemote) return;
@@ -1093,6 +1123,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(int __state)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (InventorySync.IsApplyingRemote) return;
@@ -1114,6 +1145,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(int __state)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (InventorySync.IsApplyingRemote) return;
@@ -1135,6 +1167,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(int __state)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (InventorySync.IsApplyingRemote) return;
@@ -1168,7 +1201,7 @@ public static class GamePatches
         {
             // Cheap-bail gates first: avoid IL2CPP getter on __instance.evID
             // during solo play and the world-init seeded burst.
-            if (!NetworkManager.IsConnected) return;
+            if (!SyncGate.IsOpen) return;
             if (!NetworkManager.HasPeers) return;
             if (WorldReadyGate.IsInInitGrace) return;
             try
@@ -1219,7 +1252,7 @@ public static class GamePatches
                                    Il2CppSystem.Collections.Generic.List<Evidence.DataKey> keys,
                                    string str)
         {
-            if (!NetworkManager.IsConnected) return;
+            if (!SyncGate.IsOpen) return;
             if (!NetworkManager.HasPeers) return;
             if (WorldReadyGate.IsInInitGrace) return;
             try
@@ -1245,7 +1278,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Evidence __instance, Evidence.DataKey dk, string newCustomName)
         {
-            if (!NetworkManager.IsConnected) return;
+            if (!SyncGate.IsOpen) return;
             if (!NetworkManager.HasPeers) return;
             if (WorldReadyGate.IsInInitGrace) return;
             try
@@ -1286,6 +1319,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(System.Collections.Generic.HashSet<string> __state)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (EvidenceSync.IsApplyingRemote) return;
@@ -1308,6 +1342,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(System.Collections.Generic.HashSet<string> __state)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (EvidenceSync.IsApplyingRemote) return;
@@ -1330,6 +1365,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(System.Collections.Generic.HashSet<string> __state)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (EvidenceSync.IsApplyingRemote) return;
@@ -1370,7 +1406,7 @@ public static class GamePatches
         {
             // Fires for every NPC asleep on schedule. Bail before Player.Instance
             // marshaling when not in coop.
-            if (!NetworkManager.IsConnected) return;
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -1392,7 +1428,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Actor __instance)
         {
-            if (!NetworkManager.IsConnected) return;
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -1414,7 +1450,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Actor __instance)
         {
-            if (!NetworkManager.IsConnected) return;
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -1443,6 +1479,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(int addVal, bool displayMessage, string reason)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (MoneySync.IsApplyingRemote) return;
@@ -1477,7 +1514,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(StateSaveData.MessageThreadSave __result)
         {
-            if (!NetworkManager.IsConnected) return;
+            if (!SyncGate.IsOpen) return;
             if (!NetworkManager.HasPeers) return;
             if (WorldReadyGate.IsInInitGrace) return;
             try
@@ -1505,6 +1542,7 @@ public static class GamePatches
         [HarmonyPrefix]
         public static bool Prefix()
         {
+            if (!SyncGate.IsOpen) return true;
             try
             {
                 if (InventorySync.IsApplyingRemote) return true;
@@ -1550,6 +1588,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(NewDoor __instance, bool val, bool playSound)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -1576,6 +1615,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(ComputerController __instance, Human newLogIn)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -1597,6 +1637,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(ComputerController __instance, CruncherAppPreset newApp, bool forceUpdate)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -1645,6 +1686,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Elevator __instance, int newFloor, bool upButton)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -1678,6 +1720,7 @@ public static class GamePatches
             bool allowRecoil,
             float ragdollForceMP)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -1755,7 +1798,7 @@ public static class GamePatches
         public static void Postfix(CitizenOutfitController __instance, ClothesPreset.OutfitCategory category)
         {
             // Fires per-NPC during seeded outfit init; bail before Player.Instance.
-            if (!NetworkManager.IsConnected) return;
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -1808,7 +1851,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(SideJob __instance)
         {
-            if (!NetworkManager.IsConnected) return;
+            if (!SyncGate.IsOpen) return;
             try { SideJobSync.BroadcastFromCtor(__instance); }
             catch (System.Exception ex) { Plugin.Log.LogWarning($"SideJob ctor patch: {ex.Message}"); }
         }
@@ -1820,7 +1863,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(SideJob __instance, SideJob.JobState newState)
         {
-            if (!NetworkManager.IsConnected) return;
+            if (!SyncGate.IsOpen) return;
             try { SideJobSync.BroadcastStateChange(__instance, newState); }
             catch (System.Exception ex) { Plugin.Log.LogWarning($"SideJob.SetJobState patch: {ex.Message}"); }
         }
@@ -1838,6 +1881,7 @@ public static class GamePatches
         [HarmonyPrefix]
         public static bool Prefix()
         {
+            if (!SyncGate.IsOpen) return true;
             try
             {
                 if (NetworkManager.IsConnected && !NetworkManager.IsHost)
@@ -1865,6 +1909,7 @@ public static class GamePatches
         [HarmonyPrefix]
         public static bool Prefix(SideJob __instance)
         {
+            if (!SyncGate.IsOpen) return true;
             try
             {
                 if (__instance == null) return true;
@@ -1900,6 +1945,7 @@ public static class GamePatches
         [HarmonyPrefix]
         public static bool Prefix(SideJob __instance)
         {
+            if (!SyncGate.IsOpen) return true;
             try
             {
                 if (__instance == null) return true;
@@ -1948,6 +1994,7 @@ public static class GamePatches
         public static void Postfix(Human __instance, Interactable givenItem, Human givenBy,
                                    bool defaultSuccess, bool enableSpeech, bool __result)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (!__result) return;        // give failed — nothing changed
@@ -1977,7 +2024,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(NewAIController __instance, bool val, float duration)
         {
-            if (!NetworkManager.IsConnected) return;
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -2003,7 +2050,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(NewAIController __instance, bool val)
         {
-            if (!NetworkManager.IsConnected) return;
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__instance == null) return;
@@ -2028,6 +2075,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(Interactable pickUpThis, bool __result)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (!__result) return;               // pick-up failed — nothing changed
@@ -2077,6 +2125,7 @@ public static class GamePatches
         [HarmonyPostfix]
         public static void Postfix(int __state)
         {
+            if (!SyncGate.IsOpen) return;
             try
             {
                 if (__state < 0) return;

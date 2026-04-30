@@ -81,12 +81,16 @@ public static class WorldReadyGate
 
         // Log grace-window close once (first poll where IsInInitGrace flips
         // false while world is still ready). Lets us correlate with end of
-        // SoD's init burst.
+        // SoD's init burst. We also OPEN the SyncGate at this point — every
+        // Harmony patch's first line is `if (!SyncGate.IsOpen) return;`,
+        // so before this fires every patch fast-bails and SP load runs at
+        // vanilla speed.
         if (IsWorldReady && !_graceClosedLogged && !IsInInitGrace)
         {
             _graceClosedLogged = true;
             Plugin.Log.LogInfo($"WorldReadyGate: init-grace window closed after " +
                 $"{_sinceReady.Elapsed.TotalSeconds:F1}s wall-clock (configured {INIT_GRACE_SECONDS}s).");
+            SyncGate.Open();
         }
 
         bool ready = ComputeReady();
@@ -111,6 +115,10 @@ public static class WorldReadyGate
             _graceClosedLogged = false;
             Plugin.Log.LogInfo("WorldReadyGate: world UNLOADED (returned to menu / between saves).");
             BroadcastBudget.Reset();
+            // Close the patch gate — we're between saves, no need to do
+            // any sync work, and the next save load needs the burst window
+            // protected again.
+            SyncGate.Close();
             try { OnWorldUnready?.Invoke(); }
             catch (Exception ex) { Plugin.Log.LogError($"OnWorldUnready handler threw: {ex}"); }
         }
