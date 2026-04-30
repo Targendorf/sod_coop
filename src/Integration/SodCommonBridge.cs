@@ -77,13 +77,16 @@ public static class SodCommonBridge
                     LastLoadSeconds = _loadSw.Elapsed.TotalSeconds;
                     Plugin.Log.LogInfo($"[SODCommon] OnAfterLoad: {args?.FilePath} — save-load wall-clock {LastLoadSeconds:F2}s");
 
-                    // Kick off the deferred progressive Harmony install.
-                    // Save load itself ran with no patches active (vanilla
-                    // speed); now that the world is settled, install one
-                    // patch type per frame from the pre-cached list. The
-                    // banner in CoopUI.OnGUI watches Plugin.IsInstallingPatches
-                    // and shows progress.
-                    Plugin.StartProgressiveInstall();
+                    // THIS is the actual "save-load complete" marker. SoD's
+                    // post-WorldReady init burst (case-board generation,
+                    // evidence chain seeding, etc.) often runs for 5+ minutes
+                    // after the WorldReadyGate flips — and during that whole
+                    // window we want patches OFF so SoD can hammer its
+                    // patched methods at native speed. OnAfterLoad fires only
+                    // when SoD has truly finished restoring state, so it's
+                    // the safe point to re-detour everything.
+                    Plugin.ResumePatchesAfterLoad();
+                    SoDCoop.Sync.SyncGate.Open();
                 }
                 catch (Exception ex) { Plugin.Log.LogError($"OnAfterLoad handler: {ex.Message}"); }
             };

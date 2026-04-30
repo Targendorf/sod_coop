@@ -90,10 +90,19 @@ public static class WorldReadyGate
             _graceClosedLogged = true;
             Plugin.Log.LogInfo($"WorldReadyGate: init-grace window closed after " +
                 $"{_sinceReady.Elapsed.TotalSeconds:F1}s wall-clock (configured {INIT_GRACE_SECONDS}s).");
-            // Re-detour every Harmony patch (paused by OnBeforeLoad). Body
-            // gate must also open for the patches to do any actual work.
-            Plugin.ResumePatchesAfterLoad();
-            SyncGate.Open();
+            // NOTE: we used to call Plugin.ResumePatchesAfterLoad() + SyncGate.Open()
+            // here. That fired ~30s after WorldReady, but SoD's actual save-load
+            // pipeline (case-board / evidence-chain post-ready init burst)
+            // routinely runs another 5+ minutes after WorldReady fires.
+            // Re-attaching patches mid-burst made SoD hit our IL2CPP trampolines
+            // for thousands of restoration calls and froze the game.
+            //
+            // The patch resume is now hooked to SODCommon's OnAfterLoad event
+            // (the actual "save load complete" marker), not init-grace-close.
+            // See SodCommonBridge.OnAfterLoad. If OnAfterLoad never fires for
+            // some reason, patches stay paused and the mod is inert for that
+            // session — acceptable; the user can disconnect/reconnect or
+            // restart to recover.
         }
 
         bool ready = ComputeReady();
