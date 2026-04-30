@@ -224,23 +224,36 @@ public class Plugin : BasePlugin
         }
     }
 
+    /// <summary>Bumped each time we re-patch so the new Harmony instance
+    /// gets a unique id (HarmonyX caches state per id and double-attaches
+    /// trampolines if you reuse it after UnpatchSelf).</summary>
+    private static int _harmonySessionCounter;
+
     /// <summary>Called from <c>WorldReadyGate</c> when the post-load init-grace
     /// window closes. Re-applies every patch by re-running <c>PatchAll</c>
-    /// on the assembly. If MonoMod's CompileMethodHook crashes here,
-    /// there's no recovery — the mod is non-functional for the session.
-    /// Worst case: revert this commit and live with slow load.</summary>
+    /// on the assembly using a FRESH Harmony instance — reusing the
+    /// original instance after <see cref="PausePatchesForLoad"/> caused
+    /// MonoMod to double-detour each method (visible in BepInEx debug log
+    /// as two `Preparing detour from 0xXXX to ...` lines for the same
+    /// source method during re-PatchAll), which dragged every patched
+    /// call through two wrappers and hung the game post-load. The fresh
+    /// instance has empty internal caches and produces clean detours.</summary>
     public static void ResumePatchesAfterLoad()
     {
         if (!IsPatchPaused) return;
         var inst = Instance;
-        if (inst?._harmony == null) { IsPatchPaused = false; return; }
+        if (inst == null) { IsPatchPaused = false; return; }
         try
         {
             var sw = System.Diagnostics.Stopwatch.StartNew();
+            // Fresh instance with a unique id avoids any leftover state
+            // from the previous session re-attaching trampolines twice.
+            _harmonySessionCounter++;
+            inst._harmony = new Harmony($"{PluginInfo.PLUGIN_GUID}.session{_harmonySessionCounter}");
             inst._harmony.PatchAll(Assembly.GetExecutingAssembly());
             sw.Stop();
             IsPatchPaused = false;
-            Log.LogInfo($"Harmony patches RESUMED — re-PatchAll in {sw.Elapsed.TotalSeconds:F2}s ({inst._harmony.GetPatchedMethods().Count()} live).");
+            Log.LogInfo($"Harmony patches RESUMED — fresh instance #{_harmonySessionCounter}, PatchAll in {sw.Elapsed.TotalSeconds:F2}s ({inst._harmony.GetPatchedMethods().Count()} live).");
         }
         catch (System.Exception ex)
         {
