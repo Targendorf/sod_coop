@@ -102,8 +102,18 @@ public static class WorldReadyGate
             WorldReadyAt = Time.unscaledTime;
             _sinceReady.Restart();
             _graceClosedLogged = false;
+            // If a save-load is in flight, also report the precise OnBeforeLoad→ready
+            // span (the actual user-perceived "click Load → game playable" cost,
+            // independent of however long the user idled on the title screen).
+            string loadSpan = "";
+            try
+            {
+                if (Integration.SodCommonBridge.IsLoadInFlight)
+                    loadSpan = $" — save-load wall-clock so far {Integration.SodCommonBridge.CurrentLoadSeconds:F1}s";
+            }
+            catch { }
             Plugin.Log.LogInfo($"WorldReadyGate: world is READY after " +
-                $"{_sinceInit.Elapsed.TotalSeconds:F1}s since plugin load — " +
+                $"{_sinceInit.Elapsed.TotalSeconds:F1}s since plugin load{loadSpan} — " +
                 $"init-grace window is {INIT_GRACE_SECONDS}s.");
             try { OnWorldReady?.Invoke(); }
             catch (Exception ex) { Plugin.Log.LogError($"OnWorldReady handler threw: {ex}"); }

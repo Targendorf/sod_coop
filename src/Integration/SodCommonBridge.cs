@@ -26,6 +26,15 @@ public static class SodCommonBridge
     public static double LastLoadSeconds { get; private set; }
     public static double LastSaveSeconds { get; private set; }
 
+    /// <summary>True between OnBeforeLoad and OnAfterLoad. WorldReadyGate
+    /// reads this to decide whether to log the in-flight load duration when
+    /// world ready trips, since SOD.Common's OnAfterLoad doesn't reliably
+    /// fire at the same point the world becomes playable.</summary>
+    public static bool IsLoadInFlight => _loadSw.IsRunning;
+
+    /// <summary>Wall-clock seconds since OnBeforeLoad, while a load is in flight.</summary>
+    public static double CurrentLoadSeconds => _loadSw.Elapsed.TotalSeconds;
+
     private static readonly Stopwatch _loadSw = new();
     private static readonly Stopwatch _saveSw = new();
 
