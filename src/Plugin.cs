@@ -183,6 +183,74 @@ public class Plugin : BasePlugin
         Log.LogInfo($"Applied {_harmony.GetPatchedMethods().Count()} Harmony patches at plugin load in {sw.Elapsed.TotalSeconds:F2}s.");
     }
 
+    // ─── Patch pause/resume around save-load (vanilla load speed) ────────
+    //
+    // Save-load with patches active = ~4 minutes of IL2CPP wrapper overhead
+    // even with bodies fully gated by SyncGate. The wrapper trampoline
+    // itself is the floor cost. To eliminate it, we UNDETOUR every patch
+    // when the user clicks Load Save (UnpatchSelf), then re-detour after
+    // the world finishes loading + init-grace closes.
+    //
+    // PatchAll at plugin load works (cold JIT, MonoMod stable). The risk
+    // is whether re-PatchAll after Unpatch crashes MonoMod the same way
+    // every previous lazy-install attempt did. If it does, this whole
+    // block fails fatally — and the only recovery is reverting (mod must
+    // restart). To minimise blast radius, the reinstall is wrapped in a
+    // try/catch and we log the outcome; if a crash happens BEFORE the
+    // catch fires (i.e. inside CompileMethodHook), nothing we can do.
+
+    /// <summary>True while patches are temporarily uninstalled.</summary>
+    public static bool IsPatchPaused { get; private set; }
+
+    /// <summary>Called from <c>SodCommonBridge.OnBeforeLoad</c>. Removes all
+    /// Harmony patches so SoD's save-load pipeline runs at vanilla speed
+    /// (no IL2CPP wrapper trampolines on the heavy state-restore methods).</summary>
+    public static void PausePatchesForLoad()
+    {
+        if (IsPatchPaused) return;
+        var inst = Instance;
+        if (inst?._harmony == null) return;
+        try
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            inst._harmony.UnpatchSelf();
+            sw.Stop();
+            IsPatchPaused = true;
+            Log.LogInfo($"Harmony patches PAUSED for save load — UnpatchSelf in {sw.Elapsed.TotalSeconds:F2}s.");
+        }
+        catch (System.Exception ex)
+        {
+            Log.LogError($"PausePatchesForLoad failed: {ex}");
+        }
+    }
+
+    /// <summary>Called from <c>WorldReadyGate</c> when the post-load init-grace
+    /// window closes. Re-applies every patch by re-running <c>PatchAll</c>
+    /// on the assembly. If MonoMod's CompileMethodHook crashes here,
+    /// there's no recovery — the mod is non-functional for the session.
+    /// Worst case: revert this commit and live with slow load.</summary>
+    public static void ResumePatchesAfterLoad()
+    {
+        if (!IsPatchPaused) return;
+        var inst = Instance;
+        if (inst?._harmony == null) { IsPatchPaused = false; return; }
+        try
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            inst._harmony.PatchAll(Assembly.GetExecutingAssembly());
+            sw.Stop();
+            IsPatchPaused = false;
+            Log.LogInfo($"Harmony patches RESUMED — re-PatchAll in {sw.Elapsed.TotalSeconds:F2}s ({inst._harmony.GetPatchedMethods().Count()} live).");
+        }
+        catch (System.Exception ex)
+        {
+            Log.LogError($"ResumePatchesAfterLoad failed: {ex}");
+            // Leave IsPatchPaused = true; subsequent attempts are no-op
+            // because we don't unpause on failure (mod stays inert rather
+            // than half-active).
+        }
+    }
+
     // Stub install-progress accessors so CoopUI.OnGUI's banner gate compiles
     // unchanged (it's just always false / 0 with synchronous v5 install).
     public static bool IsInstallingPatches => false;

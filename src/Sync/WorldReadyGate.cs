@@ -90,6 +90,9 @@ public static class WorldReadyGate
             _graceClosedLogged = true;
             Plugin.Log.LogInfo($"WorldReadyGate: init-grace window closed after " +
                 $"{_sinceReady.Elapsed.TotalSeconds:F1}s wall-clock (configured {INIT_GRACE_SECONDS}s).");
+            // Re-detour every Harmony patch (paused by OnBeforeLoad). Body
+            // gate must also open for the patches to do any actual work.
+            Plugin.ResumePatchesAfterLoad();
             SyncGate.Open();
         }
 

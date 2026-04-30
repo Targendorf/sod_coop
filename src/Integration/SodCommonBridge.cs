@@ -57,11 +57,15 @@ public static class SodCommonBridge
                 try
                 {
                     _loadSw.Restart();
-                    // Close the patch gate before SoD starts hammering the
-                    // patched methods during state restoration. Saves the
-                    // per-call IL2CPP wrapper from doing any work in body.
+                    // (1) Close the patch body gate (cheap defense in depth).
                     SoDCoop.Sync.SyncGate.Close();
-                    Plugin.Log.LogInfo($"[SODCommon] OnBeforeLoad: {args?.FilePath} — timer started, SyncGate closed");
+                    // (2) UNDETOUR every Harmony patch entirely — SoD's heavy
+                    // save-load pipeline now runs without our IL2CPP wrapper
+                    // trampolines firing at all. This is what gives us
+                    // vanilla-speed save load. Patches are reinstalled in
+                    // ResumePatchesAfterLoad once the world finishes settling.
+                    Plugin.PausePatchesForLoad();
+                    Plugin.Log.LogInfo($"[SODCommon] OnBeforeLoad: {args?.FilePath} — timer started, patches paused");
                 }
                 catch (Exception ex) { Plugin.Log.LogError($"OnBeforeLoad handler: {ex.Message}"); }
             };
