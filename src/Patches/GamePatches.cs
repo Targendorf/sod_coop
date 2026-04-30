@@ -23,7 +23,8 @@ public static class GamePatches
     //  NewDoor.OnOpen / OnClose — fire AFTER the state changes.
     // ─────────────────────────────────────────────────────────────────────────
 
-    [HarmonyPatch(typeof(NewDoor), nameof(NewDoor.OnOpen))]
+    // DISABLED hot-path: NPC door pass — see comment block at top of file.
+    //[HarmonyPatch(typeof(NewDoor), nameof(NewDoor.OnOpen))]
     public static class NewDoor_OnOpen_Patch
     {
         [HarmonyPostfix]
@@ -44,7 +45,8 @@ public static class GamePatches
         }
     }
 
-    [HarmonyPatch(typeof(NewDoor), nameof(NewDoor.OnClose))]
+    // DISABLED hot-path: NPC door close.
+    //[HarmonyPatch(typeof(NewDoor), nameof(NewDoor.OnClose))]
     public static class NewDoor_OnClose_Patch
     {
         [HarmonyPostfix]
@@ -93,7 +95,8 @@ public static class GamePatches
     //  LightController.SetOn(bool val, bool instant)
     // ─────────────────────────────────────────────────────────────────────────
 
-    [HarmonyPatch(typeof(LightController), nameof(LightController.SetOn))]
+    // DISABLED hot-path: ambient light state changes.
+    //[HarmonyPatch(typeof(LightController), nameof(LightController.SetOn))]
     public static class LightController_SetOn_Patch
     {
         [HarmonyPostfix]
@@ -562,7 +565,8 @@ public static class GamePatches
     //  scheduler and we don't want duplicate broadcasts.
     // ─────────────────────────────────────────────────────────────────────────
 
-    [HarmonyPatch(typeof(TelephoneController), nameof(TelephoneController.AddActiveCall))]
+    // DISABLED hot-path: phone call lifecycle (NPC chatter, ambient).
+    //[HarmonyPatch(typeof(TelephoneController), nameof(TelephoneController.AddActiveCall))]
     public static class TelephoneController_AddActiveCall_Patch
     {
         [HarmonyPostfix]
@@ -618,7 +622,8 @@ public static class GamePatches
         }
     }
 
-    [HarmonyPatch(typeof(TelephoneController), nameof(TelephoneController.RemoveActiveCall))]
+    // DISABLED hot-path: phone call end.
+    //[HarmonyPatch(typeof(TelephoneController), nameof(TelephoneController.RemoveActiveCall))]
     public static class TelephoneController_RemoveActiveCall_Patch
     {
         [HarmonyPostfix]
@@ -736,7 +741,8 @@ public static class GamePatches
     //  (LightController.SetOn calls SetSwitchState internally — we'd double up).
     // ─────────────────────────────────────────────────────────────────────────
 
-    [HarmonyPatch(typeof(Interactable), nameof(Interactable.SetSwitchState))]
+    // DISABLED hot-path: every drawer/cabinet/switch toggle.
+    //[HarmonyPatch(typeof(Interactable), nameof(Interactable.SetSwitchState))]
     public static class Interactable_SetSwitchState_Patch
     {
         [HarmonyPostfix]
@@ -768,7 +774,8 @@ public static class GamePatches
     //  FingerprintSync.IsApplyingRemote to suppress echo.
     // ─────────────────────────────────────────────────────────────────────────
 
-    [HarmonyPatch(typeof(Interactable), nameof(Interactable.AddNewDynamicFingerprint))]
+    // DISABLED hot-path: every NPC fingerprint placement.
+    //[HarmonyPatch(typeof(Interactable), nameof(Interactable.AddNewDynamicFingerprint))]
     public static class Interactable_AddNewDynamicFingerprint_Patch
     {
         [HarmonyPostfix]
@@ -792,7 +799,8 @@ public static class GamePatches
         }
     }
 
-    [HarmonyPatch(typeof(Interactable), nameof(Interactable.RemoveManuallyCreatedFingerprints))]
+    // DISABLED hot-path: bulk fingerprint clear.
+    //[HarmonyPatch(typeof(Interactable), nameof(Interactable.RemoveManuallyCreatedFingerprints))]
     public static class Interactable_RemoveManuallyCreatedFingerprints_Patch
     {
         [HarmonyPostfix]
@@ -821,7 +829,8 @@ public static class GamePatches
     //  the client too would double them).
     // ─────────────────────────────────────────────────────────────────────────
 
-    [HarmonyPatch(typeof(FootprintController), nameof(FootprintController.Setup))]
+    // DISABLED hot-path: every footprint decal placement.
+    //[HarmonyPatch(typeof(FootprintController), nameof(FootprintController.Setup))]
     public static class FootprintController_Setup_Patch
     {
         [HarmonyPostfix]
@@ -861,7 +870,8 @@ public static class GamePatches
     //  unless the closest Human at the origin is our local player.
     // ─────────────────────────────────────────────────────────────────────────
 
-    [HarmonyPatch(typeof(SpatterSimulation), nameof(SpatterSimulation.Execute))]
+    // DISABLED hot-path: blood/dirt spatter event.
+    //[HarmonyPatch(typeof(SpatterSimulation), nameof(SpatterSimulation.Execute))]
     public static class SpatterSimulation_Execute_Patch
     {
         [HarmonyPostfix]
@@ -1398,7 +1408,8 @@ public static class GamePatches
     //  schedule and don't need explicit sync for this.
     // ─────────────────────────────────────────────────────────────────────────
 
-    [HarmonyPatch(typeof(Actor), nameof(Actor.SetInBed))]
+    // DISABLED hot-path: NPC bed state.
+    //[HarmonyPatch(typeof(Actor), nameof(Actor.SetInBed))]
     public static class Actor_SetInBed_Patch
     {
         [HarmonyPostfix]
@@ -1422,7 +1433,8 @@ public static class GamePatches
         }
     }
 
-    [HarmonyPatch(typeof(Actor), nameof(Actor.GoToSleep))]
+    // DISABLED hot-path: NPC sleep schedule.
+    //[HarmonyPatch(typeof(Actor), nameof(Actor.GoToSleep))]
     public static class Actor_GoToSleep_Patch
     {
         [HarmonyPostfix]
@@ -1444,7 +1456,8 @@ public static class GamePatches
         }
     }
 
-    [HarmonyPatch(typeof(Actor), nameof(Actor.WakeUp))]
+    // DISABLED hot-path: NPC wake schedule.
+    //[HarmonyPatch(typeof(Actor), nameof(Actor.WakeUp))]
     public static class Actor_WakeUp_Patch
     {
         [HarmonyPostfix]
@@ -1582,7 +1595,8 @@ public static class GamePatches
     //  locked state goes through here.
     // ─────────────────────────────────────────────────────────────────────────
 
-    [HarmonyPatch(typeof(NewDoor), nameof(NewDoor.SetLocked))]
+    // DISABLED hot-path: door lock state changes.
+    //[HarmonyPatch(typeof(NewDoor), nameof(NewDoor.SetLocked))]
     public static class NewDoor_SetLocked_Patch
     {
         [HarmonyPostfix]
@@ -1791,7 +1805,8 @@ public static class GamePatches
     //  fire on the host's AI tick and we don't want to round-trip them.
     // ─────────────────────────────────────────────────────────────────────────
 
-    [HarmonyPatch(typeof(CitizenOutfitController), nameof(CitizenOutfitController.SetCurrentOutfit))]
+    // DISABLED hot-path: NPC scheduled outfit change (every shift change).
+    //[HarmonyPatch(typeof(CitizenOutfitController), nameof(CitizenOutfitController.SetCurrentOutfit))]
     public static class CitizenOutfitController_SetCurrentOutfit_Patch
     {
         [HarmonyPostfix]
