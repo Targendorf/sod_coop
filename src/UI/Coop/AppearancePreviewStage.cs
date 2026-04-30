@@ -231,8 +231,9 @@ public static class AppearancePreviewStage
             var humanComp = clone.GetComponent<global::Human>();
             _pawnCtrl = humanComp?.outfitController;
 
-            // Make sure the clone is enabled in DontDestroyOnLoad and active.
-            UnityEngine.Object.DontDestroyOnLoad(clone);
+            // Persistence is inherited from _root, which is itself in
+            // DontDestroyOnLoad. Calling DontDestroyOnLoad on the child
+            // would emit a "only works for root GameObjects" warning.
             clone.SetActive(true);
 
             Plugin.Log.LogInfo($"[AppearancePreviewStage] cloned persistent pawn from citizen #{picked.humanID}.");

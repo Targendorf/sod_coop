@@ -101,15 +101,17 @@ public abstract class CoopPanelBase
         scroll.movementType = ScrollRect.MovementType.Clamped;
         scroll.scrollSensitivity = 24f;
 
+        // Viewport clips the content via RectMask2D (geometry-based, doesn't
+        // require a Graphic and doesn't run an alpha-test against a near-
+        // transparent Image — the previous Mask + alpha=0.001 combination
+        // was alpha-clipping every child to invisibility while still
+        // letting raycasts through, which made buttons clickable but unseen).
         var viewportGo = new GameObject("Viewport");
         viewportGo.transform.SetParent(scrollGo.transform, false);
         var viewRt = viewportGo.AddComponent<RectTransform>();
         viewRt.anchorMin = Vector2.zero; viewRt.anchorMax = Vector2.one;
         viewRt.offsetMin = viewRt.offsetMax = Vector2.zero;
-        var viewImg = viewportGo.AddComponent<Image>();
-        viewImg.color = new Color(0f, 0f, 0f, 0.001f);
-        var mask = viewportGo.AddComponent<Mask>();
-        mask.showMaskGraphic = false;
+        viewportGo.AddComponent<RectMask2D>();
         scroll.viewport = viewRt;
 
         var contentGo = new GameObject("Content");
