@@ -29,11 +29,22 @@ public struct AppearanceConfig
     public byte Lipstick;     // 0..255 → 0..1f
     public byte Outfit;       // ClothesPreset.OutfitCategory — picks from citizen's pre-generated wardrobe
 
+    /// <summary>HumanID of a citizen whose wardrobe to borrow for the
+    /// current <see cref="Outfit"/> category. 0 = use the twin's own
+    /// procedural wardrobe (vanilla behaviour).
+    ///
+    /// <para>SoD has ~300 citizens × 9 outfit categories worth of
+    /// wardrobe combinations baked at city-gen time. By pointing here at
+    /// any citizen by humanID, the twin renders that citizen's clothes
+    /// list for the chosen category — which gives massive visual variety
+    /// without requiring a per-mesh editor.</para></summary>
+    public int WardrobeSourceHumanId;
+
     public bool IsCustomized;
 
     /// <summary>Bytes written by <see cref="Write"/>. Receivers tolerate
     /// shorter payloads (legacy v6 records) by defaulting trailing fields.</summary>
-    public const int WireSize = 1 /*flag*/ + 9;
+    public const int WireSize = 1 /*flag*/ + 9 + 4 /*WardrobeSourceHumanId*/;
     public const int LegacyMinWireSize = 1 /*flag*/ + 8;
 
     public static AppearanceConfig Default => new()
@@ -66,6 +77,7 @@ public struct AppearanceConfig
         w.Put(Expression);
         w.Put(Lipstick);
         w.Put(Outfit);
+        w.Put(WardrobeSourceHumanId);
     }
 
     public void Read(NetDataReader r)
@@ -80,7 +92,8 @@ public struct AppearanceConfig
         Expression   = r.GetByte();
         Lipstick     = r.GetByte();
         // Optional trailing fields — legacy 9-byte payloads default these.
-        Outfit       = r.AvailableBytes > 0 ? r.GetByte() : (byte)global::ClothesPreset.OutfitCategory.casual;
+        Outfit                 = r.AvailableBytes > 0 ? r.GetByte() : (byte)global::ClothesPreset.OutfitCategory.casual;
+        WardrobeSourceHumanId  = r.AvailableBytes >= 4 ? r.GetInt()  : 0;
     }
 
     public byte[] ToBytes()
@@ -137,11 +150,64 @@ public struct AppearanceConfig
             // in one call. forceLoad=true ensures we rebuild even if the
             // category is already current.
             var category = (global::ClothesPreset.OutfitCategory)Outfit;
-            ctrl.SetCurrentOutfit(category, /*forceLoad:*/ true, /*forceReload:*/ false, /*ignoreIfDead:*/ true);
+
+            // Wardrobe-source override: if the player picked a "borrow this
+            // citizen's wardrobe" entry, splice that citizen's clothes list
+            // for the target category onto our twin's outfit slot before the
+            // SetCurrentOutfit reload. SoD's loader reads OutfitClothes by
+            // value (preset name + colors) — sharing the list between
+            // citizens is safe; visuals spawn on whoever calls LoadCurrentOutfit.
+            if (WardrobeSourceHumanId > 0)
+                TryBorrowWardrobe(ctrl, category, WardrobeSourceHumanId);
+
+            ctrl.SetCurrentOutfit(category, /*forceLoad:*/ true, /*forceReload:*/ true, /*ignoreIfDead:*/ true);
         }
         catch (Exception ex)
         {
             Plugin.Log.LogWarning($"AppearanceConfig.ApplyTo: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Look up <paramref name="sourceHumanId"/> in the city, copy their
+    /// <c>outfits[category].clothes</c> list onto <paramref name="targetCtrl"/>'s
+    /// outfit slot for the same category. Idempotent / no-op on any
+    /// resolution failure.
+    /// </summary>
+    private static void TryBorrowWardrobe(global::CitizenOutfitController targetCtrl,
+                                           global::ClothesPreset.OutfitCategory category,
+                                           int sourceHumanId)
+    {
+        try
+        {
+            var dict = global::CityData.Instance?.citizenDictionary;
+            if (dict == null) return;
+            if (!dict.TryGetValue(sourceHumanId, out var src) || src == null) return;
+            var srcCtrl = src.outfitController;
+            if (srcCtrl == null || srcCtrl.outfits == null) return;
+
+            global::CitizenOutfitController.Outfit srcOutfit = null;
+            for (int i = 0; i < srcCtrl.outfits.Count; i++)
+            {
+                var o = srcCtrl.outfits[i];
+                if (o != null && o.category == category) { srcOutfit = o; break; }
+            }
+            if (srcOutfit == null || srcOutfit.clothes == null) return;
+
+            if (targetCtrl.outfits == null) return;
+            global::CitizenOutfitController.Outfit tgtOutfit = null;
+            for (int i = 0; i < targetCtrl.outfits.Count; i++)
+            {
+                var o = targetCtrl.outfits[i];
+                if (o != null && o.category == category) { tgtOutfit = o; break; }
+            }
+            if (tgtOutfit == null) return;
+
+            tgtOutfit.clothes = srcOutfit.clothes;   // share by reference; SoD treats it as data
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"TryBorrowWardrobe(src={sourceHumanId}, cat={category}): {ex.Message}");
         }
     }
 }

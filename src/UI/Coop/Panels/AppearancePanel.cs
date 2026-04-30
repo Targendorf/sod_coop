@@ -39,6 +39,7 @@ public class AppearancePanel : CoopPanelBase
     private Text _lipstickValue;
     private Text _expressionValue;
     private Text _outfitValue;
+    private Text _wardrobeValue;
 
     // Color swatches we update inline.
     private Image _hairSwatch;
@@ -111,6 +112,7 @@ public class AppearancePanel : CoopPanelBase
         _lipstickValue   = AddCycleRow(L.Get("appearance.row.lipstick"),   OnLipstickDec,   OnLipstickInc);
         _expressionValue = AddCycleRow(L.Get("appearance.row.expression"), OnExpressionDec, OnExpressionInc);
         _outfitValue     = AddCycleRow(L.Get("appearance.row.outfit"),     OnOutfitDec,     OnOutfitInc);
+        _wardrobeValue   = AddCycleRow(L.Get("appearance.row.wardrobe"),   OnWardrobeDec,   OnWardrobeInc);
 
         Spacer(8f);
 
@@ -494,6 +496,29 @@ public class AppearancePanel : CoopPanelBase
     private void OnOutfitDec() => Mutate(() => _cfg.Outfit = (byte)Wrap(_cfg.Outfit - 1, OutfitCount));
     private void OnOutfitInc() => Mutate(() => _cfg.Outfit = (byte)Wrap(_cfg.Outfit + 1, OutfitCount));
 
+    // Wardrobe source: cycle index -1 = "(use own outfit)" sentinel,
+    // 0..N-1 = entry into CitizenWardrobeBrowser. We map this to
+    // _cfg.WardrobeSourceHumanId (0 = own).
+    private void OnWardrobeDec() => Mutate(() => StepWardrobe(-1));
+    private void OnWardrobeInc() => Mutate(() => StepWardrobe(+1));
+
+    private void StepWardrobe(int delta)
+    {
+        int total = CitizenWardrobeBrowser.Count;
+        if (total == 0) { _cfg.WardrobeSourceHumanId = 0; return; }
+
+        // Build a virtual index: [own][entry0][entry1]...[entry N-1].
+        int currentVirtual = _cfg.WardrobeSourceHumanId == 0
+            ? 0
+            : 1 + System.Math.Max(0, CitizenWardrobeBrowser.IndexOfHumanId(_cfg.WardrobeSourceHumanId));
+
+        int next = Wrap(currentVirtual + delta, total + 1);
+        if (next == 0) { _cfg.WardrobeSourceHumanId = 0; return; }
+
+        var entry = CitizenWardrobeBrowser.GetByIndex(next - 1);
+        _cfg.WardrobeSourceHumanId = entry?.HumanID ?? 0;
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     //  Buttons
     // ─────────────────────────────────────────────────────────────────────
@@ -512,6 +537,7 @@ public class AppearancePanel : CoopPanelBase
             Expression = (byte)global::CitizenOutfitController.Expression.neutral,
             Lipstick   = (byte)rng.Next(0, 256),
             Outfit     = (byte)rng.Next(0, OutfitCount),
+            WardrobeSourceHumanId = PickRandomWardrobeSource(rng),
             IsCustomized = true,
         };
         RefreshAllValues();
@@ -523,6 +549,16 @@ public class AppearancePanel : CoopPanelBase
         _cfg = AppearanceConfig.Default;   // IsCustomized=false → twin returns to vanilla
         RefreshAllValues();
         PushPreview();
+    }
+
+    private static int PickRandomWardrobeSource(System.Random rng)
+    {
+        // 30% chance: keep own outfit. 70%: pick a real citizen.
+        if (rng.NextDouble() < 0.30) return 0;
+        int total = CitizenWardrobeBrowser.Count;
+        if (total == 0) return 0;
+        var entry = CitizenWardrobeBrowser.GetByIndex(rng.Next(0, total));
+        return entry?.HumanID ?? 0;
     }
 
     private void OnConfirm()
@@ -641,6 +677,27 @@ public class AppearancePanel : CoopPanelBase
             _expressionValue.text = L.Get($"appearance.expression.{((global::CitizenOutfitController.Expression)_cfg.Expression).ToString().ToLowerInvariant()}");
         if (_outfitValue != null)
             _outfitValue.text = L.Get($"appearance.outfit.{((global::ClothesPreset.OutfitCategory)_cfg.Outfit).ToString().ToLowerInvariant()}");
+        if (_wardrobeValue != null)
+        {
+            if (_cfg.WardrobeSourceHumanId == 0)
+            {
+                _wardrobeValue.text = L.Get("appearance.wardrobe.own");
+            }
+            else
+            {
+                var entry = CitizenWardrobeBrowser.GetByHumanId(_cfg.WardrobeSourceHumanId);
+                if (entry == null)
+                {
+                    _wardrobeValue.text = L.Get("appearance.wardrobe.unknown", _cfg.WardrobeSourceHumanId);
+                }
+                else
+                {
+                    _wardrobeValue.text = string.IsNullOrEmpty(entry.Subtitle)
+                        ? entry.DisplayName
+                        : $"{entry.DisplayName}\n  <i>{entry.Subtitle}</i>";
+                }
+            }
+        }
 
         if (_hairSwatch != null)
         {
