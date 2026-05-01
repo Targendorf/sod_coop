@@ -57,15 +57,11 @@ public static class SodCommonBridge
                 try
                 {
                     _loadSw.Restart();
-                    // (1) Close the patch body gate (cheap defense in depth).
+                    // Close the patch body gate (cheap defense in depth).
+                    // Save-load with patches active runs with body-bailing via
+                    // SyncGate; no Pause/Resume cycle is needed.
                     SoDCoop.Sync.SyncGate.Close();
-                    // (2) UNDETOUR every Harmony patch entirely — SoD's heavy
-                    // save-load pipeline now runs without our IL2CPP wrapper
-                    // trampolines firing at all. This is what gives us
-                    // vanilla-speed save load. Patches are reinstalled in
-                    // ResumePatchesAfterLoad once the world finishes settling.
-                    Plugin.PausePatchesForLoad();
-                    Plugin.Log.LogInfo($"[SODCommon] OnBeforeLoad: {args?.FilePath} — timer started, patches paused");
+                    Plugin.Log.LogInfo($"[SODCommon] OnBeforeLoad: {args?.FilePath} — timer started");
                 }
                 catch (Exception ex) { Plugin.Log.LogError($"OnBeforeLoad handler: {ex.Message}"); }
             };
@@ -77,21 +73,8 @@ public static class SodCommonBridge
                     LastLoadSeconds = _loadSw.Elapsed.TotalSeconds;
                     Plugin.Log.LogInfo($"[SODCommon] OnAfterLoad: {args?.FilePath} — save-load wall-clock {LastLoadSeconds:F2}s");
 
-                    // THIS is the actual "save-load complete" marker. SoD's
-                    // post-WorldReady init burst (case-board generation,
-                    // evidence chain seeding, etc.) often runs for 5+ minutes
-                    // after the WorldReadyGate flips — and during that whole
-                    // window we want patches OFF so SoD can hammer its
-                    // patched methods at native speed.
-                    //
-                    // We DO NOT call Plugin.ResumePatchesAfterLoad() directly
-                    // here. The OnAfterLoad event runs deep inside SoD's
-                    // load-completion code path; re-detouring a method that's
-                    // currently on the call stack corrupts the trampoline
-                    // chain and freezes the game. Instead, schedule the
-                    // resume to fire ~2s later from CoopUpdateRunner.Update,
-                    // which runs on the main Unity tick at a clean stack.
-                    Plugin.SchedulePatchResume();
+                    // Patches remain live post-load; SyncGate will open via
+                    // WorldReadyGate once the post-load init-grace window closes.
                 }
                 catch (Exception ex) { Plugin.Log.LogError($"OnAfterLoad handler: {ex.Message}"); }
             };
