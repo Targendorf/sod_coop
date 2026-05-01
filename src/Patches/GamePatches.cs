@@ -267,6 +267,8 @@ public static class GamePatches
     //  otherwise, add a postfix on ToggleHidden that reads the new state.
     // ─────────────────────────────────────────────────────────────────────────
 
+    // DISABLED Phase E (init-burst hot, see spec sec 5.2): Case.AddNewStringColour
+    /*
     [HarmonyPatch(typeof(Case), nameof(Case.AddNewStringColour))]
     public static class Case_AddNewStringColour_Patch
     {
@@ -296,7 +298,10 @@ public static class GamePatches
             }
         }
     }
+    */
 
+    // DISABLED Phase E (init-burst hot, see spec sec 5.2): Case.SetHidden
+    /*
     [HarmonyPatch(typeof(Case), nameof(Case.SetHidden))]
     public static class Case_SetHidden_Patch
     {
@@ -316,7 +321,10 @@ public static class GamePatches
             }
         }
     }
+    */
 
+    // DISABLED Phase E (init-burst hot, see spec sec 5.2): Case.SetStatus
+    /*
     [HarmonyPatch(typeof(Case), nameof(Case.SetStatus))]
     public static class Case_SetStatus_Patch
     {
@@ -336,12 +344,15 @@ public static class GamePatches
             }
         }
     }
+    */
 
     // ─────────────────────────────────────────────────────────────────────────
     //  ResolveQuestion.SetProgress — player picks a suspect / location / time.
     //  Walk activeCases to find which Case owns this question + at what index.
     // ─────────────────────────────────────────────────────────────────────────
 
+    // DISABLED Phase E (init-burst hot, see spec sec 5.2): Case.ResolveQuestion.SetProgress
+    /*
     [HarmonyPatch(typeof(Case.ResolveQuestion), nameof(Case.ResolveQuestion.SetProgress))]
     public static class ResolveQuestion_SetProgress_Patch
     {
@@ -363,6 +374,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     // ─────────────────────────────────────────────────────────────────────────
     //  Case.Resolve — final hand-in. Either side can hand in a case (this is
@@ -371,6 +383,8 @@ public static class GamePatches
     //  short-circuits on already-solved cases.
     // ─────────────────────────────────────────────────────────────────────────
 
+    // DISABLED Phase E (init-burst hot, see spec sec 5.2): Case.Resolve
+    /*
     [HarmonyPatch(typeof(Case), nameof(Case.Resolve))]
     public static class Case_Resolve_Patch
     {
@@ -390,6 +404,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     // ─────────────────────────────────────────────────────────────────────────
     //  StringController.RemoveCustomLink — player removes a thread.
@@ -470,6 +485,8 @@ public static class GamePatches
     //  Fact.SetCustomName — player relabels a fact card. Virtual method.
     // ─────────────────────────────────────────────────────────────────────────
 
+    // DISABLED Phase E (init-burst hot, see spec sec 5.2): Fact.SetCustomName
+    /*
     [HarmonyPatch(typeof(Fact), nameof(Fact.SetCustomName))]
     public static class Fact_SetCustomName_Patch
     {
@@ -491,6 +508,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     // ─────────────────────────────────────────────────────────────────────────
     //  Human.Murder — fired whenever a citizen actually gets killed.
@@ -1203,6 +1221,8 @@ public static class GamePatches
     //  receiver (ApplyDiscovery dedups against discoveryProgress).
     // ─────────────────────────────────────────────────────────────────────────
 
+    // DISABLED Phase E (init-burst hot, see spec sec 5.2): Evidence.AddDiscovery
+    /*
     [HarmonyPatch(typeof(Evidence), nameof(Evidence.AddDiscovery))]
     public static class Evidence_AddDiscovery_Patch
     {
@@ -1228,6 +1248,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     // ─────────────────────────────────────────────────────────────────────────
     //  Evidence.SetNote patch is INTENTIONALLY DISABLED.
@@ -1281,6 +1302,8 @@ public static class GamePatches
     }
     */
 
+    // DISABLED Phase E (init-burst hot, see spec sec 5.2): Evidence.AddOrSetCustomName
+    /*
     [HarmonyPatch(typeof(Evidence), nameof(Evidence.AddOrSetCustomName),
                   typeof(Evidence.DataKey), typeof(string))]
     public static class Evidence_AddOrSetCustomName_Patch
@@ -1305,6 +1328,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     // ─────────────────────────────────────────────────────────────────────────
     //  Surveillance app — Save-to-Tape and Acquire-Name both end up calling
@@ -1867,6 +1891,8 @@ public static class GamePatches
     //     authority).
     // ─────────────────────────────────────────────────────────────────────────
 
+    // DISABLED Phase E (init-burst hot, see spec sec 5.2): SideJob ctor
+    /*
     [HarmonyPatch(typeof(SideJob), MethodType.Constructor,
                   typeof(JobPreset), typeof(SideJobController.JobPickData), typeof(bool))]
     public static class SideJob_Ctor_Patch
@@ -1879,6 +1905,7 @@ public static class GamePatches
             catch (System.Exception ex) { Plugin.Log.LogWarning($"SideJob ctor patch: {ex.Message}"); }
         }
     }
+    */
 
     [HarmonyPatch(typeof(SideJob), nameof(SideJob.SetJobState))]
     public static class SideJob_SetJobState_Patch
@@ -1898,6 +1925,8 @@ public static class GamePatches
     /// from its private RNG state, which would be invisible to (and
     /// inconsistent with) the host's authoritative set.
     /// </summary>
+    // DISABLED Phase E (init-burst hot, see spec sec 5.2): SideJobController.JobCreationCheck
+    /*
     [HarmonyPatch(typeof(SideJobController), nameof(SideJobController.JobCreationCheck))]
     public static class SideJobController_JobCreationCheck_Patch
     {
@@ -1916,6 +1945,7 @@ public static class GamePatches
             return true;
         }
     }
+    */
 
     /// <summary>
     /// Phase SJ.2.b — accept flow. <c>SideJob.OnPlayerCall</c> is the
