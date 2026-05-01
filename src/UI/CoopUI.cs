@@ -14,7 +14,13 @@ public static class CoopUI
 {
     #region State
     
+    // _showUI was the legacy IMGUI overlay toggle; the Canvas-based co-op
+    // menu (CoopMenuController) replaced it but the field was left assigned.
+    // Kept as a placeholder hint for future overlay toggles; suppress the
+    // unused-assignment warning explicitly.
+#pragma warning disable CS0414
     private static bool _showUI;
+#pragma warning restore CS0414
     private static UIState _currentState = UIState.MainMenu;
     private static string _connectIP = "127.0.0.1";
     private static string _connectPort = "7777";
