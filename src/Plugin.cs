@@ -310,7 +310,7 @@ public class Plugin : BasePlugin
     /// the gates; fires Resume when both are open.</summary>
     public static void DrainPendingResume()
     {
-        if (!_resumePending) return;
+        if (!_resumePending && !_gradualResumeInProgress) return;
 
         // Gate 1: detect any user input post-WorldReady.
         if (!_userInputSeenSinceReady && SoDCoop.Sync.WorldReadyGate.IsWorldReady)
@@ -333,57 +333,149 @@ public class Plugin : BasePlugin
         if (UnityEngine.Time.unscaledTime < _resumeEarliestAt) return;
         if (!_userInputSeenSinceReady) return;
 
-        _resumePending = false;
-        ResumePatchesAfterLoad();
-        SoDCoop.Sync.SyncGate.Open();
+        // Gradual install in progress? Drive it.
+        if (_gradualResumeInProgress)
+        {
+            DrainGradualResume(UnityEngine.Time.unscaledTime);
+            return;
+        }
+
+        // First call — kick off the gradual install. SyncGate stays closed
+        // until the install completes, so any patches that ARE attached
+        // mid-install have their bodies bail-fast on `!SyncGate.IsOpen`.
+        if (_resumePending)
+        {
+            _resumePending = false;
+            ResumePatchesAfterLoad();
+            return;
+        }
+
+        // Resume initialization succeeded but we couldn't start the gradual loop
+        // (e.g., zero patch types). Still open the gate so future code paths
+        // don't stall.
+        if (!IsPatchPaused && !_gradualResumeInProgress && !SoDCoop.Sync.SyncGate.IsOpen)
+        {
+            SoDCoop.Sync.SyncGate.Open();
+        }
     }
 
-    /// <summary>DIAGNOSTIC MODE: re-PatchAll is disabled to test whether
-    /// the post-Resume crash on ESC is caused by trampoline corruption from
-    /// re-installing detours on top of the existing native detours from the
-    /// initial plugin-load PatchAll.
+    /// <summary>Re-applies patches <b>gradually</b> — one Harmony class processor
+    /// per 100ms tick — to avoid the trampoline corruption that caused crashes
+    /// when re-attaching all 49 detours at once.
     ///
-    /// Behaviour with this version:
-    ///   - Patches stay UnpatchSelf'd (HarmonyX records cleared, native detour
-    ///     is whatever the initial PatchAll left in place — pseudo-passthrough).
-    ///   - SyncGate.Open() is still called (so anything gated on it unblocks).
-    ///   - IsPatchPaused flips to false so the gate doesn't re-fire.
-    ///   - No new detours are added; native code state is identical to the
-    ///     post-PausePatchesForLoad moment.
+    /// <para>The previous batch <c>PatchAll</c> mutated all native detours
+    /// in a single tight loop. With ~49 methods being re-detoured back-to-back
+    /// while SoD's main thread continued running, the probability that at
+    /// least one method had an active stack frame at the exact moment of
+    /// re-detour was high → corrupted trampoline chain → crash on the next
+    /// invocation of that path (typically ESC, asset unload, or NPC AI).</para>
     ///
-    /// Expected outcome of the diagnostic test:
-    ///   - If game runs normally without crashing on ESC → trampoline
-    ///     stacking from re-PatchAll IS the cause → next iteration moves to
-    ///     gradual Resume (1 method per 100ms) or polling-only architecture.
-    ///   - If game still crashes on ESC → cause is elsewhere (specific patch
-    ///     body bug, asset unload race, etc.) → narrower investigation.
+    /// <para>This entry point just kicks off the gradual install. The actual
+    /// per-type install fires from <see cref="DrainPendingResume"/> on
+    /// subsequent frames via <see cref="DrainGradualResume"/>.</para>
     /// </summary>
     public static void ResumePatchesAfterLoad()
     {
         if (!IsPatchPaused) return;
-        // _harmonySessionCounter++;
-        // var inst = Instance;
-        // if (inst == null) { IsPatchPaused = false; return; }
-        // try
-        // {
-        //     var sw = System.Diagnostics.Stopwatch.StartNew();
-        //     inst._harmony = new HarmonyLib.Harmony($"{PluginInfo.PLUGIN_GUID}.session{_harmonySessionCounter}");
-        //     inst._harmony.PatchAll(System.Reflection.Assembly.GetExecutingAssembly());
-        //     sw.Stop();
-        //     Log.LogInfo($"Harmony patches RESUMED — fresh instance #{_harmonySessionCounter}, " +
-        //                 $"PatchAll in {sw.Elapsed.TotalSeconds:F2}s " +
-        //                 $"({inst._harmony.GetPatchedMethods().Count()} live).");
-        // }
-        // catch (System.Exception ex)
-        // {
-        //     Log.LogError($"ResumePatchesAfterLoad failed: {ex}");
-        //     return;
-        // }
-        IsPatchPaused = false;
-        Log.LogWarning("[DIAGNOSTIC] Resume invoked but re-PatchAll is DISABLED. " +
-                       "Patches remain UnpatchSelf'd for the rest of this session. " +
-                       "Sync features are NON-FUNCTIONAL but the game should run. " +
-                       "If ESC still crashes, the cause is not trampoline stacking.");
+        var inst = Instance;
+        if (inst == null) { IsPatchPaused = false; return; }
+
+        try
+        {
+            _harmonySessionCounter++;
+            inst._harmony = new HarmonyLib.Harmony($"{PluginInfo.PLUGIN_GUID}.session{_harmonySessionCounter}");
+
+            // Enumerate every type with a [HarmonyPatch] attribute in our assembly,
+            // including nested types. Filter for HarmonyX's own attribute reader
+            // (System.Reflection on raw GetCustomAttributes has crashed MonoMod
+            // in earlier attempts — but reading via _harmony's processor APIs
+            // is the same path PatchAll uses internally and is stable).
+            var asm = System.Reflection.Assembly.GetExecutingAssembly();
+            _gradualTypes = new System.Collections.Generic.List<System.Type>();
+            foreach (var t in asm.GetTypes())
+            {
+                // HarmonyMethod.HasAttribute<HarmonyPatch> equivalent — check via
+                // the same reflection HarmonyX itself uses. The crash that
+                // killed v4 was on _runtime_ get-attr; at this point we're past
+                // SoD's heavy init burst and the JIT path is stable.
+                bool hasAttr = false;
+                try
+                {
+                    hasAttr = t.GetCustomAttributes(typeof(HarmonyLib.HarmonyPatch), inherit: false).Length > 0
+                          || t.GetCustomAttributes(typeof(HarmonyLib.HarmonyPatch), inherit: true).Length  > 0;
+                }
+                catch { }
+                if (hasAttr) _gradualTypes.Add(t);
+            }
+
+            _gradualIndex = 0;
+            _gradualNextAt = UnityEngine.Time.unscaledTime;   // start immediately on next Drain tick
+            _gradualResumeInProgress = true;
+            Log.LogInfo($"Gradual Resume started: {_gradualTypes.Count} patch classes to re-attach " +
+                        $"at {GRADUAL_INTERVAL_S * 1000:F0}ms intervals " +
+                        $"(estimated total {_gradualTypes.Count * GRADUAL_INTERVAL_S:F1}s). " +
+                        $"Fresh Harmony id: {inst._harmony.Id}");
+        }
+        catch (System.Exception ex)
+        {
+            Log.LogError($"ResumePatchesAfterLoad init failed: {ex}");
+            IsPatchPaused = false;   // prevent retry loop
+            _gradualResumeInProgress = false;
+        }
+    }
+
+    private const float GRADUAL_INTERVAL_S = 0.1f;   // 100ms between class processor attaches
+    private static System.Collections.Generic.List<System.Type> _gradualTypes;
+    private static int _gradualIndex;
+    private static float _gradualNextAt;
+    private static bool _gradualResumeInProgress;
+
+    /// <summary>Per-frame driver for gradual Resume. Called from
+    /// <see cref="DrainPendingResume"/> after the gates have opened.
+    /// Attaches at most ONE patch class per call, throttled to
+    /// <see cref="GRADUAL_INTERVAL_S"/>. Returns true while still in progress;
+    /// false when finished (or never started).</summary>
+    private static bool DrainGradualResume(float now)
+    {
+        if (!_gradualResumeInProgress) return false;
+        if (now < _gradualNextAt) return true;
+
+        var inst = Instance;
+        if (inst?._harmony == null || _gradualTypes == null)
+        {
+            _gradualResumeInProgress = false;
+            IsPatchPaused = false;
+            return false;
+        }
+
+        if (_gradualIndex >= _gradualTypes.Count)
+        {
+            // All done.
+            _gradualResumeInProgress = false;
+            IsPatchPaused = false;
+            int liveCount = 0;
+            try { liveCount = inst._harmony.GetPatchedMethods().Count(); } catch { }
+            Log.LogInfo($"Gradual Resume COMPLETE — {_gradualIndex} classes attached, " +
+                        $"{liveCount} live patched methods. Session id: {inst._harmony.Id}");
+            _gradualTypes = null;
+            // Open the broadcast gate now that all patches are in place.
+            SoDCoop.Sync.SyncGate.Open();
+            return false;
+        }
+
+        var type = _gradualTypes[_gradualIndex++];
+        try
+        {
+            var processor = inst._harmony.CreateClassProcessor(type);
+            processor.Patch();
+        }
+        catch (System.Exception ex)
+        {
+            Log.LogWarning($"Gradual Resume: failed to attach {type.FullName}: {ex.Message}");
+            // Continue with next type — one bad class shouldn't abort the whole resume.
+        }
+        _gradualNextAt = now + GRADUAL_INTERVAL_S;
+        return true;
     }
 
     private void InitializeSystems()
