@@ -35,6 +35,20 @@ public static class CoopSettings
     /// </summary>
     public static ConfigEntry<string> LanguageOverride;
 
+    /// <summary>
+    /// Diagnostic flag — when true, <c>Plugin.InitializeHarmony</c> skips
+    /// <c>PatchAll</c> entirely. Co-op networking still loads but no SoD
+    /// methods are detoured. Used to A/B-measure whether save-load slowness
+    /// comes from Harmony patches (mod overhead) or from SoD itself.
+    ///
+    /// <para>How to use: set
+    /// <c>com.sodcoop.mod.cfg → [Diagnostics] SkipHarmonyPatches = true</c>,
+    /// restart the game, time the same save-load. If still slow → SoD's
+    /// own save-load is the bottleneck. If much faster → patch overhead is
+    /// the bottleneck and we need to drop more patches.</para>
+    /// </summary>
+    public static ConfigEntry<bool> SkipHarmonyPatches;
+
     public static void Initialize(ConfigFile config)
     {
         ShowStatusHUD = config.Bind(
@@ -57,5 +71,11 @@ public static class CoopSettings
             "General", "LanguageOverride", "auto",
             "UI language for the coop mod. Use \"auto\" to follow the game's current language. " +
             "Explicit codes: en, ru, uk, es, zh, de. Re-resolved on plugin load and on each save load.");
+
+        SkipHarmonyPatches = config.Bind(
+            "Diagnostics", "SkipHarmonyPatches", false,
+            "DIAGNOSTIC ONLY: skip Harmony PatchAll at plugin load to measure how much save-load " +
+            "slowness comes from patches vs SoD itself. With this on, no coop sync features work " +
+            "(no broadcast detection) — for testing load speed only. Restart game after toggling.");
     }
 }

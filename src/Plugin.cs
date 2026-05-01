@@ -165,13 +165,22 @@ public class Plugin : BasePlugin
         //       (the Evidence.SetNote disable in commit 3997294 was the
         //       first such trim; more to follow if user reports specific
         //       paths still being slow).
-        Log.LogInfo("Initializing Harmony patches at plugin load...");
         _harmony = new Harmony(PluginInfo.PLUGIN_GUID);
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        _harmony.PatchAll(Assembly.GetExecutingAssembly());
-        sw.Stop();
-        Log.LogInfo($"Applied {_harmony.GetPatchedMethods().Count()} Harmony patches at plugin load in {sw.Elapsed.TotalSeconds:F2}s.");
+        if (CoopSettings.SkipHarmonyPatches?.Value == true)
+        {
+            Log.LogWarning("[DIAGNOSTIC] CoopSettings.SkipHarmonyPatches=true — Harmony PatchAll SKIPPED. " +
+                           "Co-op detection paths are inactive; this build is only useful to measure " +
+                           "save-load speed without patch overhead.");
+        }
+        else
+        {
+            Log.LogInfo("Initializing Harmony patches at plugin load...");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            _harmony.PatchAll(Assembly.GetExecutingAssembly());
+            sw.Stop();
+            Log.LogInfo($"Applied {_harmony.GetPatchedMethods().Count()} Harmony patches at plugin load in {sw.Elapsed.TotalSeconds:F2}s.");
+        }
 
         // ZDO architecture: patches install once at plugin load, never re-install.
         // The previous Pause/Resume cycle corrupted Dobby trampolines on
