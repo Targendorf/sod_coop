@@ -73,25 +73,36 @@ public static class NpcOutfitSync
 
     private static void ApplyOutfit(NpcOutfitPacket p)
     {
+        ApplyByHumanId(p.HumanId, p.Category);
+    }
+
+    /// <summary>Apply an outfit category by Human id. Public so the ZDO
+    /// CitizenResolver can replay the same path without re-implementing the
+    /// IsApplyingRemote re-entrancy guard or the
+    /// <c>CitizenOutfitController.SetCurrentOutfit</c> argument shape.</summary>
+    public static void ApplyByHumanId(int humanId, byte category)
+    {
         try
         {
             var dict = global::CityData.Instance?.citizenDictionary;
             if (dict == null) return;
-            if (!dict.TryGetValue(p.HumanId, out var human) || human == null) return;
+            if (!dict.TryGetValue(humanId, out var human) || human == null) return;
             var ctrl = human.outfitController;
             if (ctrl == null) return;
+            // Skip if no actual change to avoid re-running clothes load + animator.
+            if ((byte)ctrl.currentOutfit == category) return;
 
             IsApplyingRemote = true;
             try
             {
-                ctrl.SetCurrentOutfit((ClothesPreset.OutfitCategory)p.Category, false, false, true);
-                Plugin.Log.LogInfo($"[NpcOutfitSync] applied humanID={p.HumanId} cat={p.Category}");
+                ctrl.SetCurrentOutfit((ClothesPreset.OutfitCategory)category, false, false, true);
+                Plugin.Log.LogInfo($"[NpcOutfitSync] applied humanID={humanId} cat={category}");
             }
             finally { IsApplyingRemote = false; }
         }
         catch (System.Exception ex)
         {
-            Plugin.Log.LogWarning($"NpcOutfitSync.ApplyOutfit: {ex.Message}");
+            Plugin.Log.LogWarning($"NpcOutfitSync.ApplyByHumanId: {ex.Message}");
         }
     }
 

@@ -128,6 +128,25 @@ public static class SpatterSync
         }
     }
 
+    /// <summary>Public Apply helper for ZDO SpatterResolver. Replays a
+    /// SpatterSimulation construction from raw fields without going through
+    /// a packet. <paramref name="erase"/> / <paramref name="forceType"/>
+    /// match the corresponding enums on <see cref="SpatterSimulation"/>.</summary>
+    public static void ApplyAddDirect(Vector3 origin, Vector3 target, string preset,
+                                       byte erase, byte forceType, float countMultiplier, bool stickToActors)
+    {
+        ApplyAdd(new SpatterAddPacket
+        {
+            WorldOrigin = origin,
+            WorldTarget = target,
+            PresetName = preset,
+            EraseMode = erase,
+            CountMultiplier = countMultiplier,
+            StickToActors = stickToActors,
+            Force = forceType,
+        });
+    }
+
     private static void ApplyAdd(SpatterAddPacket p)
     {
         try

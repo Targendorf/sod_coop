@@ -227,6 +227,41 @@ public static class FingerprintSync
     }
 
     // -------------------------------------------------------------------------
+    //  Public Apply helpers (for ZDO Phase D resolvers)
+    // -------------------------------------------------------------------------
+
+    /// <summary>Apply a fingerprint add directly without a packet wrapper.
+    /// Used by ZDO FingerprintResolver during snapshot restore + delta apply.</summary>
+    public static void ApplyAddDirect(int interactableId, int humanId, byte life)
+    {
+        try
+        {
+            var inter = FindInteractableById(interactableId);
+            if (inter == null) return;
+
+            Human human = null;
+            try
+            {
+                if (CityData.Instance?.citizenDictionary != null)
+                    CityData.Instance.citizenDictionary.TryGetValue(humanId, out human);
+            }
+            catch { }
+
+            IsApplyingRemote = true;
+            try
+            {
+                var lifeEnum = (Interactable.PrintLife)life;
+                inter.AddNewDynamicFingerprint(human, lifeEnum);
+            }
+            finally { IsApplyingRemote = false; }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"[FingerprintSync] ApplyAddDirect: {ex.Message}");
+        }
+    }
+
+    // -------------------------------------------------------------------------
     //  Helpers
     // -------------------------------------------------------------------------
 

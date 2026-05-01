@@ -61,6 +61,11 @@ public static class ZdoKeys
     public static readonly int SpatterStickActors = Hash32.Of("spatterStickActors");
     public static readonly int SpatterOrigin      = Hash32.Of("spatterOrigin");
     public static readonly int SpatterTarget      = Hash32.Of("spatterTarget");
+    public static readonly int SpatterCountMul    = Hash32.Of("spatterCountMul");
+    public static readonly int FootprintTimestamp = Hash32.Of("footprintTimestamp");
+    public static readonly int FootprintEuler     = Hash32.Of("footprintEuler");
+    public static readonly int DirtFloat          = Hash32.Of("dirtFloat");
+    public static readonly int BloodFloat         = Hash32.Of("bloodFloat");
 
     // ── Evidence ──
     public static readonly int EvId             = Hash32.Of("evId");

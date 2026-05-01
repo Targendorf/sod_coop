@@ -193,6 +193,24 @@ public static class FootprintSync
         }
     }
 
+    /// <summary>Public Apply helper for ZDO FootprintResolver. Replays a
+    /// footprint construction from raw fields without going through a packet.</summary>
+    public static void ApplyAddDirect(int humanId, Vector3 position, Vector3 euler,
+                                       float dirt, float blood, int roomId, float timestamp)
+    {
+        ApplyAdd(new FootprintAddPacket
+        {
+            HumanId = humanId,
+            Position = position,
+            EulerRot = euler,
+            Dirt = dirt,
+            Blood = blood,
+            RoomId = roomId,
+            Timestamp = timestamp,
+            SenderId = -1,    // forces "no own-echo skip"
+        }, senderId: -1);
+    }
+
     private static void ApplyAdd(FootprintAddPacket p, int senderId)
     {
         try
