@@ -463,19 +463,38 @@ public static class CoopUI
         // Show locally first.
         AddChatMessage(NetworkManager.LocalPlayerId, _playerName, _chatInput);
 
-        // Build and send.
-        var packet = new ChatMessagePacket
+        // Phase G: dispatch via ZdoEventRpc when the flag is on (default true).
+        // Falls back to the legacy ChatMessage packet path otherwise — this
+        // is the migration co-existence pattern from spec section 9.
+        if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForEvents)
         {
-            PlayerId = NetworkManager.LocalPlayerId,
-            PlayerName = _playerName,
-            Message = _chatInput,
-            Timestamp = Time.unscaledTime,
-        };
-        _chatWriter.Reset();
-        packet.Serialize(_chatWriter);
-        NetworkManager.SendToAll(PacketType.ChatMessage, _chatWriter, DeliveryMethod.ReliableOrdered);
+            SoDCoop.Zdo.ZdoEvents.SendChat(_playerName, _chatInput);
+        }
+        else
+        {
+            var packet = new ChatMessagePacket
+            {
+                PlayerId = NetworkManager.LocalPlayerId,
+                PlayerName = _playerName,
+                Message = _chatInput,
+                Timestamp = Time.unscaledTime,
+            };
+            _chatWriter.Reset();
+            packet.Serialize(_chatWriter);
+            NetworkManager.SendToAll(PacketType.ChatMessage, _chatWriter, DeliveryMethod.ReliableOrdered);
+        }
 
         _chatInput = "";
+    }
+
+    /// <summary>Public entry point for Zdo event handlers to surface incoming
+    /// chat. Invoked from <see cref="SoDCoop.Zdo.ZdoEvents.OnChat"/> when
+    /// the legacy <c>OnChatPacketReceived</c> path is bypassed by the
+    /// <c>UseZdoForEvents</c> flag.</summary>
+    public static void AppendIncomingChat(int senderId, string playerName, string text)
+    {
+        if (senderId == NetworkManager.LocalPlayerId) return;   // self-echo guard
+        AddChatMessage(senderId, playerName ?? "?", text ?? "");
     }
 
     /// <summary>Called by SyncManager on incoming PacketType.ChatMessage.</summary>

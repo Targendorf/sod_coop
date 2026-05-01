@@ -80,7 +80,9 @@ public static class ZdoEvents
         {
             string name = r.GetString();
             string text = r.GetString();
-            Plugin.Log.LogInfo($"[ZdoEvents.OnChat] {senderId}/{name}: {text}");
+            // Surface to the existing CoopUI chat panel.
+            try { SoDCoop.UI.CoopUI.AppendIncomingChat(senderId, name, text); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnChat] CoopUI.AppendIncomingChat: {ex.Message}"); }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnChat] {ex.Message}"); }
     }
