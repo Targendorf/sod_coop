@@ -110,9 +110,40 @@ public static class SyncManager
         // Route packet to appropriate sync system
         try
         {
+            // ── ZDO unified transport (200-204). Handled before legacy fan-out
+            //    so a packet whose enum value happens to overlap a legacy range
+            //    (none currently — we picked 200+) doesn't accidentally land
+            //    in the wrong handler.
+            if (type == PacketType.ZdoDeltaBatch)
+            {
+                SoDCoop.Zdo.ZdoMan.ApplyDeltaBatch(reader);
+                return;
+            }
+            if (type == PacketType.ZdoSnapshot)
+            {
+                SoDCoop.Zdo.ZdoMan.HandleSnapshot(reader);
+                return;
+            }
+            if (type == PacketType.ZdoOwnershipTransfer)
+            {
+                SoDCoop.Zdo.ZdoMan.ApplyOwnershipTransfer(reader);
+                return;
+            }
+            if (type == PacketType.ZdoEventRpc)
+            {
+                SoDCoop.Zdo.ZdoEventDispatcher.Dispatch(reader, senderId);
+                return;
+            }
+            if (type == PacketType.ZdoVersionMismatch)
+            {
+                // Version mismatch is informational; logged + UI surfaced via NetworkManager.
+                Plugin.Log.LogWarning("[SyncManager] received ZdoVersionMismatch — connection will close.");
+                return;
+            }
+
             // We could use ranges from Packets.cs to optimize, but for now simple dispatch
             // Each manager checks if the type belongs to it
-            
+
             // Item pickup / drop (14, 15) — handled by ItemSync, not PlayerSync.
             if (type == PacketType.PlayerPickup || type == PacketType.PlayerDrop)
             {

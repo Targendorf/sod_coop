@@ -654,4 +654,25 @@ public enum PacketType : byte
     PlayerAppearance = 114,
 
     #endregion
+
+    #region ZDO Unified Transport (200-204)
+
+    /// <summary>Periodic flush of dirty ZDOs (host's authoritative + client-owned writes).
+    /// Body: <c>flags(1) + uncompLen(2) + len(4) + [zstd?](N)</c>. See spec section 4.2.</summary>
+    ZdoDeltaBatch        = 200,
+
+    /// <summary>Full ZdoMan dump for late joiner. Reliable-ordered, sent once on join.</summary>
+    ZdoSnapshot          = 201,
+
+    /// <summary>Owner-change RPC. Must arrive before next delta from new owner.</summary>
+    ZdoOwnershipTransfer = 202,
+
+    /// <summary>Fire-and-forget event dispatched by name hash via <see cref="SoDCoop.Zdo.ZdoEventDispatcher"/>.
+    /// Replaces ~30 hand-written event packets (chat, banners, ping, side-job accept/handin).</summary>
+    ZdoEventRpc          = 203,
+
+    /// <summary>Host → client: protocol/wire version mismatch on handshake.</summary>
+    ZdoVersionMismatch   = 204,
+
+    #endregion
 }

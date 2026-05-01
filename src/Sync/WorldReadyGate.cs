@@ -80,18 +80,16 @@ public static class WorldReadyGate
         _nextPollTime = now + POLL_INTERVAL;
 
         // Log grace-window close once (first poll where IsInInitGrace flips
-        // false while world is still ready). Lets us correlate with end of
-        // SoD's init burst. We also OPEN the SyncGate at this point — every
-        // Harmony patch's first line is `if (!SyncGate.IsOpen) return;`,
-        // so before this fires every patch fast-bails and SP load runs at
-        // vanilla speed.
+        // false while world is still ready). Open SyncGate here — covers the
+        // new-game path where SOD.Common's OnAfterLoad never fires (it's
+        // save-load only). For save-load, SodCommonBridge.OnAfterLoad already
+        // opened the gate; SyncGate.Open is idempotent.
         if (IsWorldReady && !_graceClosedLogged && !IsInInitGrace)
         {
             _graceClosedLogged = true;
             Plugin.Log.LogInfo($"WorldReadyGate: init-grace window closed after " +
                 $"{_sinceReady.Elapsed.TotalSeconds:F1}s wall-clock (configured {INIT_GRACE_SECONDS}s).");
-            // SyncGate.Open() is now driven by SodCommonBridge.OnAfterLoad
-            // (the actual save-load-complete marker). This branch only logs.
+            SyncGate.Open();
         }
 
         bool ready = ComputeReady();

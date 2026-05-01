@@ -10,6 +10,7 @@ using SoDCoop.Sync;
 using SoDCoop.Player;
 using SoDCoop.UI;
 using SoDCoop.Integration;
+using SoDCoop.Zdo;
 using UnityEngine;
 
 namespace SoDCoop;
@@ -37,15 +38,6 @@ public class Plugin : BasePlugin
     /// </summary>
     private Harmony _harmony;
 
-    /// <summary>
-    /// True after the synchronous PatchAll at plugin load (v5 architecture).
-    /// Set once and never flipped — patches are installed for the lifetime
-    /// of the process; save-load fast-bails patch bodies via
-    /// SoDCoop.Sync.SyncGate.IsOpen instead of unpatching/re-patching
-    /// (which corrupts trampolines, see commit history pre-d030363).
-    /// </summary>
-    private static bool _patchesApplied;
-    
     /// <summary>
     /// GameObject that persists across scenes for network updates.
     /// </summary>
@@ -179,304 +171,21 @@ public class Plugin : BasePlugin
         var sw = System.Diagnostics.Stopwatch.StartNew();
         _harmony.PatchAll(Assembly.GetExecutingAssembly());
         sw.Stop();
-        _patchesApplied = true;
         Log.LogInfo($"Applied {_harmony.GetPatchedMethods().Count()} Harmony patches at plugin load in {sw.Elapsed.TotalSeconds:F2}s.");
 
-        // World generation (new game) and save-load BOTH cost ~5x with patches
-        // attached due to IL2CPP wrapper trampoline marshalling on every call
-        // to a patched method during SoD's heavy init burst. Save-load fires
-        // SOD.Common.OnBeforeLoad which we'd hook for Pause — but new-game
-        // creation doesn't fire that event, so we'd pay full wrapper cost.
-        //
-        // Instead: pause IMMEDIATELY after the install. Patches are pre-built
-        // (Harmony state set up, native detours installed by Dobby) but
-        // logically off — wrappers become near-passthrough.
-        //
-        // Resume fires when the WORLD becomes ready (covers both new-game and
-        // save-load paths) AND a 60s post-ready cool-down elapses AND the
-        // user has produced at least one input. See ScheduleResume for the
-        // gate logic.
-        PausePatchesForLoad();
-
-        SoDCoop.Sync.WorldReadyGate.OnWorldReady += OnWorldReadyForResume;
-        SoDCoop.Sync.WorldReadyGate.OnWorldUnready += OnWorldUnreadyForRePause;
+        // ZDO architecture: patches install once at plugin load, never re-install.
+        // The previous Pause/Resume cycle corrupted Dobby trampolines on
+        // re-PatchAll mid-init-burst (see commits pre-d030363 and the spec at
+        // docs/superpowers/specs/2026-05-02-zdo-architecture-design.md, section 5.2).
+        // Hot-path detection moves to pollers (host-only); patch bodies fast-bail
+        // on `!SyncGate.IsOpen` during the OnBeforeLoad → OnAfterLoad span.
     }
 
-    /// <summary>WorldReadyGate observed the world becoming live. Schedule a
-    /// gated Resume — patches re-attach once the post-ready cool-down + first
-    /// user input gate are satisfied. No-op if patches aren't paused
-    /// (e.g. someone already resumed).</summary>
-    private static void OnWorldReadyForResume()
-    {
-        try
-        {
-            if (!IsPatchPaused) return;
-            Log.LogInfo("[Resume] WorldReady observed — scheduling Resume.");
-            ScheduleResume();
-        }
-        catch (System.Exception ex) { Log.LogError($"OnWorldReadyForResume: {ex}"); }
-    }
-
-    /// <summary>World went away (player returned to menu / between saves).
-    /// If patches are currently active, pause them again so the next world
-    /// load starts from a clean paused state. If already paused (e.g. user
-    /// went to menu before Resume gates ever fired), no-op.</summary>
-    private static void OnWorldUnreadyForRePause()
-    {
-        try
-        {
-            if (IsPatchPaused) return;
-            Log.LogInfo("[Resume] WorldUnready observed — re-pausing patches for next load.");
-            PausePatchesForLoad();
-        }
-        catch (System.Exception ex) { Log.LogError($"OnWorldUnreadyForRePause: {ex}"); }
-    }
-
-    // ─── Patch lifecycle: Pause + Smart Resume ───────────────────────────
-    //
-    // Save-load with patches attached costs 200s+ wall-clock because IL2CPP
-    // wrapper trampolines marshal args on every call. To make save-load
-    // tolerable we UnpatchSelf on OnBeforeLoad — patches are attached to
-    // SoD's heaviest restoration methods, but UnpatchSelf nominally clears
-    // HarmonyX's patch records. (Whether it actually undoes the native
-    // detour is debatable; empirically save-load returns to ~50s, so it's
-    // working enough.)
-    //
-    // Resume is deferred. The previous "Resume 2s after OnAfterLoad" caused
-    // trampoline corruption because SoD's post-load init burst keeps running
-    // for 5+ minutes — methods re-detoured while on the active call stack
-    // froze the game. New design: Resume only fires when BOTH:
-    //   1. 60+ seconds elapsed since OnAfterLoad (init-burst cool-down)
-    //   2. ≥1 user input observed since WorldReady (game is interactive)
-    //
-    // If this still freezes empirically, the next iteration will spread the
-    // re-PatchAll across 10 seconds (1 patch per 200ms) so at any moment
-    // only one method is being re-detoured.
-
-    public static bool IsPatchPaused { get; private set; }
-
-    /// <summary>Wall-clock at OnAfterLoad; the 60s delay is measured from here.</summary>
-    private static float _resumeEarliestAt;
-
-    /// <summary>True once user input has been observed after WorldReady.
-    /// Reset on next OnBeforeLoad.</summary>
-    private static bool _userInputSeenSinceReady;
-
-    /// <summary>Set true by ScheduleResume; cleared by DrainPendingResume on success.</summary>
-    private static bool _resumePending;
-
-    /// <summary>Counter for unique Harmony instance ids (HarmonyX caches state per id;
-    /// reusing after UnpatchSelf double-attaches trampolines).</summary>
-    private static int _harmonySessionCounter;
-
-    /// <summary>Called from SodCommonBridge.OnBeforeLoad. Removes all Harmony
-    /// patches so SoD's save-load runs at near-vanilla speed.</summary>
-    public static void PausePatchesForLoad()
-    {
-        if (IsPatchPaused) return;
-        var inst = Instance;
-        if (inst?._harmony == null) return;
-        try
-        {
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            inst._harmony.UnpatchSelf();
-            sw.Stop();
-            IsPatchPaused = true;
-            // Reset gates so the next ScheduleResume waits fresh.
-            _resumePending = false;
-            _userInputSeenSinceReady = false;
-            _resumeEarliestAt = 0f;
-            Log.LogInfo($"Harmony patches PAUSED — UnpatchSelf in {sw.Elapsed.TotalSeconds:F2}s.");
-        }
-        catch (System.Exception ex)
-        {
-            Log.LogError($"PausePatchesForLoad failed: {ex}");
-        }
-    }
-
-    /// <summary>Called from SodCommonBridge.OnAfterLoad. Sets up the gates.
-    /// Actual Resume fires from DrainPendingResume once gates open.</summary>
-    public static void ScheduleResume()
-    {
-        if (!IsPatchPaused) return;
-        _resumeEarliestAt = UnityEngine.Time.unscaledTime + 60f;
-        _resumePending = true;
-        Log.LogInfo($"Patch resume scheduled. Gates: " +
-                    $"earliestAt={_resumeEarliestAt:F1}s (T+60s) AND user input post-WorldReady. " +
-                    $"SyncGate stays closed until Resume completes.");
-    }
-
-    /// <summary>Called every frame from CoopUpdateRunner.Update. Watches for
-    /// the gates; fires Resume when both are open.</summary>
-    public static void DrainPendingResume()
-    {
-        if (!_resumePending && !_gradualResumeInProgress) return;
-
-        // Gate 1: detect any user input post-WorldReady.
-        if (!_userInputSeenSinceReady && SoDCoop.Sync.WorldReadyGate.IsWorldReady)
-        {
-            try
-            {
-                if (UnityEngine.Input.anyKeyDown
-                    || UnityEngine.Input.GetMouseButtonDown(0)
-                    || UnityEngine.Input.GetMouseButtonDown(1))
-                {
-                    _userInputSeenSinceReady = true;
-                    Log.LogInfo($"[Resume gate] First user input observed at " +
-                                $"{UnityEngine.Time.unscaledTime:F1}s — input gate open.");
-                }
-            }
-            catch { /* Input may throw at unexpected init points; swallow. */ }
-        }
-
-        // Both gates: time AND input.
-        if (UnityEngine.Time.unscaledTime < _resumeEarliestAt) return;
-        if (!_userInputSeenSinceReady) return;
-
-        // Gradual install in progress? Drive it.
-        if (_gradualResumeInProgress)
-        {
-            DrainGradualResume(UnityEngine.Time.unscaledTime);
-            return;
-        }
-
-        // First call — kick off the gradual install. SyncGate stays closed
-        // until the install completes, so any patches that ARE attached
-        // mid-install have their bodies bail-fast on `!SyncGate.IsOpen`.
-        if (_resumePending)
-        {
-            _resumePending = false;
-            ResumePatchesAfterLoad();
-            return;
-        }
-
-        // Resume initialization succeeded but we couldn't start the gradual loop
-        // (e.g., zero patch types). Still open the gate so future code paths
-        // don't stall.
-        if (!IsPatchPaused && !_gradualResumeInProgress && !SoDCoop.Sync.SyncGate.IsOpen)
-        {
-            SoDCoop.Sync.SyncGate.Open();
-        }
-    }
-
-    /// <summary>Re-applies patches <b>gradually</b> — one Harmony class processor
-    /// per 100ms tick — to avoid the trampoline corruption that caused crashes
-    /// when re-attaching all 49 detours at once.
-    ///
-    /// <para>The previous batch <c>PatchAll</c> mutated all native detours
-    /// in a single tight loop. With ~49 methods being re-detoured back-to-back
-    /// while SoD's main thread continued running, the probability that at
-    /// least one method had an active stack frame at the exact moment of
-    /// re-detour was high → corrupted trampoline chain → crash on the next
-    /// invocation of that path (typically ESC, asset unload, or NPC AI).</para>
-    ///
-    /// <para>This entry point just kicks off the gradual install. The actual
-    /// per-type install fires from <see cref="DrainPendingResume"/> on
-    /// subsequent frames via <see cref="DrainGradualResume"/>.</para>
-    /// </summary>
-    public static void ResumePatchesAfterLoad()
-    {
-        if (!IsPatchPaused) return;
-        var inst = Instance;
-        if (inst == null) { IsPatchPaused = false; return; }
-
-        try
-        {
-            _harmonySessionCounter++;
-            inst._harmony = new HarmonyLib.Harmony($"{PluginInfo.PLUGIN_GUID}.session{_harmonySessionCounter}");
-
-            // Enumerate every type with a [HarmonyPatch] attribute in our assembly,
-            // including nested types. Filter for HarmonyX's own attribute reader
-            // (System.Reflection on raw GetCustomAttributes has crashed MonoMod
-            // in earlier attempts — but reading via _harmony's processor APIs
-            // is the same path PatchAll uses internally and is stable).
-            var asm = System.Reflection.Assembly.GetExecutingAssembly();
-            _gradualTypes = new System.Collections.Generic.List<System.Type>();
-            foreach (var t in asm.GetTypes())
-            {
-                // HarmonyMethod.HasAttribute<HarmonyPatch> equivalent — check via
-                // the same reflection HarmonyX itself uses. The crash that
-                // killed v4 was on _runtime_ get-attr; at this point we're past
-                // SoD's heavy init burst and the JIT path is stable.
-                bool hasAttr = false;
-                try
-                {
-                    hasAttr = t.GetCustomAttributes(typeof(HarmonyLib.HarmonyPatch), inherit: false).Length > 0
-                          || t.GetCustomAttributes(typeof(HarmonyLib.HarmonyPatch), inherit: true).Length  > 0;
-                }
-                catch { }
-                if (hasAttr) _gradualTypes.Add(t);
-            }
-
-            _gradualIndex = 0;
-            _gradualNextAt = UnityEngine.Time.unscaledTime;   // start immediately on next Drain tick
-            _gradualResumeInProgress = true;
-            Log.LogInfo($"Gradual Resume started: {_gradualTypes.Count} patch classes to re-attach " +
-                        $"at {GRADUAL_INTERVAL_S * 1000:F0}ms intervals " +
-                        $"(estimated total {_gradualTypes.Count * GRADUAL_INTERVAL_S:F1}s). " +
-                        $"Fresh Harmony id: {inst._harmony.Id}");
-        }
-        catch (System.Exception ex)
-        {
-            Log.LogError($"ResumePatchesAfterLoad init failed: {ex}");
-            IsPatchPaused = false;   // prevent retry loop
-            _gradualResumeInProgress = false;
-        }
-    }
-
-    private const float GRADUAL_INTERVAL_S = 0.1f;   // 100ms between class processor attaches
-    private static System.Collections.Generic.List<System.Type> _gradualTypes;
-    private static int _gradualIndex;
-    private static float _gradualNextAt;
-    private static bool _gradualResumeInProgress;
-
-    /// <summary>Per-frame driver for gradual Resume. Called from
-    /// <see cref="DrainPendingResume"/> after the gates have opened.
-    /// Attaches at most ONE patch class per call, throttled to
-    /// <see cref="GRADUAL_INTERVAL_S"/>. Returns true while still in progress;
-    /// false when finished (or never started).</summary>
-    private static bool DrainGradualResume(float now)
-    {
-        if (!_gradualResumeInProgress) return false;
-        if (now < _gradualNextAt) return true;
-
-        var inst = Instance;
-        if (inst?._harmony == null || _gradualTypes == null)
-        {
-            _gradualResumeInProgress = false;
-            IsPatchPaused = false;
-            return false;
-        }
-
-        if (_gradualIndex >= _gradualTypes.Count)
-        {
-            // All done.
-            _gradualResumeInProgress = false;
-            IsPatchPaused = false;
-            int liveCount = 0;
-            try { liveCount = inst._harmony.GetPatchedMethods().Count(); } catch { }
-            Log.LogInfo($"Gradual Resume COMPLETE — {_gradualIndex} classes attached, " +
-                        $"{liveCount} live patched methods. Session id: {inst._harmony.Id}");
-            _gradualTypes = null;
-            // Open the broadcast gate now that all patches are in place.
-            SoDCoop.Sync.SyncGate.Open();
-            return false;
-        }
-
-        var type = _gradualTypes[_gradualIndex++];
-        try
-        {
-            var processor = inst._harmony.CreateClassProcessor(type);
-            processor.Patch();
-        }
-        catch (System.Exception ex)
-        {
-            Log.LogWarning($"Gradual Resume: failed to attach {type.FullName}: {ex.Message}");
-            // Continue with next type — one bad class shouldn't abort the whole resume.
-        }
-        _gradualNextAt = now + GRADUAL_INTERVAL_S;
-        return true;
-    }
+    // ─── Removed: Pause/Resume + gradual Resume (see ZDO spec section 5.2) ─
+    // The ZDO architecture moves init-burst-hot detection to host-side pollers,
+    // so patches stay attached for the lifetime of the process. SyncGate body-bail
+    // (toggled by SodCommonBridge.OnBeforeLoad/OnAfterLoad) handles the save-load
+    // span. Trampoline corruption from re-PatchAll is structurally avoided.
 
     private void InitializeSystems()
     {
@@ -490,6 +199,15 @@ public class Plugin : BasePlugin
         
         Log.LogInfo("Initializing world-ready gate...");
         WorldReadyGate.Initialize();
+
+        Log.LogInfo("Initializing ZdoMan (unified replication)...");
+        ZdoMan.Initialize();
+        // Wipe in-memory ZDO registry between sessions so a return-to-menu
+        // doesn't carry stale state into the next world.
+        WorldReadyGate.OnWorldUnready += () =>
+        {
+            try { ZdoMan.Clear(); } catch (System.Exception ex) { Log.LogWarning($"ZdoMan.Clear: {ex.Message}"); }
+        };
 
         Log.LogInfo("Initializing remote player manager...");
         RemotePlayerManager.Initialize();
@@ -570,7 +288,6 @@ public class CoopUpdateRunner : MonoBehaviour
     {
         try
         {
-            Plugin.DrainPendingResume();   // ← Smart Resume gate check
             WorldReadyGate.Tick();
             NetworkManager.Update();
             SyncManager.Update();
@@ -579,6 +296,13 @@ public class CoopUpdateRunner : MonoBehaviour
             SoDCoop.Sync.InventorySync.Update();
             SoDCoop.Sync.HostStatusSync.Update();
             SoDCoop.Sync.PlayerSuspicionSync.Update();
+            // ZDO unified delta-flush: collects every dirty ZDO into one
+            // batched packet at 10 Hz and ships compressed (zstd-3) when
+            // payload exceeds 100 B. Replaces ~30 per-feature Broadcast
+            // call sites once Phase H is complete.
+            SoDCoop.Zdo.ZdoMan.TickDeltaFlush(Time.unscaledTime);
+            // Drive registered host-side pollers (doors, lights, citizens, …).
+            SoDCoop.Zdo.ZdoPollerHost.Tick(Time.unscaledTime);
         }
         catch (System.Exception ex)
         {

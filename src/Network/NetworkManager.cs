@@ -830,6 +830,10 @@ public static class NetworkManager
         try { SoDCoop.Sync.ItemSync      .SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"ItemSync.SendSnapshotTo: {ex.Message}"); }
         try { SoDCoop.Sync.FootprintSync .SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"FootprintSync.SendSnapshotTo: {ex.Message}"); }
         try { SoDCoop.Sync.AppearanceSync.SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"AppearanceSync.SendSnapshotTo: {ex.Message}"); }
+        // Unified ZDO snapshot — covers everything migrated to ZDO so far,
+        // additive to legacy snapshots above. Each ZDO type's resolver applies
+        // state to the live SoD world on the receiving peer.
+        try { SoDCoop.Zdo.ZdoMan.SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"ZdoMan.SendSnapshotTo: {ex.Message}"); }
     }
 
     private static void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)

@@ -57,13 +57,13 @@ public static class SodCommonBridge
                 try
                 {
                     _loadSw.Restart();
-                    // Close the gate so any in-flight tick bails immediately.
+                    // Close the gate so any in-flight patch body fast-bails.
                     SoDCoop.Sync.SyncGate.Close();
-                    // UnpatchSelf so SoD's save-load runs at near-vanilla speed.
-                    // Patches will be re-attached via Plugin.ScheduleResume → DrainPendingResume
-                    // after both gates open (60s post-OnAfterLoad + first user input).
-                    Plugin.PausePatchesForLoad();
-                    Plugin.Log.LogInfo($"[SODCommon] OnBeforeLoad: {args?.FilePath} — timer started, patches paused");
+                    // Wipe in-memory ZDO state — the host's authoritative ZDO
+                    // registry is rebuilt from the saved disk file (if any) +
+                    // first-tick poller diffs after world becomes ready.
+                    SoDCoop.Zdo.ZdoMan.Clear();
+                    Plugin.Log.LogInfo($"[SODCommon] OnBeforeLoad: {args?.FilePath} — timer started, gate closed, ZdoMan cleared");
                 }
                 catch (Exception ex) { Plugin.Log.LogError($"OnBeforeLoad handler: {ex.Message}"); }
             };
@@ -74,10 +74,13 @@ public static class SodCommonBridge
                     _loadSw.Stop();
                     LastLoadSeconds = _loadSw.Elapsed.TotalSeconds;
                     Plugin.Log.LogInfo($"[SODCommon] OnAfterLoad: {args?.FilePath} — save-load wall-clock {LastLoadSeconds:F2}s");
-                    // DO NOT open SyncGate here. SyncGate stays CLOSED through the resume
-                    // waiting window. Plugin.ScheduleResume + DrainPendingResume opens it
-                    // only after the patches are re-attached.
-                    Plugin.ScheduleResume();
+                    // Open SyncGate immediately. Patches stay attached for the
+                    // life of the process (ZDO architecture, see spec sec 5.2).
+                    // The 30s WorldReadyGate.IsInInitGrace window still suppresses
+                    // pollers from broadcasting init-burst seeded state.
+                    SoDCoop.Sync.SyncGate.Open();
+                    // Try to load the persisted ZdoMan dump for this save (if any).
+                    SoDCoop.Zdo.ZdoMan.LoadFromDisk();
                 }
                 catch (Exception ex) { Plugin.Log.LogError($"OnAfterLoad handler: {ex.Message}"); }
             };
@@ -97,6 +100,12 @@ public static class SodCommonBridge
                     _saveSw.Stop();
                     LastSaveSeconds = _saveSw.Elapsed.TotalSeconds;
                     Plugin.Log.LogInfo($"[SODCommon] OnAfterSave: {args?.FilePath} — save-write wall-clock {LastSaveSeconds:F2}s");
+                    // Persist ZDO registry to disk alongside SoD's save (host only).
+                    if (SoDCoop.Network.NetworkManager.IsHost)
+                    {
+                        try { SoDCoop.Zdo.ZdoMan.SaveToDisk(); }
+                        catch (Exception ex) { Plugin.Log.LogWarning($"ZdoMan.SaveToDisk: {ex.Message}"); }
+                    }
                 }
                 catch (Exception ex) { Plugin.Log.LogError($"OnAfterSave handler: {ex.Message}"); }
             };
