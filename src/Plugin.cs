@@ -338,31 +338,52 @@ public class Plugin : BasePlugin
         SoDCoop.Sync.SyncGate.Open();
     }
 
-    /// <summary>Re-applies every patch on a fresh Harmony instance.
-    /// HarmonyX state is per-instance — reusing the original after
-    /// UnpatchSelf produced double-detours; a fresh id avoids that.</summary>
+    /// <summary>DIAGNOSTIC MODE: re-PatchAll is disabled to test whether
+    /// the post-Resume crash on ESC is caused by trampoline corruption from
+    /// re-installing detours on top of the existing native detours from the
+    /// initial plugin-load PatchAll.
+    ///
+    /// Behaviour with this version:
+    ///   - Patches stay UnpatchSelf'd (HarmonyX records cleared, native detour
+    ///     is whatever the initial PatchAll left in place — pseudo-passthrough).
+    ///   - SyncGate.Open() is still called (so anything gated on it unblocks).
+    ///   - IsPatchPaused flips to false so the gate doesn't re-fire.
+    ///   - No new detours are added; native code state is identical to the
+    ///     post-PausePatchesForLoad moment.
+    ///
+    /// Expected outcome of the diagnostic test:
+    ///   - If game runs normally without crashing on ESC → trampoline
+    ///     stacking from re-PatchAll IS the cause → next iteration moves to
+    ///     gradual Resume (1 method per 100ms) or polling-only architecture.
+    ///   - If game still crashes on ESC → cause is elsewhere (specific patch
+    ///     body bug, asset unload race, etc.) → narrower investigation.
+    /// </summary>
     public static void ResumePatchesAfterLoad()
     {
         if (!IsPatchPaused) return;
-        var inst = Instance;
-        if (inst == null) { IsPatchPaused = false; return; }
-        try
-        {
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            _harmonySessionCounter++;
-            inst._harmony = new HarmonyLib.Harmony($"{PluginInfo.PLUGIN_GUID}.session{_harmonySessionCounter}");
-            inst._harmony.PatchAll(System.Reflection.Assembly.GetExecutingAssembly());
-            sw.Stop();
-            IsPatchPaused = false;
-            Log.LogInfo($"Harmony patches RESUMED — fresh instance #{_harmonySessionCounter}, " +
-                        $"PatchAll in {sw.Elapsed.TotalSeconds:F2}s " +
-                        $"({inst._harmony.GetPatchedMethods().Count()} live).");
-        }
-        catch (System.Exception ex)
-        {
-            Log.LogError($"ResumePatchesAfterLoad failed: {ex}");
-            // Leave IsPatchPaused = true so subsequent attempts no-op.
-        }
+        // _harmonySessionCounter++;
+        // var inst = Instance;
+        // if (inst == null) { IsPatchPaused = false; return; }
+        // try
+        // {
+        //     var sw = System.Diagnostics.Stopwatch.StartNew();
+        //     inst._harmony = new HarmonyLib.Harmony($"{PluginInfo.PLUGIN_GUID}.session{_harmonySessionCounter}");
+        //     inst._harmony.PatchAll(System.Reflection.Assembly.GetExecutingAssembly());
+        //     sw.Stop();
+        //     Log.LogInfo($"Harmony patches RESUMED — fresh instance #{_harmonySessionCounter}, " +
+        //                 $"PatchAll in {sw.Elapsed.TotalSeconds:F2}s " +
+        //                 $"({inst._harmony.GetPatchedMethods().Count()} live).");
+        // }
+        // catch (System.Exception ex)
+        // {
+        //     Log.LogError($"ResumePatchesAfterLoad failed: {ex}");
+        //     return;
+        // }
+        IsPatchPaused = false;
+        Log.LogWarning("[DIAGNOSTIC] Resume invoked but re-PatchAll is DISABLED. " +
+                       "Patches remain UnpatchSelf'd for the rest of this session. " +
+                       "Sync features are NON-FUNCTIONAL but the game should run. " +
+                       "If ESC still crashes, the cause is not trampoline stacking.");
     }
 
     private void InitializeSystems()
