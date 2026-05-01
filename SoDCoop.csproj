@@ -137,6 +137,7 @@
     <MakeDir Directories="$(BepInExPath)\plugins\SoDCoop" />
     <Copy SourceFiles="$(OutputPath)$(AssemblyName).dll" DestinationFolder="$(BepInExPath)\plugins\SoDCoop" />
     <Copy SourceFiles="$(OutputPath)LiteNetLib.dll" DestinationFolder="$(BepInExPath)\plugins\SoDCoop" />
+    <Copy SourceFiles="$(OutputPath)ZstdSharp.dll" DestinationFolder="$(BepInExPath)\plugins\SoDCoop" Condition="Exists('$(OutputPath)ZstdSharp.dll')" />
     <Message Text="Copied SoDCoop to $(BepInExPath)\plugins\SoDCoop" Importance="high" />
   </Target>
 </Project>
