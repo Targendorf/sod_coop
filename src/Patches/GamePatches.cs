@@ -1514,6 +1514,13 @@ public static class GamePatches
     //  (skip if threadID already in messageThreads dict).
     // ─────────────────────────────────────────────────────────────────────────
 
+    // DISABLED Phase E: VmailThreadPoller (host-side, 2 Hz) replaces this hot
+    // patch. Toolbox.NewVmailThread is called thousands of times during SoD's
+    // init burst — the wrapper trampoline alone added minutes to save-load.
+    // Now the host polls GameplayController.Instance.messageThreads, detects
+    // new threadIDs, and emits both VmailThread ZDOs (for snapshot/persist)
+    // and legacy VmailCreated packets (for real-time client delivery).
+    /*
     [HarmonyPatch(typeof(Toolbox), nameof(Toolbox.NewVmailThread),
         new System.Type[]
         {
@@ -1542,6 +1549,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     // ─────────────────────────────────────────────────────────────────────────
     //  FirstPersonItemController.Give — detect remote-player target for
