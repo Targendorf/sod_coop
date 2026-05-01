@@ -47,6 +47,10 @@ public static class ZdoBootstrap
         // ── Phase F: Player state ──
         LocalPlayerPoller.Register();
         PlayerInputPoller.Register();
+        PauseStatePoller.Register();
+        MoneyPoller.Register();
+        ComputerStatePoller.Register();
+        MurderPoller.Register();
 
         // ── Phase G: Event RPCs ──
         ZdoEvents.RegisterAll();

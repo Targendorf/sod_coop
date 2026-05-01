@@ -35,6 +35,7 @@ public static class PlayerInputPoller
     private static bool _initialized;
     private static bool _lastRaised;
     private static bool _lastFlashlight;
+    private static int  _lastInteractableCount = -1;
 
     public static void Register() => ZdoPollerHost.RegisterAnyPeer(NAME, 1f / TICK_HZ, Tick);
 
@@ -48,6 +49,34 @@ public static class PlayerInputPoller
             bool raised, flashlight;
             try { raised     = fpc.isRaised;   } catch { return; }
             try { flashlight = fpc.flashlight; } catch { return; }
+
+            // Place / Throw detection — diff CityData.interactableDirectory.Count
+            // and broadcast each new entry as a placement-visual via the
+            // existing InventorySync.BroadcastPlacedSince path. Patches at
+            // FirstPersonItemController.Place* / Throw* did this themselves
+            // by snapshotting count in prefix and broadcasting in postfix;
+            // polling captures the same growth episodically.
+            //
+            // Caveat: polling can't distinguish "player placed" from "host
+            // AI created an Interactable" — the Broadcast filters by preset
+            // (only known-placeable presets emit a packet) so non-player
+            // creations are skipped.
+            int curInteractables = SoDCoop.Sync.InventorySync.SnapshotInteractableCount();
+            if (_lastInteractableCount < 0)
+            {
+                _lastInteractableCount = curInteractables;
+            }
+            else if (curInteractables > _lastInteractableCount)
+            {
+                try { SoDCoop.Sync.InventorySync.BroadcastPlacedSince(_lastInteractableCount); }
+                catch (Exception ex) { Plugin.Log.LogWarning($"[PlayerInputPoller] place: {ex.Message}"); }
+                _lastInteractableCount = curInteractables;
+            }
+            else if (curInteractables < _lastInteractableCount)
+            {
+                // Directory shrank (save-reset / scene unload). Re-baseline.
+                _lastInteractableCount = curInteractables;
+            }
 
             if (!_initialized)
             {
@@ -80,5 +109,6 @@ public static class PlayerInputPoller
     public static void ResetBaseline()
     {
         _initialized = false;
+        _lastInteractableCount = -1;
     }
 }

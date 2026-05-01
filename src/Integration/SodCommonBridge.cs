@@ -67,6 +67,8 @@ public static class SodCommonBridge
                     // emit a stale state diff (e.g. raised flag carried over from
                     // pre-load session).
                     SoDCoop.Zdo.Pollers.PlayerInputPoller.ResetBaseline();
+                    SoDCoop.Zdo.Pollers.PauseStatePoller.ResetBaseline();
+                    SoDCoop.Zdo.Pollers.MoneyPoller.ResetBaseline();
                     // UnpatchSelf so SoD's save-load runs without IL2CPP wrapper
                     // trampoline marshalling cost on patched methods. Empirically
                     // this brought save-load from 200s+ → ~50s in Phase 1 logs.
