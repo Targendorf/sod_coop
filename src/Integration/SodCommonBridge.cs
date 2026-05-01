@@ -63,7 +63,14 @@ public static class SodCommonBridge
                     // registry is rebuilt from the saved disk file (if any) +
                     // first-tick poller diffs after world becomes ready.
                     SoDCoop.Zdo.ZdoMan.Clear();
-                    Plugin.Log.LogInfo($"[SODCommon] OnBeforeLoad: {args?.FilePath} — timer started, gate closed, ZdoMan cleared");
+                    // UnpatchSelf so SoD's save-load runs without IL2CPP wrapper
+                    // trampoline marshalling cost on patched methods. Empirically
+                    // this brought save-load from 200s+ → ~50s in Phase 1 logs.
+                    // Re-PatchAll happens via Plugin.SchedulePatchResume +
+                    // gradual install after WorldReady + 60s cool-down + first
+                    // user input (see Plugin.cs).
+                    Plugin.PausePatchesForLoad();
+                    Plugin.Log.LogInfo($"[SODCommon] OnBeforeLoad: {args?.FilePath} — timer started, gate closed, ZdoMan cleared, patches paused");
                 }
                 catch (Exception ex) { Plugin.Log.LogError($"OnBeforeLoad handler: {ex.Message}"); }
             };
@@ -74,13 +81,13 @@ public static class SodCommonBridge
                     _loadSw.Stop();
                     LastLoadSeconds = _loadSw.Elapsed.TotalSeconds;
                     Plugin.Log.LogInfo($"[SODCommon] OnAfterLoad: {args?.FilePath} — save-load wall-clock {LastLoadSeconds:F2}s");
-                    // Open SyncGate immediately. Patches stay attached for the
-                    // life of the process (ZDO architecture, see spec sec 5.2).
-                    // The 30s WorldReadyGate.IsInInitGrace window still suppresses
-                    // pollers from broadcasting init-burst seeded state.
-                    SoDCoop.Sync.SyncGate.Open();
                     // Try to load the persisted ZdoMan dump for this save (if any).
                     SoDCoop.Zdo.ZdoMan.LoadFromDisk();
+                    // Schedule patch Resume — fires when both gates open
+                    // (60s post-OnAfterLoad cool-down + first user input).
+                    // SyncGate stays CLOSED until Resume completes — every
+                    // patch body checks it as the first instruction.
+                    Plugin.SchedulePatchResume();
                 }
                 catch (Exception ex) { Plugin.Log.LogError($"OnAfterLoad handler: {ex.Message}"); }
             };
