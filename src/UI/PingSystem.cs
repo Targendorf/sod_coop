@@ -121,15 +121,35 @@ public static class PingSystem
         // Show locally immediately.
         AppendPing(NetworkManager.LocalPlayerId, NetworkManager.LocalPlayerName ?? "You", pingPos);
 
-        var packet = new MapPingPacket
+        // Phase G: dispatch via ZdoEventRpc when the flag is on.
+        if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForEvents)
         {
-            PlayerId   = NetworkManager.LocalPlayerId,
-            PlayerName = NetworkManager.LocalPlayerName ?? "Player",
-            Position   = pingPos,
-        };
-        _writer.Reset();
-        packet.Serialize(_writer);
-        NetworkManager.SendToAll(PacketType.MapPing, _writer, DeliveryMethod.ReliableOrdered);
+            // Reuse the existing writer to build payload: name + pos.
+            _writer.Reset();
+            _writer.Put(NetworkManager.LocalPlayerName ?? "Player");
+            _writer.Put(pingPos.x); _writer.Put(pingPos.y); _writer.Put(pingPos.z);
+            SoDCoop.Zdo.ZdoEventDispatcher.Send(SoDCoop.Zdo.ZdoEvents.MAP_PING, _writer, LiteNetLib.DeliveryMethod.ReliableOrdered);
+        }
+        else
+        {
+            var packet = new MapPingPacket
+            {
+                PlayerId   = NetworkManager.LocalPlayerId,
+                PlayerName = NetworkManager.LocalPlayerName ?? "Player",
+                Position   = pingPos,
+            };
+            _writer.Reset();
+            packet.Serialize(_writer);
+            NetworkManager.SendToAll(PacketType.MapPing, _writer, DeliveryMethod.ReliableOrdered);
+        }
+    }
+
+    /// <summary>Public entry for ZdoEvents.OnMapPing handler. Surfaces a
+    /// remote ping to the existing AppendPing rendering path.</summary>
+    public static void AppendRemotePing(int senderId, string playerName, UnityEngine.Vector3 pos)
+    {
+        if (senderId == NetworkManager.LocalPlayerId) return;
+        AppendPing(senderId, playerName ?? "?", pos);
     }
 
     // -------------------------------------------------------------------------
@@ -140,19 +160,38 @@ public static class PingSystem
     {
         try
         {
-            var packet = new PauseStatePacket
+            // Phase G: dispatch via ZdoEventRpc when the flag is on.
+            if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForEvents)
             {
-                PlayerId = NetworkManager.LocalPlayerId,
-                IsPaused = paused,
-            };
-            _writer.Reset();
-            packet.Serialize(_writer);
-            NetworkManager.SendToAll(PacketType.PauseState, _writer, DeliveryMethod.ReliableOrdered);
+                _writer.Reset();
+                _writer.Put(NetworkManager.LocalPlayerId);
+                _writer.Put(paused);
+                SoDCoop.Zdo.ZdoEventDispatcher.Send(SoDCoop.Zdo.ZdoEvents.PAUSE_BANNER, _writer);
+            }
+            else
+            {
+                var packet = new PauseStatePacket
+                {
+                    PlayerId = NetworkManager.LocalPlayerId,
+                    IsPaused = paused,
+                };
+                _writer.Reset();
+                packet.Serialize(_writer);
+                NetworkManager.SendToAll(PacketType.PauseState, _writer, DeliveryMethod.ReliableOrdered);
+            }
         }
         catch (System.Exception ex)
         {
             Plugin.Log.LogWarning($"BroadcastPauseState: {ex.Message}");
         }
+    }
+
+    /// <summary>Public entry for ZdoEvents.OnPauseBanner. Updates the
+    /// per-player paused-flag map used by the chat panel.</summary>
+    public static void HandlePauseBanner(int senderPlayerId, bool paused)
+    {
+        if (senderPlayerId == NetworkManager.LocalPlayerId) return;
+        _remotePaused[senderPlayerId] = paused;
     }
 
     // -------------------------------------------------------------------------

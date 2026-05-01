@@ -56,13 +56,13 @@ public static class ZdoEvents
         ZdoEventDispatcher.Send(CHAT, _w);
     }
 
-    public static void SendMapPing(ulong playerPeer, UnityEngine.Vector3 pos)
+    public static void SendMapPing(string playerName, UnityEngine.Vector3 pos)
     {
         if (!ZdoFeatureFlags.UseZdoForEvents) return;
         _w.Reset();
-        _w.Put(playerPeer);
+        _w.Put(playerName ?? "");
         _w.Put(pos.x); _w.Put(pos.y); _w.Put(pos.z);
-        ZdoEventDispatcher.Send(MAP_PING, _w, DeliveryMethod.Sequenced);
+        ZdoEventDispatcher.Send(MAP_PING, _w, DeliveryMethod.ReliableOrdered);
     }
 
     // ── Handlers ──
@@ -91,14 +91,25 @@ public static class ZdoEvents
     {
         try
         {
-            ulong peer = r.GetULong();
+            string name = r.GetString();
             float x = r.GetFloat(), y = r.GetFloat(), z = r.GetFloat();
-            Plugin.Log.LogInfo($"[ZdoEvents.OnMapPing] sender={senderId} peer={peer:X16} ({x:F1},{y:F1},{z:F1})");
+            try { SoDCoop.UI.PingSystem.AppendRemotePing(senderId, name, new UnityEngine.Vector3(x, y, z)); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnMapPing] AppendRemotePing: {ex.Message}"); }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnMapPing] {ex.Message}"); }
     }
 
-    private static void OnPauseBanner(NetDataReader r, int senderId)    { /* surfaced by PingSystem; payload-less for now */ _ = r; _ = senderId; }
+    private static void OnPauseBanner(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int senderPlayerId = r.GetInt();
+            bool paused = r.GetBool();
+            try { SoDCoop.UI.PingSystem.HandlePauseBanner(senderPlayerId, paused); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnPauseBanner] PingSystem: {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnPauseBanner] {ex.Message}"); }
+    }
     private static void OnPhoneBanner(NetDataReader r, int senderId)    { _ = r; _ = senderId; }
     private static void OnSideJobBanner(NetDataReader r, int senderId)  { _ = r; _ = senderId; }
     private static void OnSideJobAccept(NetDataReader r, int senderId)  { _ = r; _ = senderId; }
