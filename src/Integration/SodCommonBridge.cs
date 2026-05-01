@@ -57,11 +57,17 @@ public static class SodCommonBridge
                 try
                 {
                     _loadSw.Restart();
-                    // Close the patch body gate (cheap defense in depth).
-                    // Save-load with patches active runs with body-bailing via
-                    // SyncGate; no Pause/Resume cycle is needed.
+                    // Close the patch body gate. Patches stay attached but their
+                    // bodies fast-bail in <1µs, so SoD's heavy save-load init
+                    // burst runs without our network/state code firing.
                     SoDCoop.Sync.SyncGate.Close();
-                    Plugin.Log.LogInfo($"[SODCommon] OnBeforeLoad: {args?.FilePath} — timer started");
+                    // Reset poller baselines so the post-load tick re-reads the
+                    // world fresh and broadcasts a single coalesced delta per
+                    // poller (instead of replaying state that was identical
+                    // before the load).
+                    // TODO Phase 2: uncomment once WorldStatePollers exists.
+                    // SoDCoop.Sync.Polling.WorldStatePollers.ResetAllBaselines();
+                    Plugin.Log.LogInfo($"[SODCommon] OnBeforeLoad: {args?.FilePath} — timer started, sync gate closed");
                 }
                 catch (Exception ex) { Plugin.Log.LogError($"OnBeforeLoad handler: {ex.Message}"); }
             };
@@ -72,9 +78,9 @@ public static class SodCommonBridge
                     _loadSw.Stop();
                     LastLoadSeconds = _loadSw.Elapsed.TotalSeconds;
                     Plugin.Log.LogInfo($"[SODCommon] OnAfterLoad: {args?.FilePath} — save-load wall-clock {LastLoadSeconds:F2}s");
-
-                    // Patches remain live post-load; SyncGate will open via
-                    // WorldReadyGate once the post-load init-grace window closes.
+                    // Open the gate. Pollers (registered in CoopUpdateRunner)
+                    // begin diffing on the next frame.
+                    SoDCoop.Sync.SyncGate.Open();
                 }
                 catch (Exception ex) { Plugin.Log.LogError($"OnAfterLoad handler: {ex.Message}"); }
             };
