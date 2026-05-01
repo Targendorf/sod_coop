@@ -38,11 +38,11 @@ public class Plugin : BasePlugin
     private Harmony _harmony;
 
     /// <summary>
-    /// Whether <see cref="_harmony"/> currently has its 66 sync patches
-    /// applied. We install lazily on the first <c>OnConnected</c> and
-    /// remove on <c>OnDisconnected</c> so single-player world generation
-    /// doesn't pay the per-call IL2CPP marshalling cost of patches whose
-    /// bodies would early-bail anyway.
+    /// True after the synchronous PatchAll at plugin load (v5 architecture).
+    /// Set once and never flipped — patches are installed for the lifetime
+    /// of the process; save-load fast-bails patch bodies via
+    /// SoDCoop.Sync.SyncGate.IsOpen instead of unpatching/re-patching
+    /// (which corrupts trampolines, see commit history pre-d030363).
     /// </summary>
     private static bool _patchesApplied;
     

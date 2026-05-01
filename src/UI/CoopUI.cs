@@ -110,7 +110,6 @@ public static class CoopUI
         // a heads-up so the player doesn't think the game froze.
         if (NetworkManager.State == SoDCoop.Network.ConnectionState.Reconnecting)
             DrawReconnectBanner();
-
     }
 
     private static void DrawReconnectBanner()
