@@ -183,6 +183,139 @@ public class Plugin : BasePlugin
         Log.LogInfo($"Applied {_harmony.GetPatchedMethods().Count()} Harmony patches at plugin load in {sw.Elapsed.TotalSeconds:F2}s.");
     }
 
+    // ─── Patch lifecycle: Pause + Smart Resume ───────────────────────────
+    //
+    // Save-load with patches attached costs 200s+ wall-clock because IL2CPP
+    // wrapper trampolines marshal args on every call. To make save-load
+    // tolerable we UnpatchSelf on OnBeforeLoad — patches are attached to
+    // SoD's heaviest restoration methods, but UnpatchSelf nominally clears
+    // HarmonyX's patch records. (Whether it actually undoes the native
+    // detour is debatable; empirically save-load returns to ~50s, so it's
+    // working enough.)
+    //
+    // Resume is deferred. The previous "Resume 2s after OnAfterLoad" caused
+    // trampoline corruption because SoD's post-load init burst keeps running
+    // for 5+ minutes — methods re-detoured while on the active call stack
+    // froze the game. New design: Resume only fires when BOTH:
+    //   1. 60+ seconds elapsed since OnAfterLoad (init-burst cool-down)
+    //   2. ≥1 user input observed since WorldReady (game is interactive)
+    //
+    // If this still freezes empirically, the next iteration will spread the
+    // re-PatchAll across 10 seconds (1 patch per 200ms) so at any moment
+    // only one method is being re-detoured.
+
+    public static bool IsPatchPaused { get; private set; }
+
+    /// <summary>Wall-clock at OnAfterLoad; the 60s delay is measured from here.</summary>
+    private static float _resumeEarliestAt;
+
+    /// <summary>True once user input has been observed after WorldReady.
+    /// Reset on next OnBeforeLoad.</summary>
+    private static bool _userInputSeenSinceReady;
+
+    /// <summary>Set true by ScheduleResume; cleared by DrainPendingResume on success.</summary>
+    private static bool _resumePending;
+
+    /// <summary>Counter for unique Harmony instance ids (HarmonyX caches state per id;
+    /// reusing after UnpatchSelf double-attaches trampolines).</summary>
+    private static int _harmonySessionCounter;
+
+    /// <summary>Called from SodCommonBridge.OnBeforeLoad. Removes all Harmony
+    /// patches so SoD's save-load runs at near-vanilla speed.</summary>
+    public static void PausePatchesForLoad()
+    {
+        if (IsPatchPaused) return;
+        var inst = Instance;
+        if (inst?._harmony == null) return;
+        try
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            inst._harmony.UnpatchSelf();
+            sw.Stop();
+            IsPatchPaused = true;
+            // Reset gates so the next ScheduleResume waits fresh.
+            _resumePending = false;
+            _userInputSeenSinceReady = false;
+            _resumeEarliestAt = 0f;
+            Log.LogInfo($"Harmony patches PAUSED for save load — UnpatchSelf in {sw.Elapsed.TotalSeconds:F2}s.");
+        }
+        catch (System.Exception ex)
+        {
+            Log.LogError($"PausePatchesForLoad failed: {ex}");
+        }
+    }
+
+    /// <summary>Called from SodCommonBridge.OnAfterLoad. Sets up the gates.
+    /// Actual Resume fires from DrainPendingResume once gates open.</summary>
+    public static void ScheduleResume()
+    {
+        if (!IsPatchPaused) return;
+        _resumeEarliestAt = UnityEngine.Time.unscaledTime + 60f;
+        _resumePending = true;
+        Log.LogInfo($"Patch resume scheduled. Gates: " +
+                    $"earliestAt={_resumeEarliestAt:F1}s (T+60s) AND user input post-WorldReady. " +
+                    $"SyncGate stays closed until Resume completes.");
+    }
+
+    /// <summary>Called every frame from CoopUpdateRunner.Update. Watches for
+    /// the gates; fires Resume when both are open.</summary>
+    public static void DrainPendingResume()
+    {
+        if (!_resumePending) return;
+
+        // Gate 1: detect any user input post-WorldReady.
+        if (!_userInputSeenSinceReady && SoDCoop.Sync.WorldReadyGate.IsWorldReady)
+        {
+            try
+            {
+                if (UnityEngine.Input.anyKeyDown
+                    || UnityEngine.Input.GetMouseButtonDown(0)
+                    || UnityEngine.Input.GetMouseButtonDown(1))
+                {
+                    _userInputSeenSinceReady = true;
+                    Log.LogInfo($"[Resume gate] First user input observed at " +
+                                $"{UnityEngine.Time.unscaledTime:F1}s — input gate open.");
+                }
+            }
+            catch { /* Input may throw at unexpected init points; swallow. */ }
+        }
+
+        // Both gates: time AND input.
+        if (UnityEngine.Time.unscaledTime < _resumeEarliestAt) return;
+        if (!_userInputSeenSinceReady) return;
+
+        _resumePending = false;
+        ResumePatchesAfterLoad();
+        SoDCoop.Sync.SyncGate.Open();
+    }
+
+    /// <summary>Re-applies every patch on a fresh Harmony instance.
+    /// HarmonyX state is per-instance — reusing the original after
+    /// UnpatchSelf produced double-detours; a fresh id avoids that.</summary>
+    public static void ResumePatchesAfterLoad()
+    {
+        if (!IsPatchPaused) return;
+        var inst = Instance;
+        if (inst == null) { IsPatchPaused = false; return; }
+        try
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            _harmonySessionCounter++;
+            inst._harmony = new HarmonyLib.Harmony($"{PluginInfo.PLUGIN_GUID}.session{_harmonySessionCounter}");
+            inst._harmony.PatchAll(System.Reflection.Assembly.GetExecutingAssembly());
+            sw.Stop();
+            IsPatchPaused = false;
+            Log.LogInfo($"Harmony patches RESUMED — fresh instance #{_harmonySessionCounter}, " +
+                        $"PatchAll in {sw.Elapsed.TotalSeconds:F2}s " +
+                        $"({inst._harmony.GetPatchedMethods().Count()} live).");
+        }
+        catch (System.Exception ex)
+        {
+            Log.LogError($"ResumePatchesAfterLoad failed: {ex}");
+            // Leave IsPatchPaused = true so subsequent attempts no-op.
+        }
+    }
+
     private void InitializeSystems()
     {
         Log.LogInfo($"Stable client GUID: {SoDCoop.Player.CharacterIdentity.ClientGuid}");
@@ -275,6 +408,7 @@ public class CoopUpdateRunner : MonoBehaviour
     {
         try
         {
+            Plugin.DrainPendingResume();   // ← Smart Resume gate check
             WorldReadyGate.Tick();
             NetworkManager.Update();
             SyncManager.Update();

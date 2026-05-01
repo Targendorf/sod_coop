@@ -57,17 +57,13 @@ public static class SodCommonBridge
                 try
                 {
                     _loadSw.Restart();
-                    // Close the patch body gate. Patches stay attached but their
-                    // bodies fast-bail in <1µs, so SoD's heavy save-load init
-                    // burst runs without our network/state code firing.
+                    // Close the gate so any in-flight tick bails immediately.
                     SoDCoop.Sync.SyncGate.Close();
-                    // Reset poller baselines so the post-load tick re-reads the
-                    // world fresh and broadcasts a single coalesced delta per
-                    // poller (instead of replaying state that was identical
-                    // before the load).
-                    // TODO Phase 2: uncomment once WorldStatePollers exists.
-                    // SoDCoop.Sync.Polling.WorldStatePollers.ResetAllBaselines();
-                    Plugin.Log.LogInfo($"[SODCommon] OnBeforeLoad: {args?.FilePath} — timer started, sync gate closed");
+                    // UnpatchSelf so SoD's save-load runs at near-vanilla speed.
+                    // Patches will be re-attached via Plugin.ScheduleResume → DrainPendingResume
+                    // after both gates open (60s post-OnAfterLoad + first user input).
+                    Plugin.PausePatchesForLoad();
+                    Plugin.Log.LogInfo($"[SODCommon] OnBeforeLoad: {args?.FilePath} — timer started, patches paused");
                 }
                 catch (Exception ex) { Plugin.Log.LogError($"OnBeforeLoad handler: {ex.Message}"); }
             };
@@ -78,9 +74,10 @@ public static class SodCommonBridge
                     _loadSw.Stop();
                     LastLoadSeconds = _loadSw.Elapsed.TotalSeconds;
                     Plugin.Log.LogInfo($"[SODCommon] OnAfterLoad: {args?.FilePath} — save-load wall-clock {LastLoadSeconds:F2}s");
-                    // Open the gate. Pollers (registered in CoopUpdateRunner)
-                    // begin diffing on the next frame.
-                    SoDCoop.Sync.SyncGate.Open();
+                    // DO NOT open SyncGate here. SyncGate stays CLOSED through the resume
+                    // waiting window. Plugin.ScheduleResume + DrainPendingResume opens it
+                    // only after the patches are re-attached.
+                    Plugin.ScheduleResume();
                 }
                 catch (Exception ex) { Plugin.Log.LogError($"OnAfterLoad handler: {ex.Message}"); }
             };
