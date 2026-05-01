@@ -63,6 +63,10 @@ public static class SodCommonBridge
                     // registry is rebuilt from the saved disk file (if any) +
                     // first-tick poller diffs after world becomes ready.
                     SoDCoop.Zdo.ZdoMan.Clear();
+                    // Reset poller baselines so the first post-load tick doesn't
+                    // emit a stale state diff (e.g. raised flag carried over from
+                    // pre-load session).
+                    SoDCoop.Zdo.Pollers.PlayerInputPoller.ResetBaseline();
                     // UnpatchSelf so SoD's save-load runs without IL2CPP wrapper
                     // trampoline marshalling cost on patched methods. Empirically
                     // this brought save-load from 200s+ → ~50s in Phase 1 logs.
