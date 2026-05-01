@@ -28,6 +28,7 @@ public static class WorldStateSync
 
     public static void BroadcastDoorState(int interactableId, bool isClosed)
     {
+        if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForDoors) return; // ZDO path owns this surface
         if (!NetworkManager.IsConnected) return;
         if (IsApplyingRemote) return;
 
@@ -50,6 +51,7 @@ public static class WorldStateSync
     /// </summary>
     public static void BroadcastDoorLockState(int interactableId, bool isLocked, bool playSound)
     {
+        if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForDoors) return; // ZDO path owns this surface
         if (!NetworkManager.IsConnected) return;
         if (IsApplyingRemote) return;
 
@@ -245,6 +247,34 @@ public static class WorldStateSync
         {
             Plugin.Log.LogError($"WorldStateSync.OnPacketReceived({type}): {ex.Message}");
         }
+    }
+
+    // ── Public helpers for ZDO resolvers (DoorResolver) ───────────────
+
+    /// <summary>Apply door open/closed by Interactable.id. Wraps the legacy
+    /// private ApplyDoorState path so the ZDO DoorResolver doesn't duplicate
+    /// the lookup + IsApplyingRemote re-entrancy guard.</summary>
+    public static void ApplyDoorStateBySodId(int interactableId, bool isClosed)
+    {
+        ApplyDoorState(new DoorStatePacket { InteractableId = interactableId, IsClosed = isClosed });
+    }
+
+    /// <summary>Apply door locked/unlocked by Interactable.id.</summary>
+    public static void ApplyDoorLockBySodId(int interactableId, bool isLocked, bool playSound)
+    {
+        ApplyDoorLockState(new DoorLockStatePacket { InteractableId = interactableId, IsLocked = isLocked, PlaySound = playSound });
+    }
+
+    /// <summary>Apply light on/off by Interactable.id (used by LightResolver).</summary>
+    public static void ApplyLightStateBySodId(int interactableId, bool isOn)
+    {
+        ApplyLightState(new LightStatePacket { InteractableId = interactableId, IsOn = isOn });
+    }
+
+    /// <summary>Apply switch on/off by Interactable.id (used by SwitchResolver).</summary>
+    public static void ApplySwitchStateBySodId(int interactableId, bool isOn)
+    {
+        ApplySwitchState(new SwitchStatePacket { InteractableId = interactableId, IsOn = isOn });
     }
 
     private static void ApplyDoorState(DoorStatePacket p)

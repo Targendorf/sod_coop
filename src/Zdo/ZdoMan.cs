@@ -314,6 +314,9 @@ public static class ZdoMan
                 // these mutations originated remote and shouldn't echo back.
                 z.ClearDirty();
                 _ = dataRev; // currently advisory; honoured via ClearDirty no-rebroadcast policy.
+
+                // Translate ZDO state into live SoD-side mutations.
+                Resolvers.ZdoResolverRegistry.Apply(z);
             }
         }
         catch (Exception ex)
@@ -444,6 +447,9 @@ public static class ZdoMan
                 }
                 z.ClearDirty();
                 _ = dataRev;
+
+                // Translate ZDO state into live SoD-side mutations.
+                Resolvers.ZdoResolverRegistry.Apply(z);
             }
             Plugin.Log.LogInfo($"[ZdoMan] restored {count} ZDOs from snapshot.");
         }

@@ -202,6 +202,7 @@ public class Plugin : BasePlugin
 
         Log.LogInfo("Initializing ZdoMan (unified replication)...");
         ZdoMan.Initialize();
+        ZdoBootstrap.RegisterAll();
         // Wipe in-memory ZDO registry between sessions so a return-to-menu
         // doesn't carry stale state into the next world.
         WorldReadyGate.OnWorldUnready += () =>
