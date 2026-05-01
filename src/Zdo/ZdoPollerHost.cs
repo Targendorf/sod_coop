@@ -28,25 +28,50 @@ public static class ZdoPollerHost
         public float NextAt;
     }
 
-    private static readonly List<Entry> _pollers = new();
+    private static readonly List<Entry> _hostPollers   = new();
+    private static readonly List<Entry> _anyPeerPollers = new();
 
+    /// <summary>Register a host-only poller. Most pollers (door, light,
+    /// vmail, etc.) use this — the host owns the world simulation and
+    /// derives authoritative state from it.</summary>
     public static void Register(string name, float intervalSeconds, PollerCallback cb)
     {
         if (cb == null) return;
-        _pollers.Add(new Entry { Name = name, Callback = cb, Interval = intervalSeconds, NextAt = 0f });
+        _hostPollers.Add(new Entry { Name = name, Callback = cb, Interval = intervalSeconds, NextAt = 0f });
+    }
+
+    /// <summary>Register a poller that runs on every peer (host AND clients).
+    /// Used by <see cref="Pollers.LocalPlayerPoller"/> — each peer captures
+    /// their own <c>Player.Instance</c> state into their own
+    /// <see cref="ZdoTypeTag.LocalPlayer"/> ZDO.</summary>
+    public static void RegisterAnyPeer(string name, float intervalSeconds, PollerCallback cb)
+    {
+        if (cb == null) return;
+        _anyPeerPollers.Add(new Entry { Name = name, Callback = cb, Interval = intervalSeconds, NextAt = 0f });
     }
 
     public static void Tick(float now)
     {
-        if (!NetworkManager.IsHost) return;
         if (!NetworkManager.HasPeers) return;
         if (!WorldReadyGate.IsWorldReady) return;
         if (WorldReadyGate.IsInInitGrace) return;
         if (!SyncGate.IsOpen) return;
 
-        for (int i = 0; i < _pollers.Count; i++)
+        // Any-peer pollers fire on every machine.
+        for (int i = 0; i < _anyPeerPollers.Count; i++)
         {
-            var p = _pollers[i];
+            var p = _anyPeerPollers[i];
+            if (now < p.NextAt) continue;
+            p.NextAt = now + p.Interval;
+            try { p.Callback(now); }
+            catch (Exception ex) { Plugin.Log.LogError($"[ZdoPollerHost] {p.Name}: {ex.Message}"); }
+        }
+
+        // Host-only pollers.
+        if (!NetworkManager.IsHost) return;
+        for (int i = 0; i < _hostPollers.Count; i++)
+        {
+            var p = _hostPollers[i];
             if (now < p.NextAt) continue;
             p.NextAt = now + p.Interval;
             try { p.Callback(now); }
@@ -56,5 +81,5 @@ public static class ZdoPollerHost
 
     /// <summary>Drop all registered pollers. Currently unused — pollers are
     /// idempotent on re-register because identity is name-based.</summary>
-    public static void Clear() => _pollers.Clear();
+    public static void Clear() { _hostPollers.Clear(); _anyPeerPollers.Clear(); }
 }

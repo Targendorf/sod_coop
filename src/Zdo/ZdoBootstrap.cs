@@ -44,7 +44,8 @@ public static class ZdoBootstrap
         VmailThreadPoller.Register();
         EvidenceNotePoller.Register();
 
-        // ── Phase F: Player state (handled by ZdoEvents.RegisterAll for now) ──
+        // ── Phase F: Player state ──
+        LocalPlayerPoller.Register();
 
         // ── Phase G: Event RPCs ──
         ZdoEvents.RegisterAll();
