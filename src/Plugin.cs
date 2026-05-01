@@ -181,6 +181,55 @@ public class Plugin : BasePlugin
         sw.Stop();
         _patchesApplied = true;
         Log.LogInfo($"Applied {_harmony.GetPatchedMethods().Count()} Harmony patches at plugin load in {sw.Elapsed.TotalSeconds:F2}s.");
+
+        // World generation (new game) and save-load BOTH cost ~5x with patches
+        // attached due to IL2CPP wrapper trampoline marshalling on every call
+        // to a patched method during SoD's heavy init burst. Save-load fires
+        // SOD.Common.OnBeforeLoad which we'd hook for Pause — but new-game
+        // creation doesn't fire that event, so we'd pay full wrapper cost.
+        //
+        // Instead: pause IMMEDIATELY after the install. Patches are pre-built
+        // (Harmony state set up, native detours installed by Dobby) but
+        // logically off — wrappers become near-passthrough.
+        //
+        // Resume fires when the WORLD becomes ready (covers both new-game and
+        // save-load paths) AND a 60s post-ready cool-down elapses AND the
+        // user has produced at least one input. See ScheduleResume for the
+        // gate logic.
+        PausePatchesForLoad();
+
+        SoDCoop.Sync.WorldReadyGate.OnWorldReady += OnWorldReadyForResume;
+        SoDCoop.Sync.WorldReadyGate.OnWorldUnready += OnWorldUnreadyForRePause;
+    }
+
+    /// <summary>WorldReadyGate observed the world becoming live. Schedule a
+    /// gated Resume — patches re-attach once the post-ready cool-down + first
+    /// user input gate are satisfied. No-op if patches aren't paused
+    /// (e.g. someone already resumed).</summary>
+    private static void OnWorldReadyForResume()
+    {
+        try
+        {
+            if (!IsPatchPaused) return;
+            Log.LogInfo("[Resume] WorldReady observed — scheduling Resume.");
+            ScheduleResume();
+        }
+        catch (System.Exception ex) { Log.LogError($"OnWorldReadyForResume: {ex}"); }
+    }
+
+    /// <summary>World went away (player returned to menu / between saves).
+    /// If patches are currently active, pause them again so the next world
+    /// load starts from a clean paused state. If already paused (e.g. user
+    /// went to menu before Resume gates ever fired), no-op.</summary>
+    private static void OnWorldUnreadyForRePause()
+    {
+        try
+        {
+            if (IsPatchPaused) return;
+            Log.LogInfo("[Resume] WorldUnready observed — re-pausing patches for next load.");
+            PausePatchesForLoad();
+        }
+        catch (System.Exception ex) { Log.LogError($"OnWorldUnreadyForRePause: {ex}"); }
     }
 
     // ─── Patch lifecycle: Pause + Smart Resume ───────────────────────────
@@ -237,7 +286,7 @@ public class Plugin : BasePlugin
             _resumePending = false;
             _userInputSeenSinceReady = false;
             _resumeEarliestAt = 0f;
-            Log.LogInfo($"Harmony patches PAUSED for save load — UnpatchSelf in {sw.Elapsed.TotalSeconds:F2}s.");
+            Log.LogInfo($"Harmony patches PAUSED — UnpatchSelf in {sw.Elapsed.TotalSeconds:F2}s.");
         }
         catch (System.Exception ex)
         {
