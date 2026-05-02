@@ -110,52 +110,72 @@ public static class DamageSync
 
     private static void ApplyDamage(NpcDamagePacket p)
     {
+        var fwdSpatter  = ResolveSpatterPreset(p.ForwardSpatterPreset);
+        var backSpatter = ResolveSpatterPreset(p.BackSpatterPreset);
+        ApplyImpl(
+            p.VictimHumanId, p.AttackerHumanId, p.Amount,
+            p.HitPosition, p.HitDirection,
+            fwdSpatter, backSpatter,
+            (SpatterSimulation.EraseMode)p.EraseMode,
+            p.ForceRagdoll, p.RagdollDuration, p.ShockMP,
+            p.EnableKill, p.AllowRecoil, p.RagdollForceMP);
+    }
+
+    /// <summary>ZDO entry — invoked from <c>ZdoEvents.OnNpcDamageRich</c>.
+    /// Spatter presets are not in the event payload; receivers use defaults.</summary>
+    public static void ApplyFromZdo(int victimHumanId, int attackerHumanId, float amount,
+                                    Vector3 hitPosition, Vector3 hitDirection, bool enableKill)
+    {
+        ApplyImpl(
+            victimHumanId, attackerHumanId, amount,
+            hitPosition, hitDirection,
+            forwardSpatter:  null,
+            backSpatter:     null,
+            eraseMode:       SpatterSimulation.EraseMode.useDespawnTime,
+            forceRagdoll:    false,
+            ragdollDuration: 0f,
+            shockMP:         1f,
+            enableKill:      enableKill,
+            allowRecoil:     true,
+            ragdollForceMP:  1f);
+    }
+
+    private static void ApplyImpl(int victimHumanId, int attackerHumanId, float amount,
+                                  Vector3 hitPosition, Vector3 hitDirection,
+                                  SpatterPatternPreset forwardSpatter, SpatterPatternPreset backSpatter,
+                                  SpatterSimulation.EraseMode eraseMode,
+                                  bool forceRagdoll, float ragdollDuration, float shockMP,
+                                  bool enableKill, bool allowRecoil, float ragdollForceMP)
+    {
         try
         {
-            var victim = ResolveActor(p.VictimHumanId);
+            var victim = ResolveActor(victimHumanId);
             if (victim == null)
             {
-                Plugin.Log.LogWarning($"[DamageSync] ApplyDamage: victim humanID {p.VictimHumanId} not found");
+                Plugin.Log.LogWarning($"[DamageSync] ApplyDamage: victim humanID {victimHumanId} not found");
                 return;
             }
 
-            // Attacker is best-effort. Null is acceptable — RecieveDamage handles it
-            // (treats as environment / unknown source).
             Actor attacker = null;
-            if (p.AttackerHumanId >= 0) attacker = ResolveActor(p.AttackerHumanId);
-
-            var fwdSpatter  = ResolveSpatterPreset(p.ForwardSpatterPreset);
-            var backSpatter = ResolveSpatterPreset(p.BackSpatterPreset);
+            if (attackerHumanId >= 0) attacker = ResolveActor(attackerHumanId);
 
             IsApplyingRemote = true;
             try
             {
                 victim.RecieveDamage(
-                    p.Amount,
-                    attacker,
-                    p.HitPosition,
-                    p.HitDirection,
-                    fwdSpatter,
-                    backSpatter,
-                    (SpatterSimulation.EraseMode)p.EraseMode,
+                    amount, attacker, hitPosition, hitDirection,
+                    forwardSpatter, backSpatter, eraseMode,
                     /*alertSurrounding*/ true,
-                    p.ForceRagdoll,
-                    p.RagdollDuration,
-                    p.ShockMP,
-                    p.EnableKill,
-                    p.AllowRecoil,
-                    p.RagdollForceMP);
+                    forceRagdoll, ragdollDuration, shockMP,
+                    enableKill, allowRecoil, ragdollForceMP);
 
-                Plugin.Log.LogInfo($"[DamageSync] applied victim={p.VictimHumanId} amount={p.Amount:F1}");
+                Plugin.Log.LogInfo($"[DamageSync] applied victim={victimHumanId} amount={amount:F1}");
             }
-            finally
-            {
-                IsApplyingRemote = false;
-            }
+            finally { IsApplyingRemote = false; }
         }
         catch (System.Exception ex)
         {
-            Plugin.Log.LogError($"DamageSync.ApplyDamage failed: {ex.Message}");
+            Plugin.Log.LogError($"DamageSync.ApplyImpl failed: {ex.Message}");
         }
     }
 

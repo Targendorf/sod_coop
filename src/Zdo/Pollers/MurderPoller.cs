@@ -73,8 +73,19 @@ public static class MurderPoller
                 UnityEngine.Vector3 pos = default;
                 try { pos = c.transform.position; } catch { }
 
-                try { SoDCoop.Sync.CitizenDeathSync.BroadcastDeath(id, killerId, weaponId, pos); }
-                catch (Exception ex) { Plugin.Log.LogWarning($"[MurderPoller] broadcast {id}: {ex.Message}"); }
+                // Phase G.5 (Wave 2.3): write to per-citizen ZDO (same ZDO
+                // CitizenStatePoller writes to). CitizenResolver applies on
+                // receivers via CitizenDeathSync.ApplyDeathFromZdo.
+                try
+                {
+                    var z = ZdoMan.GetOrCreateBySodId(ZdoTypeTag.Citizen, id,
+                        owner: ZdoMan.LocalPeerUid, persistent: true);
+                    z.Set(ZdoKeys.Dead,                 true);
+                    z.Set(ZdoKeys.KillerHumanId,        killerId);
+                    z.Set(ZdoKeys.WeaponInteractableId, weaponId);
+                    z.Set(ZdoKeys.DeathPos,             pos);
+                }
+                catch (Exception ex) { Plugin.Log.LogWarning($"[MurderPoller] zdo {id}: {ex.Message}"); }
             }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[MurderPoller] tick: {ex.Message}"); }

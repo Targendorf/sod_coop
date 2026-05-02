@@ -57,15 +57,19 @@ public static class ComputerStatePoller
                     _last[inter.id] = new Snapshot { LoggedInHumanId = humanId, AppName = appName };
                     continue;
                 }
-                if (snap.LoggedInHumanId != humanId)
+                if (snap.LoggedInHumanId != humanId || snap.AppName != appName)
                 {
-                    try { SoDCoop.Sync.ComputerSync.BroadcastLogin(inter.id, humanId); }
-                    catch (Exception ex) { Plugin.Log.LogWarning($"[ComputerStatePoller] login: {ex.Message}"); }
-                }
-                if (snap.AppName != appName && !string.IsNullOrEmpty(appName))
-                {
-                    try { SoDCoop.Sync.ComputerSync.BroadcastApp(inter.id, appName, forceUpdate: false); }
-                    catch (Exception ex) { Plugin.Log.LogWarning($"[ComputerStatePoller] app: {ex.Message}"); }
+                    // Phase G.5 (Wave 2.1): write to per-computer ZDO. Receiver's
+                    // ComputerResolver.Apply reads the keys and dispatches via
+                    // ComputerSync.ApplyLoginFromZdo / ApplyAppFromZdo.
+                    try
+                    {
+                        var z = ZdoMan.GetOrCreateBySodId(ZdoTypeTag.Computer, inter.id,
+                            owner: ZdoMan.LocalPeerUid, persistent: true);
+                        z.Set(ZdoKeys.LoggedInHumanId, humanId);
+                        z.Set(ZdoKeys.AppPreset,       appName ?? "");
+                    }
+                    catch (Exception ex) { Plugin.Log.LogWarning($"[ComputerStatePoller] zdo write: {ex.Message}"); }
                 }
                 _last[inter.id] = new Snapshot { LoggedInHumanId = humanId, AppName = appName };
             }

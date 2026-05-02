@@ -106,25 +106,35 @@ public static class NpcDamagePoller
                 Vector3 pos = Vector3.zero;
                 try { if (c.transform != null) pos = c.transform.position; } catch { }
 
-                try
+                // Phase G.5 (Wave 2.2): unified RPC channel via
+                // ZdoEvents.NPC_DAMAGE_RICH instead of legacy NpcDamage packet.
+                if (ZdoFeatureFlags.UseZdoForEvents)
                 {
-                    Sync.DamageSync.BroadcastDamage(
-                        victimHumanId:    id,
-                        attackerHumanId:  -1,
-                        amount:           delta,
-                        hitPosition:      pos,
-                        hitDirection:     Vector3.up,
-                        forwardSpatter:   null,
-                        backSpatter:      null,
-                        eraseMode:        SpatterSimulation.EraseMode.useDespawnTime,
-                        forceRagdoll:     false,
-                        ragdollDuration:  0f,
-                        shockMP:          1f,
-                        enableKill:       cur <= 0f,
-                        allowRecoil:      true,
-                        ragdollForceMP:   1f);
+                    try { ZdoEvents.SendNpcDamage(id, -1, delta, pos, Vector3.up, enableKill: cur <= 0f); }
+                    catch (Exception ex) { Plugin.Log.LogWarning($"[NpcDamagePoller] zdo: {ex.Message}"); }
                 }
-                catch (Exception ex) { Plugin.Log.LogWarning($"[NpcDamagePoller] broadcast: {ex.Message}"); }
+                else
+                {
+                    try
+                    {
+                        Sync.DamageSync.BroadcastDamage(
+                            victimHumanId:    id,
+                            attackerHumanId:  -1,
+                            amount:           delta,
+                            hitPosition:      pos,
+                            hitDirection:     Vector3.up,
+                            forwardSpatter:   null,
+                            backSpatter:      null,
+                            eraseMode:        SpatterSimulation.EraseMode.useDespawnTime,
+                            forceRagdoll:     false,
+                            ragdollDuration:  0f,
+                            shockMP:          1f,
+                            enableKill:       cur <= 0f,
+                            allowRecoil:      true,
+                            ragdollForceMP:   1f);
+                    }
+                    catch (Exception ex) { Plugin.Log.LogWarning($"[NpcDamagePoller] broadcast: {ex.Message}"); }
+                }
             }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[NpcDamagePoller] tick: {ex.Message}"); }

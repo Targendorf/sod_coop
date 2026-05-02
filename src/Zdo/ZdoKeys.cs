@@ -43,6 +43,9 @@ public static class ZdoKeys
     public static readonly int Energy             = Hash32.Of("energy");
     public static readonly int Dead               = Hash32.Of("dead");
     public static readonly int Downed             = Hash32.Of("downed");
+    public static readonly int KillerHumanId      = Hash32.Of("killerHumanId");
+    public static readonly int WeaponInteractableId = Hash32.Of("weaponInteractableId");
+    public static readonly int DeathPos           = Hash32.Of("deathPos");
     public static readonly int ClaimedHumanId     = Hash32.Of("claimedHumanId");
     public static readonly int AiFrozen           = Hash32.Of("aiFrozen");
     public static readonly int Appearance         = Hash32.Of("appearance");

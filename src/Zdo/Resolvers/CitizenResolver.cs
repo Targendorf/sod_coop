@@ -76,5 +76,20 @@ public sealed class CitizenResolver : IZdoResolver
             }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenResolver] drunk/bleeding apply: {ex.Message}"); }
+
+        // Murder state (Wave 2.3): the dead bool flip drives the receiver to
+        // run Human.Murder with the carried killer/weapon. Idempotent —
+        // CitizenDeathSync.ApplyDeathFromZdo bails if isDead is already true.
+        try
+        {
+            if (z.HasKey(ZdoKeys.Dead) && z.GetBool(ZdoKeys.Dead, false))
+            {
+                int killer = z.GetInt(ZdoKeys.KillerHumanId, -1);
+                int weapon = z.GetInt(ZdoKeys.WeaponInteractableId, -1);
+                UnityEngine.Vector3 pos = z.GetVector3(ZdoKeys.DeathPos, default);
+                SoDCoop.Sync.CitizenDeathSync.ApplyDeathFromZdo(humanId, killer, weapon, pos);
+            }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenResolver] death apply: {ex.Message}"); }
     }
 }

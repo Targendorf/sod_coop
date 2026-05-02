@@ -116,39 +116,47 @@ public static class ComputerSync
     }
 
     private static void ApplyLogin(ComputerLoginPacket p)
+        => ApplyLoginFromZdo(p.InteractableId, p.HumanId);
+
+    /// <summary>ZDO entry — invoked from <c>ComputerResolver.Apply</c>.</summary>
+    public static void ApplyLoginFromZdo(int interactableId, int humanId)
     {
-        var cc = ResolveComputer(p.InteractableId);
+        var cc = ResolveComputer(interactableId);
         if (cc == null) return;
 
         Human human = null;
-        if (p.HumanId >= 0)
+        if (humanId >= 0)
         {
             try
             {
                 var dict = CityData.Instance?.citizenDictionary;
-                if (dict != null) dict.TryGetValue(p.HumanId, out human);
+                if (dict != null) dict.TryGetValue(humanId, out human);
             }
             catch { }
         }
 
         IsApplyingRemote = true;
         try { cc.SetLoggedIn(human); }
-        catch (System.Exception ex) { Plugin.Log.LogWarning($"ApplyLogin({p.InteractableId}): {ex.Message}"); }
+        catch (System.Exception ex) { Plugin.Log.LogWarning($"ApplyLogin({interactableId}): {ex.Message}"); }
         finally { IsApplyingRemote = false; }
     }
 
     private static void ApplyApp(ComputerAppPacket p)
+        => ApplyAppFromZdo(p.InteractableId, p.PresetName, p.ForceUpdate);
+
+    /// <summary>ZDO entry — invoked from <c>ComputerResolver.Apply</c>.</summary>
+    public static void ApplyAppFromZdo(int interactableId, string presetName, bool forceUpdate)
     {
-        var cc = ResolveComputer(p.InteractableId);
+        var cc = ResolveComputer(interactableId);
         if (cc == null) return;
 
         CruncherAppPreset preset = null;
-        if (!string.IsNullOrEmpty(p.PresetName))
-            preset = ResolveAppPreset(p.PresetName);
+        if (!string.IsNullOrEmpty(presetName))
+            preset = ResolveAppPreset(presetName);
 
         IsApplyingRemote = true;
-        try { cc.SetComputerApp(preset, p.ForceUpdate); }
-        catch (System.Exception ex) { Plugin.Log.LogWarning($"ApplyApp({p.InteractableId}): {ex.Message}"); }
+        try { cc.SetComputerApp(preset, forceUpdate); }
+        catch (System.Exception ex) { Plugin.Log.LogWarning($"ApplyApp({interactableId}): {ex.Message}"); }
         finally { IsApplyingRemote = false; }
     }
 

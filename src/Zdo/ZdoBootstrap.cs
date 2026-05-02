@@ -50,6 +50,7 @@ public static class ZdoBootstrap
         PlayerInputPoller.Register();
         PauseStatePoller.Register();
         MoneyPoller.Register();
+        ZdoResolverRegistry.Register(new ComputerResolver());
         ComputerStatePoller.Register();
         MurderPoller.Register();
 

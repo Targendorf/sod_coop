@@ -83,22 +83,26 @@ public static class ElevatorSync
     }
 
     private static void ApplyCall(ElevatorCallPacket p)
+        => ApplyCallFromZdo(p.BuildingId, p.BottomTileCoord, p.NewFloor, p.UpButton);
+
+    /// <summary>ZDO entry — invoked from <c>ZdoEvents.OnElevatorCall</c>.</summary>
+    public static void ApplyCallFromZdo(int buildingId, Vector3Int bottomTileCoord, int newFloor, bool upButton)
     {
         try
         {
-            var elevator = ResolveElevator(p.BuildingId, p.BottomTileCoord);
+            var elevator = ResolveElevator(buildingId, bottomTileCoord);
             if (elevator == null)
             {
                 Plugin.Log.LogWarning(
-                    $"[ElevatorSync] ApplyCall: no elevator for building {p.BuildingId} btm {p.BottomTileCoord}");
+                    $"[ElevatorSync] ApplyCall: no elevator for building {buildingId} btm {bottomTileCoord}");
                 return;
             }
 
             IsApplyingRemote = true;
             try
             {
-                elevator.CallElevator(p.NewFloor, p.UpButton);
-                Plugin.Log.LogInfo($"[ElevatorSync] applied call bld={p.BuildingId} floor={p.NewFloor} up={p.UpButton}");
+                elevator.CallElevator(newFloor, upButton);
+                Plugin.Log.LogInfo($"[ElevatorSync] applied call bld={buildingId} floor={newFloor} up={upButton}");
             }
             finally
             {

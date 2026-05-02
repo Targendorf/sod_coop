@@ -57,6 +57,15 @@ public static class ZdoEvents
     /// <summary>Item dropped by a player — payload: <c>(int playerId, int interactableId)</c>.</summary>
     public const string ITEM_DROP            = "item-drop";
 
+    /// <summary>NPC took damage — payload: <c>(int victimHumanId, int attackerHumanId,
+    /// float amount, Vector3 hitPos, Vector3 hitDir, bool enableKill)</c>. Spatter
+    /// presets are not carried — receivers use defaults.</summary>
+    public const string NPC_DAMAGE_RICH      = "npc-damage-rich";
+
+    /// <summary>Elevator floor button pressed — payload: <c>(int buildingId,
+    /// int btmX, int btmY, int btmZ, int newFloor, bool upButton)</c>.</summary>
+    public const string ELEVATOR_CALL        = "elevator-call";
+
     public static void RegisterAll()
     {
         ZdoEventDispatcher.Register(CHAT,             OnChat);
@@ -83,6 +92,8 @@ public static class ZdoEvents
         ZdoEventDispatcher.Register(PLAYER_DAMAGE_RICH,    OnPlayerDamageRich);
         ZdoEventDispatcher.Register(ITEM_PICKUP,           OnItemPickup);
         ZdoEventDispatcher.Register(ITEM_DROP,             OnItemDrop);
+        ZdoEventDispatcher.Register(NPC_DAMAGE_RICH,       OnNpcDamageRich);
+        ZdoEventDispatcher.Register(ELEVATOR_CALL,         OnElevatorCall);
     }
 
     private static readonly NetDataWriter _w = new();
@@ -195,6 +206,33 @@ public static class ZdoEvents
         _w.Put(SoDCoop.Network.NetworkManager.LocalPlayerId);
         _w.Put(interactableId);
         ZdoEventDispatcher.Send(ITEM_DROP, _w);
+    }
+
+    public static void SendNpcDamage(int victimHumanId, int attackerHumanId, float amount,
+                                     UnityEngine.Vector3 hitPos, UnityEngine.Vector3 hitDir,
+                                     bool enableKill)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(victimHumanId);
+        _w.Put(attackerHumanId);
+        _w.Put(amount);
+        _w.Put(hitPos.x); _w.Put(hitPos.y); _w.Put(hitPos.z);
+        _w.Put(hitDir.x); _w.Put(hitDir.y); _w.Put(hitDir.z);
+        _w.Put(enableKill);
+        ZdoEventDispatcher.Send(NPC_DAMAGE_RICH, _w);
+    }
+
+    public static void SendElevatorCall(int buildingId, UnityEngine.Vector3Int btm,
+                                        int newFloor, bool upButton)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(buildingId);
+        _w.Put(btm.x); _w.Put(btm.y); _w.Put(btm.z);
+        _w.Put(newFloor);
+        _w.Put(upButton);
+        ZdoEventDispatcher.Send(ELEVATOR_CALL, _w);
     }
 
     // ── Handlers ──
@@ -356,6 +394,47 @@ public static class ZdoEvents
             catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnItemDrop] apply: {ex.Message}"); }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnItemDrop] {ex.Message}"); }
+    }
+
+    private static void OnElevatorCall(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int buildingId = r.GetInt();
+            int bx = r.GetInt(), by = r.GetInt(), bz = r.GetInt();
+            int newFloor = r.GetInt();
+            bool upButton = r.GetBool();
+            try
+            {
+                SoDCoop.Sync.ElevatorSync.ApplyCallFromZdo(
+                    buildingId, new UnityEngine.Vector3Int(bx, by, bz), newFloor, upButton);
+            }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnElevatorCall] apply: {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnElevatorCall] {ex.Message}"); }
+    }
+
+    private static void OnNpcDamageRich(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int victim    = r.GetInt();
+            int attacker  = r.GetInt();
+            float amount  = r.GetFloat();
+            float px = r.GetFloat(), py = r.GetFloat(), pz = r.GetFloat();
+            float dx = r.GetFloat(), dy = r.GetFloat(), dz = r.GetFloat();
+            bool enableKill = r.GetBool();
+            try
+            {
+                SoDCoop.Sync.DamageSync.ApplyFromZdo(
+                    victim, attacker, amount,
+                    new UnityEngine.Vector3(px, py, pz),
+                    new UnityEngine.Vector3(dx, dy, dz),
+                    enableKill);
+            }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnNpcDamageRich] apply: {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnNpcDamageRich] {ex.Message}"); }
     }
 
     private static void OnMoneyAdded(NetDataReader r, int senderId)

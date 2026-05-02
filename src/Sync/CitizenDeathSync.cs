@@ -108,33 +108,42 @@ public static class CitizenDeathSync
     }
 
     private static void ApplyDeath(CitizenDeathPacket p)
+        => ApplyDeathFromZdo(p.VictimHumanId, p.KillerHumanId, p.WeaponInteractableId, p.DeathPosition);
+
+    /// <summary>ZDO entry — invoked from <c>CitizenResolver.Apply</c> when
+    /// the per-citizen ZDO transitions <c>Dead=false→true</c>.</summary>
+    public static void ApplyDeathFromZdo(int victimHumanId, int killerHumanId,
+                                         int weaponInteractableId, UnityEngine.Vector3 deathPosition)
+    {
+        ApplyDeathImpl(victimHumanId, killerHumanId, weaponInteractableId, deathPosition);
+    }
+
+    private static void ApplyDeathImpl(int victimHumanId, int killerHumanId,
+                                        int weaponInteractableId, UnityEngine.Vector3 deathPosition)
     {
         // Find victim in citizenDictionary.
         Human victim = null;
         try
         {
             var dict = CityData.Instance?.citizenDictionary;
-            if (dict != null) dict.TryGetValue(p.VictimHumanId, out victim);
+            if (dict != null) dict.TryGetValue(victimHumanId, out victim);
         }
         catch { /* ignore */ }
 
         if (victim == null)
         {
-            Plugin.Log.LogWarning($"[DeathSync] victim humanID={p.VictimHumanId} not found");
+            Plugin.Log.LogWarning($"[DeathSync] victim humanID={victimHumanId} not found");
             return;
         }
         if (victim.isDead) return;   // already dead — idempotent
 
-        // Killer / weapon are best-effort: missing on the client is fine, the body
-        // still flips to dead. We don't try to construct a MurderController.Murder
-        // object; the host's MurderController is the authoritative case driver.
         Human killer = null;
         try
         {
-            if (p.KillerHumanId >= 0)
+            if (killerHumanId >= 0)
             {
                 var dict = CityData.Instance?.citizenDictionary;
-                if (dict != null) dict.TryGetValue(p.KillerHumanId, out killer);
+                if (dict != null) dict.TryGetValue(killerHumanId, out killer);
             }
         }
         catch { /* ignore */ }
@@ -142,11 +151,11 @@ public static class CitizenDeathSync
         Interactable weapon = null;
         try
         {
-            if (p.WeaponInteractableId >= 0)
+            if (weaponInteractableId >= 0)
             {
                 var dir = CityData.Instance?.interactableDirectory;
-                if (dir != null && p.WeaponInteractableId < dir.Count)
-                    weapon = dir[p.WeaponInteractableId];
+                if (dir != null && weaponInteractableId < dir.Count)
+                    weapon = dir[weaponInteractableId];
             }
         }
         catch { /* ignore */ }
@@ -154,21 +163,18 @@ public static class CitizenDeathSync
         IsApplyingRemote = true;
         try
         {
-            // Try the full Murder call first — it sets up the rag-doll, drop animations,
-            // wound state. If it throws (because of the null murder-case argument), fall
-            // back to a minimal flag-flip + animator + AI disable.
             try
             {
-                victim.Murder(killer, false /* setTimeOfDeath */, null, weapon, 0f);
+                victim.Murder(killer, false, null, weapon, 0f);
             }
             catch
             {
-                FallbackKill(victim, p.DeathPosition);
+                FallbackKill(victim, deathPosition);
             }
         }
         catch (System.Exception ex)
         {
-            Plugin.Log.LogWarning($"ApplyDeath({p.VictimHumanId}): {ex.Message}");
+            Plugin.Log.LogWarning($"ApplyDeath({victimHumanId}): {ex.Message}");
         }
         finally
         {

@@ -123,7 +123,18 @@ public static class ElevatorPoller
             }
 
             if (newestFloor < 0) return;
-            Sync.ElevatorSync.BroadcastCall(e, newestFloor, newestUp);
+            // Phase G.5 (Wave 2.4): unified RPC channel via
+            // ZdoEventDispatcher.ELEVATOR_CALL. Receiver applies via
+            // ElevatorSync.ApplyCallFromZdo.
+            if (ZdoFeatureFlags.UseZdoForEvents)
+            {
+                try { ZdoEvents.SendElevatorCall(e.building.buildingID, e.bottom.globalTileCoord, newestFloor, newestUp); }
+                catch (Exception ex) { Plugin.Log.LogWarning($"[ElevatorPoller] zdo: {ex.Message}"); }
+            }
+            else
+            {
+                Sync.ElevatorSync.BroadcastCall(e, newestFloor, newestUp);
+            }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[ElevatorPoller] broadcast: {ex.Message}"); }
     }
