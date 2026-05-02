@@ -2,10 +2,10 @@ using LiteNetLib;
 using LiteNetLib.Utils;
 using System;
 using System.Collections.Generic;
-using System.Net;
-using System.Net.Sockets;
+using SoDCoop.Network.Steam;
 using SoDCoop.Player;
 using SoDCoop.Sync;
+using Steamworks;
 using UnityEngine;
 
 namespace SoDCoop.Network;
@@ -16,148 +16,100 @@ namespace SoDCoop.Network;
 public enum ConnectionState
 {
     Disconnected,
+    /// <summary>Lobby creation pending (host) or LobbyEnter pending (client).</summary>
     Connecting,
     Connected,
     Hosting,
-    /// <summary>Client lost the socket and is auto-retrying. World state is
-    /// frozen but preserved so a successful reconnect resumes seamlessly.</summary>
+    /// <summary>Client lost the connection and is briefly waiting before
+    /// surfacing a hard disconnect to the UI. Steam P2P doesn't auto-redial
+    /// the way LiteNetLib's reconnect loop did — once the lobby is gone,
+    /// the user has to be re-invited.</summary>
     Reconnecting
 }
 
 /// <summary>
-/// Manages P2P network connections using LiteNetLib.
-/// Supports both Host-Client and Direct IP connections.
+/// P2P session manager backed by Steam SDR + a friends-only lobby. Replaces
+/// the previous LiteNetLib UDP/IP transport — there are no IPs, ports, or
+/// join codes any more. Hosts create a lobby + listen socket; friends accept
+/// invites via the Steam overlay (which fires <c>GameLobbyJoinRequested_t</c>
+/// → auto-join). The 99-entry <see cref="PacketType"/> dispatch and the
+/// character/handshake flow are unchanged from the LiteNetLib era — only the
+/// transport beneath them has swapped out.
 /// </summary>
 public static class NetworkManager
 {
     #region Constants
-    
-    private const int DEFAULT_PORT = 7777;
-    private const string CONNECTION_KEY = "SoDCoop_v1";
+
     private const int MAX_PLAYERS = 4;
-    private const int DISCONNECT_TIMEOUT = 5000; // ms
-    private const int UPDATE_INTERVAL = 15; // ms
 
     /// <summary>
     /// Seconds we keep a disconnected player's slot alive waiting for them to
-    /// reconnect with the same clientGuid. Covers wifi blips, TCP-style
-    /// transient drops, and momentary route flaps. After this expires the
-    /// player is finalised: removed from _players, PlayerLeft broadcast.
+    /// reconnect with the same clientGuid. Covers wifi blips and momentary
+    /// route flaps. After this expires the player is finalised: removed
+    /// from <see cref="_players"/>, PlayerLeft broadcast.
     /// </summary>
     private const float RECONNECT_GRACE_S = 5f;
 
-    /// <summary>How long the client keeps trying to re-establish a dropped
-    /// session before giving up and routing back to the main menu. Tuned
-    /// so a typical wifi blip / route flap is invisible to the user — the
-    /// host's reconnect-grace covers the first 5s seamlessly, retries past
-    /// that recover via a fresh handshake (CharacterStore record persists,
-    /// so identity is preserved).</summary>
-    private const float RECONNECT_TIMEOUT_S = 30f;
-
-    /// <summary>Seconds between reconnect attempts during the
-    /// <see cref="ConnectionState.Reconnecting"/> window.</summary>
-    private const float RECONNECT_RETRY_INTERVAL_S = 1.0f;
+    /// <summary>How long the client tolerates a dropped Steam connection
+    /// before falling back to a hard disconnect. SDR doesn't support
+    /// silent re-dial — the lobby may have been destroyed — so this is just
+    /// a short wait so transient blips don't pop the user back to the menu.</summary>
+    private const float RECONNECT_TIMEOUT_S = 8f;
 
     #endregion
-    
+
     #region Properties
-    
-    /// <summary>
-    /// Whether this instance is the host (server).
-    /// </summary>
+
     public static bool IsHost { get; private set; }
-    
-    /// <summary>
-    /// Whether connected to a session (as host or client).
-    /// </summary>
+
     public static bool IsConnected => State == ConnectionState.Connected || State == ConnectionState.Hosting;
-    
-    /// <summary>
-    /// Current connection state.
-    /// </summary>
+
     public static ConnectionState State { get; private set; } = ConnectionState.Disconnected;
-    
-    /// <summary>
-    /// Local player's network ID.
-    /// </summary>
+
     public static int LocalPlayerId { get; private set; } = -1;
-    
-    /// <summary>
-    /// Local player's display name. Set to "FirstName Surname" once character
-    /// is known (host: read from Game.Instance at StartHost; client: assigned
-    /// by host via handshake or after CharacterSubmit).
-    /// </summary>
+
     public static string LocalPlayerName { get; set; } = "Player";
-
-    /// <summary>
-    /// Local player's in-game first name. Mirrored into <see cref="LocalPlayerName"/>.
-    /// </summary>
     public static string LocalFirstName { get; private set; } = "";
-
-    /// <summary>
-    /// Local player's in-game surname. Mirrored into <see cref="LocalPlayerName"/>.
-    /// </summary>
     public static string LocalSurname { get; private set; } = "";
 
-    /// <summary>
-    /// Raised on the client when the host requests a character (no record yet
-    /// for our clientGuid in the host's seed). Carries (hostFirstName,
-    /// hostSurname, cityName) for context UI.
-    /// </summary>
     public static event Action<string, string, string> OnCharacterCreationRequired;
-
-    /// <summary>
-    /// Raised on the client when the host rejects a submitted character (e.g.
-    /// validation failed). Carries a human-readable reason so the creation
-    /// panel can surface it to the user.
-    /// </summary>
     public static event Action<string> OnCharacterRejected;
 
-    /// <summary>
-    /// Raised on the client when an unexpected socket drop is detected and
-    /// auto-reconnect attempts begin. Carries the LiteNetLib disconnect
-    /// reason. UI consumers should show a "reconnecting…" banner; world /
-    /// sync state is intentionally <b>not</b> torn down (RemotePlayers
-    /// stay spawned, SyncManager stays subscribed) so a successful retry
-    /// resumes seamlessly via the host's snapshot resend.
-    /// </summary>
+    /// <summary>Raised on the client when the Steam connection drops. Carries
+    /// the Steam-supplied debug string. UI consumers should show a
+    /// "reconnecting…" banner; world / sync state stays alive briefly to
+    /// hide one-frame blips, then transitions to OnDisconnected.</summary>
     public static event Action<string> OnConnectionLost;
 
-    /// <summary>
-    /// Raised after auto-reconnect successfully re-establishes the socket
-    /// (and the host has finished sending the recovery handshake). UI
-    /// consumers should hide the "reconnecting…" banner. Most subscribers
-    /// don't need this — <see cref="OnConnected"/> fires too on the
-    /// recovery handshake, so init paths are idempotent.
-    /// </summary>
+    /// <summary>Raised after a transient drop is followed by a successful
+    /// reconnect to the same host. Currently never fires under Steam P2P
+    /// (no auto-redial), kept for API parity in case we add lobby-mediated
+    /// reconnect later.</summary>
     public static event Action OnReconnected;
-    
-    /// <summary>
-    /// Connected peer (for client: the host; for host: null).
-    /// </summary>
-    public static NetPeer HostPeer { get; private set; }
-    
-    /// <summary>
-    /// List of connected client peers (only valid on host).
-    /// </summary>
-    public static IReadOnlyList<NetPeer> Clients => _clients;
-    
-    /// <summary>
-    /// All connected players info.
-    /// </summary>
-    public static IReadOnlyDictionary<int, PlayerNetInfo> Players => _players;
-    
-    /// <summary>
-    /// Current latency to host (client) or 0 (host).
-    /// </summary>
-    public static int Ping => HostPeer?.Ping ?? 0;
 
-    /// <summary>
-    /// Cheap "is anyone actually listening" check. True when host has at
-    /// least one fully-handshaked client, or when the local instance is a
-    /// client connected to a host. Use to skip broadcast bookkeeping
-    /// (serialization, log spam) when there's literally no one to receive.
-    /// </summary>
+    /// <summary>The host peer (client side) or null on host.</summary>
+    public static SteamPeer HostPeer { get; private set; }
+
+    public static IReadOnlyList<SteamPeer> Clients => _clients;
+    public static IReadOnlyDictionary<int, PlayerNetInfo> Players => _players;
+
+    /// <summary>Latency to host in ms (client) or 0 (host). Sourced from
+    /// SteamNetworkingSockets.GetQuickConnectionStatus.</summary>
+    public static int Ping
+    {
+        get
+        {
+            if (HostPeer == null) return 0;
+            try
+            {
+                if (SteamNetworkingSockets.GetQuickConnectionStatus(HostPeer.Connection, out var s))
+                    return s.m_nPing;
+            }
+            catch { }
+            return 0;
+        }
+    }
+
     public static bool HasPeers
     {
         get
@@ -166,24 +118,30 @@ public static class NetworkManager
             return HostPeer != null && State == ConnectionState.Connected;
         }
     }
-    
+
+    /// <summary>Steam lobby / host identifiers cached for the SessionStore
+    /// "rejoin recent" affordance and the UI to display "Hosted by …".</summary>
+    public static CSteamID LastHostSteamId { get; private set; }
+    public static CSteamID LastLobbyId     { get; private set; }
+    public static string   LastHostName    { get; private set; } = "";
+
+    public static string LastDisconnectReason { get; private set; } = "";
+
     #endregion
-    
+
     #region Events
-    
+
     public static event Action OnConnected;
     public static event Action<string> OnDisconnected;
     public static event Action<int, string> OnPlayerJoined;
     public static event Action<int, string> OnPlayerLeft;
-    public static event Action<PacketType, NetPacketReader, int> OnPacketReceived;
-    
+    public static event Action<PacketType, NetDataReader, int> OnPacketReceived;
+
     #endregion
-    
+
     #region Private Fields
-    
-    private static NetManager _netManager;
-    private static EventBasedNetListener _listener;
-    private static readonly List<NetPeer> _clients = new();
+
+    private static readonly List<SteamPeer> _clients = new();
     private static readonly Dictionary<int, PlayerNetInfo> _players = new();
     /// <summary>Used by handlers to BUILD payloads (handshake/joined/left).</summary>
     private static readonly NetDataWriter _writer = new();
@@ -193,225 +151,121 @@ public static class NetworkManager
     private static readonly NetDataWriter _sendWrapper = new();
     private static int _nextPlayerId = 1;
 
-    // ─── Reconnect state (client-side) ───────────────────────────────────
-    /// <summary>Saved at successful Connect so we can retry if the link drops.</summary>
-    private static string _lastHostIp;
-    private static int    _lastHostPort;
-    /// <summary>IP / port the local client successfully (or most recently) connected to.
-    /// Used by <see cref="SessionStore"/> to remember "where I was last playing" for
-    /// one-click rejoin from the main menu.</summary>
-    public  static string LastHostIp   => _lastHostIp;
-    public  static int    LastHostPort => _lastHostPort;
     /// <summary>Set by <see cref="Disconnect"/> so the OnPeerDisconnected handler
-    /// distinguishes a user-initiated tear-down from a transient network drop.</summary>
-    private static bool   _userInitiatedDisconnect;
-    /// <summary>Wall-clock seconds since reconnect attempts began (current loop).</summary>
-    private static float  _reconnectStartedAt;
-    /// <summary>Time of next attempt (gated by <see cref="RECONNECT_RETRY_INTERVAL_S"/>).</summary>
-    private static float  _nextReconnectAt;
-    /// <summary>Last reason string from LiteNetLib — surfaced in the banner UI.</summary>
-    public  static string LastDisconnectReason { get; private set; } = "";
-    /// <summary>How long the current reconnect window has been active. UI uses this
-    /// to render "Reconnecting… 4s / 30s".</summary>
-    public  static float ReconnectingSeconds => State == ConnectionState.Reconnecting
+    /// distinguishes a user-initiated tear-down from a transient drop.</summary>
+    private static bool _userInitiatedDisconnect;
+    private static float _reconnectStartedAt;
+    public static float ReconnectingSeconds => State == ConnectionState.Reconnecting
         ? Mathf.Max(0f, Time.unscaledTime - _reconnectStartedAt)
         : 0f;
-    public  static float ReconnectingTimeoutS => RECONNECT_TIMEOUT_S;
+    public static float ReconnectingTimeoutS => RECONNECT_TIMEOUT_S;
 
     #endregion
-    
+
     #region Initialization
-    
+
     public static void Initialize()
     {
         Plugin.Log.LogInfo("NetworkManager initializing...");
-        
-        _listener = new EventBasedNetListener();
-        SetupListeners();
-        
-        _netManager = new NetManager(_listener)
-        {
-            AutoRecycle = true,
-            DisconnectTimeout = DISCONNECT_TIMEOUT,
-            UpdateTime = UPDATE_INTERVAL,
-            IPv6Enabled = false,
-            NatPunchEnabled = true,
-            EnableStatistics = true,
-            // Phase G.5 wire-tuning: explicit values matching BetterNetworking-
-            // Valheim's profile so reliable retransmits don't pile up under
-            // 4-player burst load and reconnection retries are predictable.
-            PingInterval        = 1000,   // ms — keep-alive heartbeat
-            ReconnectDelay      = 500,    // ms between connection retries
-            MaxConnectAttempts  = 10,     // ~5 s total before giving up
-            ChannelsCount       = 4,      // critical / reliable / sequenced / unreliable
-            UnconnectedMessagesEnabled = false,
-        };
-        
+
+        // Hook the Steam transport callbacks once, statically. Multiple
+        // Initialize/Shutdown cycles within one process re-use them.
+        SteamCallbacks.Initialize();
+        SteamTransport.OnPeerConnected     += HandleTransportPeerConnected;
+        SteamTransport.OnPeerDisconnected  += HandleTransportPeerDisconnected;
+        SteamTransport.OnConnected         += HandleTransportClientConnected;
+        SteamTransport.OnConnectFailed     += HandleTransportConnectFailed;
+        SteamTransport.OnMessage           += HandleTransportMessage;
+
         Plugin.Log.LogInfo("NetworkManager initialized.");
     }
-    
+
     public static void Shutdown()
     {
         Disconnect();
-        _netManager?.Stop();
-        _netManager = null;
-        _listener = null;
+        SteamTransport.OnPeerConnected     -= HandleTransportPeerConnected;
+        SteamTransport.OnPeerDisconnected  -= HandleTransportPeerDisconnected;
+        SteamTransport.OnConnected         -= HandleTransportClientConnected;
+        SteamTransport.OnConnectFailed     -= HandleTransportConnectFailed;
+        SteamTransport.OnMessage           -= HandleTransportMessage;
+        SteamTransport.Shutdown();
         Plugin.Log.LogInfo("NetworkManager shutdown.");
     }
-    
-    private static void SetupListeners()
-    {
-        _listener.ConnectionRequestEvent += OnConnectionRequest;
-        _listener.PeerConnectedEvent += OnPeerConnected;
-        _listener.PeerDisconnectedEvent += OnPeerDisconnected;
-        _listener.NetworkReceiveEvent += OnNetworkReceive;
-        _listener.NetworkErrorEvent += OnNetworkError;
-    }
-    
+
     #endregion
-    
+
     #region Host/Connect/Disconnect
-    
+
     /// <summary>
-    /// Start hosting a game session.
+    /// Begin hosting a session. Creates a friends-only Steam lobby; once
+    /// Steam confirms it, <see cref="OnSteamLobbyHostReady"/> finishes the
+    /// host-side bring-up. Returns true if the request was issued — actual
+    /// "ready" arrives via <see cref="OnConnected"/>.
     /// </summary>
-    public static bool StartHost(int port = DEFAULT_PORT)
+    public static bool StartHost()
     {
-        if (IsConnected)
+        if (IsConnected || State == ConnectionState.Connecting)
         {
             Plugin.Log.LogWarning("Already connected. Disconnect first.");
             return false;
         }
-        
-        try
+
+        // Plugin may have loaded before SoD's SteamAPIController; retry
+        // initialization here. Idempotent — no-op if already hooked.
+        SteamCallbacks.Initialize();
+        if (!SteamCallbacks.IsInitialized)
         {
-            if (!_netManager.Start(port))
-            {
-                Plugin.Log.LogError($"Failed to start host on port {port}");
-                return false;
-            }
-            
-            IsHost = true;
-            State = ConnectionState.Hosting;
-            LocalPlayerId = 0; // Host is always ID 0
-
-            // Pull host's character name from SoD's Game singleton — host doesn't
-            // get prompted for a nickname; their in-game character IS who they are
-            // online. If the host started hosting before loading a save (degenerate
-            // case), the names come back empty and we fall back to "Host".
-            var (hostFirst, hostSur) = CharacterStore.ReadHostCharacter();
-            if (string.IsNullOrEmpty(hostFirst) && string.IsNullOrEmpty(hostSur))
-            {
-                hostFirst = "Host";
-                hostSur   = "";
-                Plugin.Log.LogWarning("[NetworkManager] Game.Instance has no player name yet — using fallback 'Host'.");
-            }
-            LocalFirstName  = hostFirst;
-            LocalSurname    = hostSur;
-            LocalPlayerName = string.IsNullOrEmpty(hostSur) ? hostFirst : $"{hostFirst} {hostSur}";
-
-            // Add self to players list
-            _players[LocalPlayerId] = new PlayerNetInfo
-            {
-                PlayerId = LocalPlayerId,
-                PlayerName = LocalPlayerName,
-                FirstName = LocalFirstName,
-                Surname = LocalSurname,
-                IsHost = true,
-                CharacterAssigned = true,
-            };
-
-            // Phase B.1: re-stamp every previously-assigned client twin's
-            // name onto its citizen. SoD reloads citizens from the save with
-            // their original procedurally-generated names; we have to
-            // re-apply our overrides every host startup.
-            try { TwinManager.ReapplyAll(CharacterStore.CurrentSeed()); }
-            catch (Exception ex) { Plugin.Log.LogWarning($"TwinManager.ReapplyAll: {ex.Message}"); }
-            
-            Plugin.Log.LogInfo($"Hosting on port {port}. Waiting for players...");
-            OnConnected?.Invoke();
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Plugin.Log.LogError($"Failed to start host: {ex}");
+            Plugin.Log.LogError("[NetworkManager] StartHost: Steam not initialized — is the game running through Steam?");
             return false;
         }
+
+        IsHost = true;
+        State = ConnectionState.Connecting;
+
+        SteamLobby.CreateLobbyAsync();
+        return true;
     }
-    
+
     /// <summary>
-    /// Connect to a host by IP address.
+    /// Connect to a host by their Steam lobby ID. Auto-invoked by the Steam
+    /// overlay's "Join Game" path; UI also calls it from the Friends button
+    /// once the user picks an inviter.
     /// </summary>
-    public static bool Connect(string ip, int port = DEFAULT_PORT)
+    public static bool Connect(CSteamID lobbyId)
     {
-        if (IsConnected)
+        if (IsConnected || State == ConnectionState.Connecting)
         {
             Plugin.Log.LogWarning("Already connected. Disconnect first.");
             return false;
         }
-        
-        try
+
+        SteamCallbacks.Initialize();
+        if (!SteamCallbacks.IsInitialized)
         {
-            if (!_netManager.Start())
-            {
-                Plugin.Log.LogError("Failed to start client network");
-                return false;
-            }
-            
-            IsHost = false;
-            State = ConnectionState.Connecting;
-
-            // Send our stable client GUID in the connection-data so the host
-            // can look up (or kick off creation of) our character record for
-            // this seed. Reset cached local names — host will tell us what
-            // we are after the handshake (or after CharacterSubmit roundtrip).
-            LocalFirstName = "";
-            LocalSurname   = "";
-            LocalPlayerName = "Player";
-
-            _writer.Reset();
-            _writer.Put(CharacterIdentity.ClientGuid);
-
-            var peer = _netManager.Connect(ip, port, _writer);
-            if (peer == null)
-            {
-                Plugin.Log.LogError($"Failed to connect to {ip}:{port}");
-                _netManager.Stop();
-                State = ConnectionState.Disconnected;
-                return false;
-            }
-
-            HostPeer = peer;
-            // Cache for the auto-reconnect loop on transient drops.
-            _lastHostIp   = ip;
-            _lastHostPort = port;
-            _userInitiatedDisconnect = false;
-            Plugin.Log.LogInfo($"Connecting to {ip}:{port}...");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Plugin.Log.LogError($"Failed to connect: {ex}");
-            State = ConnectionState.Disconnected;
+            Plugin.Log.LogError("[NetworkManager] Connect: Steam not initialized.");
             return false;
         }
+
+        IsHost = false;
+        State = ConnectionState.Connecting;
+        LocalFirstName = "";
+        LocalSurname = "";
+        LocalPlayerName = "Player";
+
+        SteamLobby.JoinLobby(lobbyId);
+        return true;
     }
-    
-    /// <summary>
-    /// Disconnect from the current session.
-    /// </summary>
+
     public static void Disconnect()
     {
         if (!IsConnected && State != ConnectionState.Connecting && State != ConnectionState.Reconnecting) return;
 
         Plugin.Log.LogInfo("Disconnecting...");
 
-        // Flag intent so the OnPeerDisconnected handler doesn't kick off the
-        // auto-reconnect loop when we're tearing down deliberately.
         _userInitiatedDisconnect = true;
 
-        _netManager.DisconnectAll();
-        _netManager.Stop();
+        SteamTransport.CloseAllPeers("user disconnect");
+        SteamLobby.LeaveLobby();
 
         _clients.Clear();
         _players.Clear();
@@ -420,19 +274,97 @@ public static class NetworkManager
         State = ConnectionState.Disconnected;
         LocalPlayerId = -1;
         HostPeer = null;
-        _lastHostIp = null;
-        _lastHostPort = 0;
+        LastHostSteamId = CSteamID.Nil;
+        LastLobbyId = CSteamID.Nil;
 
         OnDisconnected?.Invoke("User disconnected");
     }
-    
+
     #endregion
-    
+
+    #region SteamLobby callback shims
+
+    /// <summary>Called by <see cref="SteamLobby"/> after the host's lobby is
+    /// successfully created. Spins up the listen socket and finishes
+    /// host-side bring-up.</summary>
+    internal static void OnSteamLobbyHostReady()
+    {
+        if (!IsHost) return;
+
+        if (!SteamTransport.StartListening())
+        {
+            Plugin.Log.LogError("[NetworkManager] Listen socket creation failed — aborting host.");
+            Disconnect();
+            return;
+        }
+
+        State = ConnectionState.Hosting;
+        LocalPlayerId = 0;
+
+        var (hostFirst, hostSur) = CharacterStore.ReadHostCharacter();
+        if (string.IsNullOrEmpty(hostFirst) && string.IsNullOrEmpty(hostSur))
+        {
+            hostFirst = "Host";
+            hostSur = "";
+            Plugin.Log.LogWarning("[NetworkManager] Game.Instance has no player name yet — using fallback 'Host'.");
+        }
+        LocalFirstName = hostFirst;
+        LocalSurname = hostSur;
+        LocalPlayerName = string.IsNullOrEmpty(hostSur) ? hostFirst : $"{hostFirst} {hostSur}";
+
+        _players[LocalPlayerId] = new PlayerNetInfo
+        {
+            PlayerId = LocalPlayerId,
+            PlayerName = LocalPlayerName,
+            FirstName = LocalFirstName,
+            Surname = LocalSurname,
+            IsHost = true,
+            CharacterAssigned = true,
+        };
+
+        try { TwinManager.ReapplyAll(CharacterStore.CurrentSeed()); }
+        catch (Exception ex) { Plugin.Log.LogWarning($"TwinManager.ReapplyAll: {ex.Message}"); }
+
+        LastLobbyId = SteamLobby.CurrentLobby;
+        LastHostSteamId = SteamLobby.HostSteamId;
+        LastHostName = LocalPlayerName;
+
+        Plugin.Log.LogInfo($"Hosting via Steam (lobby={LastLobbyId.m_SteamID}). Waiting for players...");
+        OnConnected?.Invoke();
+    }
+
+    internal static void OnSteamLobbyCreateFailed(string reason)
+    {
+        Plugin.Log.LogError($"[NetworkManager] hosting aborted: {reason}");
+        IsHost = false;
+        State = ConnectionState.Disconnected;
+        LastDisconnectReason = reason;
+        OnDisconnected?.Invoke($"Host failed: {reason}");
+    }
+
+    /// <summary>Called by <see cref="SteamLobby"/> after the client
+    /// successfully entered a lobby. Fires the actual SteamNetworkingSockets
+    /// connect to the host.</summary>
+    internal static void OnSteamLobbyJoined(CSteamID lobbyId, CSteamID hostId, string hostName)
+    {
+        if (IsHost) return;
+
+        LastLobbyId = lobbyId;
+        LastHostSteamId = hostId;
+        LastHostName = hostName ?? "";
+        _userInitiatedDisconnect = false;
+
+        if (!SteamTransport.ConnectTo(hostId))
+        {
+            State = ConnectionState.Disconnected;
+            OnDisconnected?.Invoke("Failed to dial host");
+        }
+    }
+
+    #endregion
+
     #region Send Methods
-    
-    /// <summary>
-    /// Send a packet to all connected peers.
-    /// </summary>
+
     public static void SendToAll(PacketType type, NetDataWriter data, DeliveryMethod delivery = DeliveryMethod.ReliableOrdered)
     {
         if (!IsConnected) return;
@@ -443,33 +375,27 @@ public static class NetworkManager
 
         if (IsHost)
         {
-            foreach (var client in _clients)
+            for (int i = 0; i < _clients.Count; i++)
             {
-                client.Send(_sendWrapper, delivery);
+                SteamTransport.Send(_clients[i], _sendWrapper.Data, 0, _sendWrapper.Length, delivery);
             }
         }
-        else
+        else if (HostPeer != null)
         {
-            HostPeer?.Send(_sendWrapper, delivery);
+            SteamTransport.Send(HostPeer, _sendWrapper.Data, 0, _sendWrapper.Length, delivery);
         }
     }
 
-    /// <summary>
-    /// Send a packet to a specific peer.
-    /// </summary>
-    public static void SendTo(NetPeer peer, PacketType type, NetDataWriter data, DeliveryMethod delivery = DeliveryMethod.ReliableOrdered)
+    public static void SendTo(SteamPeer peer, PacketType type, NetDataWriter data, DeliveryMethod delivery = DeliveryMethod.ReliableOrdered)
     {
         if (peer == null) return;
 
         _sendWrapper.Reset();
         _sendWrapper.Put((byte)type);
         _sendWrapper.Put(data.Data, 0, data.Length);
-        peer.Send(_sendWrapper, delivery);
+        SteamTransport.Send(peer, _sendWrapper.Data, 0, _sendWrapper.Length, delivery);
     }
 
-    /// <summary>
-    /// Send a packet to the host (client only).
-    /// </summary>
     public static void SendToHost(PacketType type, NetDataWriter data, DeliveryMethod delivery = DeliveryMethod.ReliableOrdered)
     {
         if (IsHost || HostPeer == null) return;
@@ -477,114 +403,85 @@ public static class NetworkManager
         _sendWrapper.Reset();
         _sendWrapper.Put((byte)type);
         _sendWrapper.Put(data.Data, 0, data.Length);
-        HostPeer.Send(_sendWrapper, delivery);
+        SteamTransport.Send(HostPeer, _sendWrapper.Data, 0, _sendWrapper.Length, delivery);
     }
-    
+
     #endregion
-    
+
     #region Update
-    
+
+    /// <summary>Last wall-clock time we tried to initialize Steam callbacks.
+    /// If the plugin loaded before SoD's SteamAPIController init'd Steam,
+    /// the first attempt fails and we re-try once per second so friend
+    /// invites (GameLobbyJoinRequested) start firing as soon as possible.</summary>
+    private static float _nextSteamInitRetryAt;
+
     public static void Update()
     {
-        _netManager?.PollEvents();
+        if (!SteamCallbacks.IsInitialized)
+        {
+            float t = Time.unscaledTime;
+            if (t >= _nextSteamInitRetryAt)
+            {
+                _nextSteamInitRetryAt = t + 1f;
+                SteamCallbacks.Initialize();
+            }
+        }
+
+        SteamCallbacks.RunCallbacks();
+        SteamTransport.Pump();
+
         if (IsHost) FinalisePendingDisconnects();
         else if (State == ConnectionState.Reconnecting) TickReconnect();
         TickStatsLog();
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  NetStatistics periodic dump — BetterNetworking-style observability.
-    //  Every 30 s logs bytes/packets in/out + outgoing reliable/unreliable
-    //  splits + last-known peer ping. Written as one line so users can grep
-    //  LogOutput.log for "NetStats" and produce a quick bandwidth report.
-    // ─────────────────────────────────────────────────────────────────────────
     private const float STATS_LOG_INTERVAL_S = 30f;
     private static float _nextStatsLogAt;
+
     private static void TickStatsLog()
     {
-        if (_netManager == null) return;
         if (!IsConnected) return;
-        float now = UnityEngine.Time.unscaledTime;
+        float now = Time.unscaledTime;
         if (now < _nextStatsLogAt) return;
         _nextStatsLogAt = now + STATS_LOG_INTERVAL_S;
 
         try
         {
-            var s = _netManager.Statistics;
-            if (s == null) return;
+            var snap = SteamTransport.Snapshot();
             int peers = IsHost ? _clients.Count : (HostPeer != null ? 1 : 0);
-            float pingMs = 0;
-            try { if (HostPeer != null) pingMs = HostPeer.Ping; } catch { }
             Plugin.Log.LogInfo(
-                $"[NetStats] peers={peers} pkts(in/out)={s.PacketsReceived}/{s.PacketsSent} " +
-                $"bytes(in/out)={s.BytesReceived}/{s.BytesSent} ping={pingMs:F0}ms");
+                $"[NetStats] peers={peers} (steam) ping={snap.pingMs}ms");
         }
-        catch { /* statistics may be disposed mid-shutdown */ }
+        catch { }
     }
 
-    /// <summary>
-    /// Drives the auto-reconnect loop on the client when
-    /// <see cref="State"/> is <see cref="ConnectionState.Reconnecting"/>.
-    /// Issues a fresh <c>_netManager.Connect</c> at most once per
-    /// <see cref="RECONNECT_RETRY_INTERVAL_S"/>; gives up after
-    /// <see cref="RECONNECT_TIMEOUT_S"/> by falling through to the same
-    /// tear-down a user-initiated disconnect performs.
-    /// </summary>
     private static void TickReconnect()
     {
         float now = Time.unscaledTime;
 
-        // Timed out — bail out and let the UI route to main menu.
+        // Steam SDR doesn't support silent re-dial — once the connection's
+        // dead, the lobby may also be gone. Wait a short grace and then
+        // surface a hard disconnect to the UI.
         if (now - _reconnectStartedAt >= RECONNECT_TIMEOUT_S)
         {
-            Plugin.Log.LogWarning($"[NetworkManager] reconnect timed out after {RECONNECT_TIMEOUT_S}s — giving up.");
-            try { _netManager?.Stop(); } catch { }
+            string final = string.IsNullOrEmpty(LastDisconnectReason)
+                ? "Connection lost"
+                : $"Connection lost ({LastDisconnectReason})";
+            Plugin.Log.LogWarning($"[NetworkManager] reconnect window expired — surfacing disconnect: {final}");
             State = ConnectionState.Disconnected;
             HostPeer = null;
             _players.Clear();
-            _lastHostIp = null;
-            _lastHostPort = 0;
-
-            string final = string.IsNullOrEmpty(LastDisconnectReason)
-                ? "Reconnect timed out"
-                : $"Reconnect timed out ({LastDisconnectReason})";
+            LastHostSteamId = CSteamID.Nil;
             OnDisconnected?.Invoke(final);
-            return;
-        }
-
-        if (now < _nextReconnectAt) return;
-        _nextReconnectAt = now + RECONNECT_RETRY_INTERVAL_S;
-
-        // Issue a connect attempt with the same clientGuid as the original
-        // session. If the host's reconnect-grace window is still open, it'll
-        // restore our slot via FindPendingReconnect; if it has expired, we
-        // fall through to a fresh handshake (CharacterStore record persists,
-        // so the user keeps their identity).
-        try
-        {
-            _writer.Reset();
-            _writer.Put(CharacterIdentity.ClientGuid);
-            var peer = _netManager?.Connect(_lastHostIp, _lastHostPort, _writer);
-            if (peer != null) HostPeer = peer;
-        }
-        catch (Exception ex)
-        {
-            Plugin.Log.LogWarning($"[NetworkManager] reconnect attempt failed: {ex.Message}");
         }
     }
 
-    /// <summary>
-    /// Sweep <see cref="_players"/> for slots whose <see cref="PlayerNetInfo.DisconnectedAt"/>
-    /// has been non-zero for longer than <see cref="RECONNECT_GRACE_S"/>.
-    /// Those become full PlayerLeft broadcasts and are removed from the
-    /// roster. Cheap — usually no work, runs once per frame on the host.
-    /// </summary>
     private static void FinalisePendingDisconnects()
     {
         if (_players.Count == 0) return;
         float now = Time.unscaledTime;
 
-        // Collect first to avoid mutating the dict mid-iteration.
         List<int> toRemove = null;
         foreach (var kvp in _players)
         {
@@ -603,193 +500,296 @@ public static class NetworkManager
 
             _writer.Reset();
             _writer.Put(id);
-            foreach (var client in _clients)
+            for (int i = 0; i < _clients.Count; i++)
             {
-                SendTo(client, PacketType.PlayerLeft, _writer);
+                SendTo(_clients[i], PacketType.PlayerLeft, _writer);
             }
             Plugin.Log.LogInfo($"Player '{name}' (ID: {id}) reconnect-grace expired — finalising disconnect.");
             OnPlayerLeft?.Invoke(id, name);
         }
     }
-    
+
     #endregion
-    
-    #region Event Handlers
-    
-    private static void OnConnectionRequest(ConnectionRequest request)
+
+    #region Transport handlers
+
+    private static void HandleTransportPeerConnected(SteamPeer peer)
     {
         if (!IsHost)
         {
-            request.Reject();
+            // Defensive — listen socket only exists on host.
             return;
         }
-        
+
         if (_clients.Count >= MAX_PLAYERS - 1)
         {
-            Plugin.Log.LogWarning("Connection rejected: Server full");
-            request.Reject();
-            return;
-        }
-        
-        // Read the client's stable GUID from the connection-data; the host
-        // uses it to look up an existing character record (or kick off
-        // creation) for the current world seed.
-        var reader = request.Data;
-        var clientGuid = reader.TryGetString(out var guid) ? guid : "";
-        if (string.IsNullOrEmpty(clientGuid))
-        {
-            Plugin.Log.LogWarning($"Connection rejected: missing client GUID from {request.RemoteEndPoint}");
-            request.Reject();
+            Plugin.Log.LogWarning($"[NetworkManager] reject {peer.SteamId.m_SteamID} — server full.");
+            SteamTransport.CloseConnection(peer, "server full");
             return;
         }
 
-        var peer = request.Accept();
-        peer.Tag = clientGuid;
-        Plugin.Log.LogInfo($"Client GUID '{clientGuid}' connecting from {peer.Address}:{peer.Port}");
+        // Reserve a slot but mark not-yet-assigned so we don't broadcast a
+        // half-formed peer to others until we know their identity. The
+        // client auto-ships its clientGuid in the first CharacterSubmit
+        // packet (see HandleTransportClientConnected on the client side).
+        int playerId = _nextPlayerId++;
+        _players[playerId] = new PlayerNetInfo
+        {
+            PlayerId = playerId,
+            PlayerName = $"Player {playerId}",
+            Peer = peer,
+            IsHost = false,
+            ClientGuid = "",
+            CharacterAssigned = false,
+        };
+        Plugin.Log.LogInfo($"[NetworkManager] peer {peer.SteamId.m_SteamID} connected — slot {playerId} reserved, awaiting bootstrap.");
     }
 
-    /// <summary>
-    /// Host-only. Look up an existing player slot whose clientGuid matches
-    /// and is currently in the reconnect-grace window. Returns -1 / null on
-    /// miss (= treat as a fresh peer).
-    /// </summary>
-    private static (int playerId, PlayerNetInfo info) FindPendingReconnect(string clientGuid)
+    private static void HandleTransportPeerDisconnected(SteamPeer peer, string reason)
     {
-        if (string.IsNullOrEmpty(clientGuid)) return (-1, null);
-        foreach (var kvp in _players)
+        if (!IsHost)
         {
-            var p = kvp.Value;
-            if (p == null) continue;
-            if (!p.IsAwaitingReconnect) continue;
-            if (string.IsNullOrEmpty(p.ClientGuid)) continue;
-            if (p.ClientGuid != clientGuid) continue;
-            return (kvp.Key, p);
-        }
-        return (-1, null);
-    }
+            // Client: the host connection dropped. Surface a brief
+            // Reconnecting window so the world / sync state isn't ripped
+            // out under one-frame blips, then fall through to a hard
+            // disconnect via TickReconnect after RECONNECT_TIMEOUT_S. SDR
+            // doesn't auto-redial — if the lobby's gone, the user has to
+            // accept a fresh invite.
+            LastDisconnectReason = reason ?? "";
 
-    private static void OnPeerConnected(NetPeer peer)
-    {
-        if (IsHost)
-        {
-            string clientGuid = (peer.Tag as string) ?? "";
-
-            // Reconnect path: same clientGuid is in the grace window. Restore
-            // the existing slot, swap in the new NetPeer reference, send a
-            // fresh Handshake so they re-sync. No PlayerJoined broadcast —
-            // other peers never saw a PlayerLeft, the slot was kept alive.
-            var (existingId, existingInfo) = FindPendingReconnect(clientGuid);
-            if (existingId >= 0 && existingInfo != null)
+            if (_userInitiatedDisconnect)
             {
-                existingInfo.Peer = peer;
-                existingInfo.DisconnectedAt = 0f;
-                if (!_clients.Contains(peer)) _clients.Add(peer);
-
-                // Re-send handshake so the client re-learns its playerId and
-                // current player roster (the client side fully cleared on
-                // disconnect, so it needs everything again).
-                _writer.Reset();
-                _writer.Put(existingId);
-                _writer.Put(_players.Count);
-                foreach (var p in _players.Values)
-                {
-                    _writer.Put(p.PlayerId);
-                    _writer.Put(p.PlayerName);
-                    _writer.Put(p.IsHost);
-                    _writer.Put(p.FirstName ?? "");
-                    _writer.Put(p.Surname ?? "");
-                }
-                SendTo(peer, PacketType.Handshake, _writer);
-
-                Plugin.Log.LogInfo($"[NetworkManager] reconnect: restored playerId={existingId} ({existingInfo.PlayerName}) from {peer.Address}:{peer.Port}");
-
-                // Re-push every late-join snapshot — they may have missed
-                // updates during the disconnect grace.
-                try { SoDCoop.Sync.SideJobSync   .SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"SideJobSync.SendSnapshotTo (reconnect): {ex.Message}"); }
-                try { SoDCoop.Sync.VmailSync     .SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"VmailSync.SendSnapshotTo (reconnect): {ex.Message}"); }
-                try { SoDCoop.Sync.EvidenceSync  .SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"EvidenceSync.SendSnapshotTo (reconnect): {ex.Message}"); }
-                try { SoDCoop.Sync.WorldStateSync.SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"WorldStateSync.SendSnapshotTo (reconnect): {ex.Message}"); }
-                try { SoDCoop.Sync.CaseBoardSync .SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"CaseBoardSync.SendSnapshotTo (reconnect): {ex.Message}"); }
-                try { SoDCoop.Sync.ItemSync      .SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"ItemSync.SendSnapshotTo (reconnect): {ex.Message}"); }
-                try { SoDCoop.Sync.FootprintSync .SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"FootprintSync.SendSnapshotTo (reconnect): {ex.Message}"); }
-                try { SoDCoop.Sync.AppearanceSync.SendSnapshotTo(peer); } catch (System.Exception ex) { Plugin.Log.LogWarning($"AppearanceSync.SendSnapshotTo (reconnect): {ex.Message}"); }
+                State = ConnectionState.Disconnected;
+                HostPeer = null;
+                _players.Clear();
+                _userInitiatedDisconnect = false;
+                Plugin.Log.LogInfo($"Disconnected from host: {reason}");
+                OnDisconnected?.Invoke(reason ?? "user disconnected");
                 return;
             }
 
-            // Fresh peer path. We deliberately do NOT add to _clients yet —
-            // that's done in AssignCharacterAndCompleteHandshake once we
-            // know they have a name. Otherwise SendToAll would broadcast
-            // world state to a peer that hasn't received its handshake yet.
-            int playerId = _nextPlayerId++;
-            string seed = CharacterStore.CurrentSeed();
+            State = ConnectionState.Reconnecting;
+            HostPeer = null;
+            _reconnectStartedAt = Time.unscaledTime;
+            Plugin.Log.LogWarning($"[NetworkManager] connection lost ({reason}) — waiting up to {RECONNECT_TIMEOUT_S}s before surfacing disconnect.");
+            try { OnConnectionLost?.Invoke(reason ?? ""); } catch { }
+            return;
+        }
 
-            // Reserve a slot but mark not-yet-assigned so we don't broadcast a
-            // half-formed peer to others until we have a real name.
-            _players[playerId] = new PlayerNetInfo
-            {
-                PlayerId = playerId,
-                PlayerName = $"Player {playerId}",
-                Peer = peer,
-                IsHost = false,
-                ClientGuid = clientGuid,
-                CharacterAssigned = false,
-            };
+        // Host: a client connection died. Strip from the broadcast list.
+        _clients.Remove(peer);
 
-            var existing = CharacterStore.TryGet(seed, clientGuid);
-            if (existing != null)
+        int playerId = -1;
+        PlayerNetInfo info = null;
+        foreach (var kvp in _players)
+        {
+            if (kvp.Value.Peer == peer)
             {
-                Plugin.Log.LogInfo($"[NetworkManager] returning client {clientGuid} → {existing.FirstName} {existing.Surname}");
-                AssignCharacterAndCompleteHandshake(peer, playerId, existing.FirstName, existing.Surname);
+                playerId = kvp.Key;
+                info = kvp.Value;
+                break;
             }
-            else
-            {
-                Plugin.Log.LogInfo($"[NetworkManager] new client {clientGuid} for seed \"{seed}\" — requesting character creation");
-                SendCharacterCreationRequired(peer);
-            }
+        }
+
+        if (playerId < 0 || info == null) return;
+
+        if (!info.CharacterAssigned)
+        {
+            _players.Remove(playerId);
+            Plugin.Log.LogInfo($"Pending peer (ID: {playerId}) gave up before character creation: {reason}");
+            return;
+        }
+
+        info.DisconnectedAt = Time.unscaledTime;
+        info.Peer = null;
+        Plugin.Log.LogInfo($"Player '{info.PlayerName}' (ID: {playerId}) disconnected: {reason} — awaiting reconnect for {RECONNECT_GRACE_S}s.");
+    }
+
+    /// <summary>Client-side: the SteamNetworkingSockets connect succeeded.
+    /// Now ship our clientGuid so the host can resolve our identity.</summary>
+    private static void HandleTransportClientConnected(SteamPeer peer)
+    {
+        if (IsHost) return;
+
+        bool wasReconnecting = State == ConnectionState.Reconnecting;
+        State = ConnectionState.Connected;
+        HostPeer = peer;
+
+        // Ship clientGuid as the first packet — host's Handshake handler
+        // looks for the GUID on the inbound connection-data exchange.
+        _writer.Reset();
+        _writer.Put(CharacterIdentity.ClientGuid);
+        SendToHost(PacketType.CharacterSubmit, _writer);
+        // ↑ Bootstrapping: we use CharacterSubmit as the GUID-bearing first
+        // packet because (a) it's already host→client validated and (b) it
+        // already triggers the character-assignment flow downstream. The
+        // host's HandleCharacterSubmit reads the GUID from the slot's
+        // PlayerNetInfo (set at HandleTransportPeerConnected time) before
+        // touching the firstName/surName fields, so it doesn't matter that
+        // those are empty at this stage. Once profile-driven submit kicks
+        // in (via OnCharacterCreationRequired), the client re-sends with
+        // real names.
+
+        if (wasReconnecting)
+        {
+            Plugin.Log.LogInfo($"[NetworkManager] reconnected to host {peer.SteamId.m_SteamID} after {Time.unscaledTime - _reconnectStartedAt:F1}s — awaiting recovery handshake.");
+            try { OnReconnected?.Invoke(); } catch (Exception ex) { Plugin.Log.LogWarning($"OnReconnected handler: {ex.Message}"); }
         }
         else
         {
-            // Client: TCP connection established. We do NOT fire OnConnected
-            // yet — that waits until the full Handshake arrives (which the
-            // host sends either immediately or after our CharacterSubmit
-            // round-trip).
-            bool wasReconnecting = State == ConnectionState.Reconnecting;
-            State = ConnectionState.Connected;
-            HostPeer = peer;
-
-            if (wasReconnecting)
-            {
-                Plugin.Log.LogInfo($"[NetworkManager] reconnected to {peer.Address}:{peer.Port} after {Time.unscaledTime - _reconnectStartedAt:F1}s — awaiting recovery handshake.");
-                try { OnReconnected?.Invoke(); } catch (Exception ex) { Plugin.Log.LogWarning($"OnReconnected handler: {ex.Message}"); }
-            }
-            else
-            {
-                Plugin.Log.LogInfo($"Connected to host at {peer.Address}:{peer.Port} (waiting for handshake / character flow)");
-            }
+            Plugin.Log.LogInfo($"Connected to host {peer.SteamId.m_SteamID} (waiting for handshake / character flow)");
         }
     }
 
-    /// <summary>
-    /// Host-only. Sends a CharacterRejected packet with a human-readable
-    /// reason. The client's creation panel surfaces the reason in red and
-    /// stays open for re-submission.
-    /// </summary>
-    private static void SendCharacterRejected(NetPeer peer, string reason)
+    private static void HandleTransportConnectFailed(string reason)
+    {
+        if (IsHost) return;
+
+        Plugin.Log.LogError($"[NetworkManager] connect failed: {reason}");
+        LastDisconnectReason = reason ?? "";
+        State = ConnectionState.Disconnected;
+        HostPeer = null;
+        try { SteamLobby.LeaveLobby(); } catch { }
+        OnDisconnected?.Invoke($"Connect failed: {reason}");
+    }
+
+    /// <summary>Used for star-topology rebroadcast: when host receives a packet from
+    /// client A, it must forward the same bytes to clients B, C, ... so all
+    /// peers see each other's events.</summary>
+    private static readonly NetDataWriter _forwardWrapper = new();
+    private static readonly NetDataWriter _remapScratch = new();
+
+    private static bool IsForwardableFromClient(PacketType type)
+    {
+        switch (type)
+        {
+            case PacketType.Handshake:
+            case PacketType.PlayerJoined:
+            case PacketType.PlayerLeft:
+            case PacketType.CharacterCreationRequired:
+            case PacketType.CharacterSubmit:
+            case PacketType.CharacterReset:
+            case PacketType.CharacterRejected:
+            case PacketType.HostStatus:
+            case PacketType.SideJobNotification:
+            case PacketType.SideJobAcceptRequest:
+            case PacketType.SideJobHandInRequest:
+                return false;
+            default:
+                return true;
+        }
+    }
+
+    /// <summary>Receives a fully-framed message from the Steam transport.
+    /// Wire format: <c>byte type + payload bytes</c> (same as the LiteNetLib
+    /// era; the type byte was prepended in SendToAll/SendTo/SendToHost).</summary>
+    private static void HandleTransportMessage(SteamPeer peer, byte[] payload, int length)
+    {
+        try
+        {
+            var reader = new NetDataReader(payload, 0, length);
+            var packetType = (PacketType)reader.GetByte();
+            int senderId = GetPlayerIdByPeer(peer);
+
+            // Capture body before dispatch (which advances the reader) so
+            // we can rebroadcast to other clients.
+            byte[] forwardBody = null;
+            int forwardBodyLen = 0;
+            if (IsHost && _clients.Count >= 2 && IsForwardableFromClient(packetType))
+            {
+                forwardBodyLen = reader.AvailableBytes;
+                if (forwardBodyLen > 0)
+                {
+                    forwardBody = new byte[forwardBodyLen];
+                    Buffer.BlockCopy(reader.RawData, reader.Position, forwardBody, 0, forwardBodyLen);
+                }
+            }
+
+            switch (packetType)
+            {
+                case PacketType.Handshake:
+                    HandleHandshake(reader);
+                    break;
+                case PacketType.PlayerJoined:
+                    HandlePlayerJoined(reader);
+                    break;
+                case PacketType.PlayerLeft:
+                    HandlePlayerLeft(reader);
+                    break;
+                case PacketType.CharacterCreationRequired:
+                    HandleCharacterCreationRequired(reader);
+                    break;
+                case PacketType.CharacterSubmit:
+                    HandleCharacterSubmit(reader, peer);
+                    break;
+                case PacketType.CharacterReset:
+                    HandleCharacterReset(peer);
+                    break;
+                case PacketType.CharacterRejected:
+                    HandleCharacterRejected(reader);
+                    break;
+                default:
+                    OnPacketReceived?.Invoke(packetType, reader, senderId);
+                    break;
+            }
+
+            if (forwardBody != null && _clients.Count >= 2)
+            {
+                try
+                {
+                    NetDataWriter remapped = packetType switch
+                    {
+                        PacketType.FingerprintAdd   => SoDCoop.Sync.FingerprintSync.RemapForForward(forwardBody, forwardBodyLen, senderId, _remapScratch),
+                        PacketType.FootprintAdd     => SoDCoop.Sync.FootprintSync.RemapForForward(forwardBody, forwardBodyLen, senderId, _remapScratch),
+                        PacketType.EvidenceCreate   => SoDCoop.Sync.EvidenceSync.RemapForForward(forwardBody, forwardBodyLen, senderId, _remapScratch),
+                        PacketType.PlayerAppearance => SoDCoop.Sync.AppearanceSync.RemapForForward(forwardBody, forwardBodyLen, senderId, _remapScratch),
+                        _ => null,
+                    };
+
+                    _forwardWrapper.Reset();
+                    _forwardWrapper.Put((byte)packetType);
+                    if (remapped != null)
+                        _forwardWrapper.Put(remapped.Data, 0, remapped.Length);
+                    else
+                        _forwardWrapper.Put(forwardBody, 0, forwardBodyLen);
+
+                    // Best-effort: forward at the same delivery class. The
+                    // transport-level message we just received doesn't tell
+                    // us which channel was used, so default to ReliableOrdered
+                    // for forwarded traffic (matches the legacy default).
+                    for (int i = 0; i < _clients.Count; i++)
+                    {
+                        var c = _clients[i];
+                        if (c == peer) continue;
+                        SteamTransport.Send(c, _forwardWrapper.Data, 0, _forwardWrapper.Length, DeliveryMethod.ReliableOrdered);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Log.LogWarning($"HandleTransportMessage forward-send: {ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogError($"Error processing packet: {ex}");
+        }
+    }
+
+    #endregion
+
+    #region Host-side handshake helpers
+
+    private static void SendCharacterRejected(SteamPeer peer, string reason)
     {
         _writer.Reset();
         _writer.Put(reason ?? "Character rejected by host.");
         SendTo(peer, PacketType.CharacterRejected, _writer);
     }
 
-    /// <summary>
-    /// Host-only. Sends the CharacterCreationRequired packet to a peer that
-    /// has no record yet for this world seed. Carries the host's own
-    /// character name + city name as context for the creation UI.
-    /// </summary>
-    private static void SendCharacterCreationRequired(NetPeer peer)
+    private static void SendCharacterCreationRequired(SteamPeer peer)
     {
         string cityName = CharacterStore.CurrentCityName();
-
         _writer.Reset();
         _writer.Put(LocalFirstName ?? "");
         _writer.Put(LocalSurname ?? "");
@@ -797,13 +797,12 @@ public static class NetworkManager
         SendTo(peer, PacketType.CharacterCreationRequired, _writer);
     }
 
-    /// <summary>
-    /// Host-only. Promotes a peer from "pending character" to "fully joined":
-    /// stamps the assigned name into PlayerNetInfo, sends Handshake to the new
-    /// peer (so it learns the full player list incl. itself), and broadcasts
-    /// PlayerJoined to existing peers so they see the new player appear.
-    /// </summary>
-    private static void AssignCharacterAndCompleteHandshake(NetPeer peer, int playerId, string firstName, string surName)
+    /// <summary>Host-only. Promotes a peer from "pending character" to
+    /// "fully joined": stamps the assigned name into PlayerNetInfo, sends
+    /// Handshake to the new peer (so it learns the full player list incl.
+    /// itself), and broadcasts PlayerJoined to existing peers so they see
+    /// the new player appear.</summary>
+    private static void AssignCharacterAndCompleteHandshake(SteamPeer peer, int playerId, string firstName, string surName)
     {
         if (!_players.TryGetValue(playerId, out var info))
         {
@@ -812,17 +811,12 @@ public static class NetworkManager
         }
 
         info.FirstName = firstName ?? "";
-        info.Surname   = surName ?? "";
-        info.PlayerName = string.IsNullOrEmpty(info.Surname)
-            ? info.FirstName
-            : $"{info.FirstName} {info.Surname}";
+        info.Surname = surName ?? "";
+        info.PlayerName = string.IsNullOrEmpty(info.Surname) ? info.FirstName : $"{info.FirstName} {info.Surname}";
         info.CharacterAssigned = true;
 
-        // Now that the peer has a name, add them to the broadcast list so
-        // they start receiving world-state SendToAll traffic.
         if (!_clients.Contains(peer)) _clients.Add(peer);
 
-        // Send the new client its full handshake (player list incl. itself).
         _writer.Reset();
         _writer.Put(playerId);
         _writer.Put(_players.Count);
@@ -836,14 +830,14 @@ public static class NetworkManager
         }
         SendTo(peer, PacketType.Handshake, _writer);
 
-        // Notify existing peers (everyone except the new joiner).
         _writer.Reset();
         _writer.Put(playerId);
         _writer.Put(info.PlayerName);
         _writer.Put(info.FirstName ?? "");
         _writer.Put(info.Surname ?? "");
-        foreach (var client in _clients)
+        for (int i = 0; i < _clients.Count; i++)
         {
+            var client = _clients[i];
             if (client != peer)
             {
                 SendTo(client, PacketType.PlayerJoined, _writer);
@@ -853,281 +847,22 @@ public static class NetworkManager
         Plugin.Log.LogInfo($"Player '{info.PlayerName}' (ID: {playerId}) fully joined. Total: {_clients.Count + 1}");
         OnPlayerJoined?.Invoke(playerId, info.PlayerName);
 
-        // Late-join snapshots — push current authoritative state of every
-        // system that holds runtime mutations (i.e. anything not pure
-        // seed-deterministic). Without these, a mid-session joiner sees
-        // their world frozen in load-time configuration:
-        //   • Side jobs already created
-        //   • Vmail threads (also catches player-triggered vmails)
-        //   • Evidence discoveries (so they don't re-discover everything)
-        //   • Door / light / switch states (open doors stay open)
-        try { SoDCoop.Sync.SideJobSync   .SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"SideJobSync.SendSnapshotTo: {ex.Message}"); }
-        try { SoDCoop.Sync.VmailSync     .SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"VmailSync.SendSnapshotTo: {ex.Message}"); }
-        try { SoDCoop.Sync.EvidenceSync  .SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"EvidenceSync.SendSnapshotTo: {ex.Message}"); }
+        try { SoDCoop.Sync.SideJobSync.SendSnapshotTo(peer); }    catch (Exception ex) { Plugin.Log.LogWarning($"SideJobSync.SendSnapshotTo: {ex.Message}"); }
+        try { SoDCoop.Sync.VmailSync.SendSnapshotTo(peer); }      catch (Exception ex) { Plugin.Log.LogWarning($"VmailSync.SendSnapshotTo: {ex.Message}"); }
+        try { SoDCoop.Sync.EvidenceSync.SendSnapshotTo(peer); }   catch (Exception ex) { Plugin.Log.LogWarning($"EvidenceSync.SendSnapshotTo: {ex.Message}"); }
         try { SoDCoop.Sync.WorldStateSync.SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"WorldStateSync.SendSnapshotTo: {ex.Message}"); }
-        try { SoDCoop.Sync.CaseBoardSync .SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"CaseBoardSync.SendSnapshotTo: {ex.Message}"); }
-        try { SoDCoop.Sync.ItemSync      .SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"ItemSync.SendSnapshotTo: {ex.Message}"); }
-        try { SoDCoop.Sync.FootprintSync .SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"FootprintSync.SendSnapshotTo: {ex.Message}"); }
+        try { SoDCoop.Sync.CaseBoardSync.SendSnapshotTo(peer); }  catch (Exception ex) { Plugin.Log.LogWarning($"CaseBoardSync.SendSnapshotTo: {ex.Message}"); }
+        try { SoDCoop.Sync.ItemSync.SendSnapshotTo(peer); }       catch (Exception ex) { Plugin.Log.LogWarning($"ItemSync.SendSnapshotTo: {ex.Message}"); }
+        try { SoDCoop.Sync.FootprintSync.SendSnapshotTo(peer); }  catch (Exception ex) { Plugin.Log.LogWarning($"FootprintSync.SendSnapshotTo: {ex.Message}"); }
         try { SoDCoop.Sync.AppearanceSync.SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"AppearanceSync.SendSnapshotTo: {ex.Message}"); }
-        // Unified ZDO snapshot — covers everything migrated to ZDO so far,
-        // additive to legacy snapshots above. Each ZDO type's resolver applies
-        // state to the live SoD world on the receiving peer.
-        try { SoDCoop.Zdo.ZdoMan.SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"ZdoMan.SendSnapshotTo: {ex.Message}"); }
+        try { SoDCoop.Zdo.ZdoMan.SendSnapshotTo(peer); }          catch (Exception ex) { Plugin.Log.LogWarning($"ZdoMan.SendSnapshotTo: {ex.Message}"); }
     }
 
-    private static void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)
-    {
-        if (IsHost)
-        {
-            // Host: client disconnected. Always remove the dead NetPeer from
-            // the broadcast list immediately — it's a stale socket reference.
-            _clients.Remove(peer);
-
-            // Find the player slot.
-            int playerId = -1;
-            PlayerNetInfo info = null;
-            foreach (var kvp in _players)
-            {
-                if (kvp.Value.Peer == peer)
-                {
-                    playerId = kvp.Key;
-                    info = kvp.Value;
-                    break;
-                }
-            }
-
-            if (playerId < 0 || info == null) return;
-
-            // Pre-character-creation peers: never announced, drop silently.
-            if (!info.CharacterAssigned)
-            {
-                _players.Remove(playerId);
-                Plugin.Log.LogInfo($"Pending peer (ID: {playerId}) gave up before character creation: {disconnectInfo.Reason}");
-                return;
-            }
-
-            // Reconnect grace: keep the slot alive for RECONNECT_GRACE_S
-            // seconds. If the same clientGuid comes back in that window,
-            // FindPendingReconnect / OnPeerConnected restore it. If not,
-            // FinalisePendingDisconnects fires PlayerLeft and removes.
-            info.DisconnectedAt = Time.unscaledTime;
-            info.Peer = null;
-            Plugin.Log.LogInfo($"Player '{info.PlayerName}' (ID: {playerId}) disconnected: {disconnectInfo.Reason} — awaiting reconnect for {RECONNECT_GRACE_S}s.");
-        }
-        else
-        {
-            // Client: disconnected from host. Two paths:
-            //
-            //  • User initiated (clicked Disconnect / Reset character) →
-            //    full tear-down, route to MainPanel.
-            //  • Network drop (timeout, route flap, etc.) → enter
-            //    Reconnecting state and try to silently re-establish for
-            //    RECONNECT_TIMEOUT_S. World state, RemotePlayer GameObjects,
-            //    SyncManager subscriptions all stay alive across the gap so
-            //    a successful retry resumes seamlessly.
-            string reason = disconnectInfo.Reason.ToString();
-            LastDisconnectReason = reason;
-
-            bool userInitiated = _userInitiatedDisconnect
-                              || disconnectInfo.Reason == LiteNetLib.DisconnectReason.DisconnectPeerCalled;
-
-            if (!userInitiated && !string.IsNullOrEmpty(_lastHostIp))
-            {
-                State = ConnectionState.Reconnecting;
-                HostPeer = null;
-                _reconnectStartedAt = Time.unscaledTime;
-                _nextReconnectAt    = Time.unscaledTime;   // first attempt fires on next Update tick
-
-                Plugin.Log.LogWarning($"[NetworkManager] connection lost ({reason}) — auto-reconnecting to {_lastHostIp}:{_lastHostPort} for up to {RECONNECT_TIMEOUT_S}s.");
-                OnConnectionLost?.Invoke(reason);
-                // Note: do NOT clear _players or fire OnDisconnected — world
-                // / sync state stays put for the duration of the retry window.
-                return;
-            }
-
-            // Final disconnect path.
-            State = ConnectionState.Disconnected;
-            HostPeer = null;
-            _players.Clear();
-            _userInitiatedDisconnect = false;
-
-            Plugin.Log.LogInfo($"Disconnected from host: {reason}");
-            OnDisconnected?.Invoke(reason);
-        }
-    }
-    
-    /// <summary>
-    /// Used for star-topology rebroadcast: when host receives a packet from
-    /// client A, it must forward the same bytes to clients B, C, ... so all
-    /// peers see each other's events. Distinct from <see cref="_sendWrapper"/>
-    /// to avoid aliasing during nested dispatch.
-    /// </summary>
-    private static readonly NetDataWriter _forwardWrapper = new();
-
-    /// <summary>
-    /// Scratch buffer for forensics-attribution remap during forward (used
-    /// only on the host's path, when a client-originated forensics packet
-    /// needs its humanID rewritten to the sender's twin before being
-    /// forwarded to other clients). Separate from <see cref="_forwardWrapper"/>
-    /// so the remap output and the wrap-with-type-prefix output don't alias.
-    /// </summary>
-    private static readonly NetDataWriter _remapScratch = new();
-
-    /// <summary>
-    /// Packet types that are NOT host-rebroadcast to other clients.
-    /// Mostly handshake / connection-flow packets that have specific
-    /// host↔single-peer semantics, plus packets host already broadcasts
-    /// itself via SendToAll (HostStatus, SideJobNotification).
-    /// </summary>
-    private static bool IsForwardableFromClient(PacketType type)
-    {
-        switch (type)
-        {
-            case PacketType.Handshake:                  // host→client only
-            case PacketType.PlayerJoined:               // host→client only
-            case PacketType.PlayerLeft:                 // host→client only
-            case PacketType.CharacterCreationRequired:  // host→single client
-            case PacketType.CharacterSubmit:            // client→host only (no fan-out)
-            case PacketType.CharacterReset:             // client→host only
-            case PacketType.CharacterRejected:          // host→single client
-            case PacketType.HostStatus:                 // host originates, already SendToAll
-            case PacketType.SideJobNotification:        // host originates
-            case PacketType.SideJobAcceptRequest:       // client→host only; host re-broadcasts upsert
-            case PacketType.SideJobHandInRequest:       // client→host only; host re-broadcasts upsert
-                return false;
-            default:
-                return true;
-        }
-    }
-
-    private static void OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channel, DeliveryMethod deliveryMethod)
-    {
-        try
-        {
-            var packetType = (PacketType)reader.GetByte();
-            int senderId = GetPlayerIdByPeer(peer);
-
-            // Host-side star-topology rebroadcast: capture the body bytes
-            // BEFORE dispatch (which advances the reader), then forward to
-            // all *other* clients after dispatch completes. The originating
-            // peer is skipped to avoid self-echo. Sender preservation: the
-            // SenderId field inside the packet body stays at the original
-            // client's LocalPlayerId (host-assigned), so receiving clients
-            // correctly distinguish "from peer N" vs their own echo.
-            byte[] forwardBody = null;
-            int    forwardBodyLen = 0;
-            if (IsHost && _clients.Count >= 2 && IsForwardableFromClient(packetType))
-            {
-                try
-                {
-                    forwardBodyLen = reader.AvailableBytes;
-                    if (forwardBodyLen > 0)
-                    {
-                        forwardBody = new byte[forwardBodyLen];
-                        System.Buffer.BlockCopy(reader.RawData, reader.Position, forwardBody, 0, forwardBodyLen);
-                    }
-                }
-                catch (System.Exception ex)
-                {
-                    Plugin.Log.LogWarning($"OnNetworkReceive forward-capture: {ex.Message}");
-                    forwardBody = null;
-                }
-            }
-
-            switch (packetType)
-            {
-                case PacketType.Handshake:
-                    HandleHandshake(reader);
-                    break;
-
-                case PacketType.PlayerJoined:
-                    HandlePlayerJoined(reader);
-                    break;
-
-                case PacketType.PlayerLeft:
-                    HandlePlayerLeft(reader);
-                    break;
-
-                case PacketType.CharacterCreationRequired:
-                    HandleCharacterCreationRequired(reader);
-                    break;
-
-                case PacketType.CharacterSubmit:
-                    HandleCharacterSubmit(reader, peer);
-                    break;
-
-                case PacketType.CharacterReset:
-                    HandleCharacterReset(peer);
-                    break;
-
-                case PacketType.CharacterRejected:
-                    HandleCharacterRejected(reader);
-                    break;
-
-                default:
-                    // Forward to registered handlers
-                    OnPacketReceived?.Invoke(packetType, reader, senderId);
-                    break;
-            }
-
-            // Star-topology forward to other clients (host only). After
-            // dispatch so any host-side modification has had a chance to
-            // run on the host's local state.
-            //
-            // For forensics packets that carry a humanID (Footprint /
-            // Fingerprint / EvidenceCreate's writer), forward the bytes
-            // with the humanID REWRITTEN to the sender's twin humanID —
-            // otherwise other clients receive the originating client's
-            // local humanID which is meaningless on their machine. For
-            // every other packet type, forward raw.
-            if (forwardBody != null && _clients.Count >= 2)
-            {
-                try
-                {
-                    NetDataWriter remapped = packetType switch
-                    {
-                        PacketType.FingerprintAdd    => SoDCoop.Sync.FingerprintSync.RemapForForward(forwardBody, forwardBodyLen, senderId, _remapScratch),
-                        PacketType.FootprintAdd      => SoDCoop.Sync.FootprintSync  .RemapForForward(forwardBody, forwardBodyLen, senderId, _remapScratch),
-                        PacketType.EvidenceCreate    => SoDCoop.Sync.EvidenceSync   .RemapForForward(forwardBody, forwardBodyLen, senderId, _remapScratch),
-                        PacketType.PlayerAppearance  => SoDCoop.Sync.AppearanceSync .RemapForForward(forwardBody, forwardBodyLen, senderId, _remapScratch),
-                        _ => null,
-                    };
-
-                    _forwardWrapper.Reset();
-                    _forwardWrapper.Put((byte)packetType);
-                    if (remapped != null)
-                        _forwardWrapper.Put(remapped.Data, 0, remapped.Length);
-                    else
-                        _forwardWrapper.Put(forwardBody, 0, forwardBodyLen);
-
-                    foreach (var c in _clients)
-                    {
-                        if (c == peer) continue; // skip originator
-                        c.Send(_forwardWrapper, deliveryMethod);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Plugin.Log.LogWarning($"OnNetworkReceive forward-send: {ex.Message}");
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Plugin.Log.LogError($"Error processing packet: {ex}");
-        }
-    }
-    
-    private static void OnNetworkError(IPEndPoint endPoint, SocketError error)
-    {
-        Plugin.Log.LogError($"Network error from {endPoint}: {error}");
-    }
-    
     #endregion
-    
+
     #region Packet Handlers
-    
-    private static void HandleHandshake(NetPacketReader reader)
+
+    private static void HandleHandshake(NetDataReader reader)
     {
         LocalPlayerId = reader.GetInt();
         int playerCount = reader.GetInt();
@@ -1151,23 +886,19 @@ public static class NetworkManager
                 CharacterAssigned = true,
             };
 
-            // Mirror our own character into the local fields used by the rest
-            // of the codebase (chat, nametags, HUD).
             if (id == LocalPlayerId)
             {
-                LocalFirstName  = firstName;
-                LocalSurname    = surName;
+                LocalFirstName = firstName;
+                LocalSurname = surName;
                 LocalPlayerName = name;
             }
         }
 
         Plugin.Log.LogInfo($"Handshake complete. Assigned ID: {LocalPlayerId}. Players online: {playerCount}. I am '{LocalPlayerName}'.");
-
-        // NOW we can fire OnConnected — the lobby flow is allowed to proceed.
         OnConnected?.Invoke();
     }
 
-    private static void HandlePlayerJoined(NetPacketReader reader)
+    private static void HandlePlayerJoined(NetDataReader reader)
     {
         int playerId = reader.GetInt();
         string playerName = reader.GetString();
@@ -1188,34 +919,28 @@ public static class NetworkManager
         OnPlayerJoined?.Invoke(playerId, playerName);
     }
 
-    /// <summary>
-    /// Client-side. Host has no character record for our (seed, clientGuid)
-    /// pair — surfaces the host's name + city name to the UI so it can show
-    /// "Welcome to &lt;city&gt;! Create your character." Also raises
-    /// <see cref="OnCharacterCreationRequired"/> so the menu opens the
-    /// creation panel.
-    /// </summary>
-    private static void HandleCharacterCreationRequired(NetPacketReader reader)
+    private static void HandleCharacterCreationRequired(NetDataReader reader)
     {
         string hostFirst = reader.GetString();
-        string hostSur   = reader.GetString();
-        string cityName  = reader.GetString();
+        string hostSur = reader.GetString();
+        string cityName = reader.GetString();
 
         Plugin.Log.LogInfo($"[NetworkManager] host requested character creation (host: \"{hostFirst} {hostSur}\", city: \"{cityName}\")");
         OnCharacterCreationRequired?.Invoke(hostFirst, hostSur, cityName);
     }
 
-    /// <summary>
-    /// Host-side. A client has just submitted the first/surname for their
-    /// character. Validate, persist, then complete the deferred handshake.
-    /// </summary>
-    private static void HandleCharacterSubmit(NetPacketReader reader, NetPeer peer)
+    /// <summary>Host-side. The first <see cref="PacketType.CharacterSubmit"/>
+    /// from a freshly-connected client always carries just the clientGuid
+    /// (no names) — that's the bootstrap packet shipped by
+    /// <see cref="HandleTransportClientConnected"/>. Subsequent submits carry
+    /// real names.</summary>
+    private static void HandleCharacterSubmit(NetDataReader reader, SteamPeer peer)
     {
         if (!IsHost) return;
 
-        string firstName = reader.GetString();
-        string surName   = reader.GetString();
-
+        // Decode: either {guid} (bootstrap) or {firstName, surName} (real).
+        // Easiest way to distinguish: peer's slot has CharacterAssigned=false
+        // AND ClientGuid is empty → expect bootstrap (one string).
         int playerId = -1;
         PlayerNetInfo info = null;
         foreach (var kvp in _players)
@@ -1224,17 +949,86 @@ public static class NetworkManager
         }
         if (info == null)
         {
-            Plugin.Log.LogWarning($"[NetworkManager] CharacterSubmit from unknown peer {peer.Address}:{peer.Port}");
+            Plugin.Log.LogWarning($"[NetworkManager] CharacterSubmit from unknown peer {peer.DisplayName}");
             return;
         }
+
+        bool isBootstrap = !info.CharacterAssigned && string.IsNullOrEmpty(info.ClientGuid);
+        if (isBootstrap)
+        {
+            string guid = reader.GetString();
+            if (string.IsNullOrEmpty(guid))
+            {
+                Plugin.Log.LogWarning($"[NetworkManager] bootstrap CharacterSubmit from {peer.DisplayName} carried empty GUID — disconnecting.");
+                SteamTransport.CloseConnection(peer, "missing client GUID");
+                return;
+            }
+
+            info.ClientGuid = guid;
+            peer.ClientGuid = guid;
+
+            // Reconnect path: same clientGuid is in the grace window. Restore
+            // the existing slot, swap in the new SteamPeer reference, send a
+            // fresh Handshake so they re-sync. Drop the freshly-allocated slot.
+            var (existingId, existingInfo) = FindPendingReconnect(guid);
+            if (existingId >= 0 && existingInfo != null && existingId != playerId)
+            {
+                Plugin.Log.LogInfo($"[NetworkManager] reconnect: restoring playerId={existingId} ({existingInfo.PlayerName}) for {peer.SteamId.m_SteamID}");
+                _players.Remove(playerId); // discard the bootstrap slot
+                existingInfo.Peer = peer;
+                existingInfo.DisconnectedAt = 0f;
+                if (!_clients.Contains(peer)) _clients.Add(peer);
+
+                _writer.Reset();
+                _writer.Put(existingId);
+                _writer.Put(_players.Count);
+                foreach (var p in _players.Values)
+                {
+                    _writer.Put(p.PlayerId);
+                    _writer.Put(p.PlayerName);
+                    _writer.Put(p.IsHost);
+                    _writer.Put(p.FirstName ?? "");
+                    _writer.Put(p.Surname ?? "");
+                }
+                SendTo(peer, PacketType.Handshake, _writer);
+
+                try { SoDCoop.Sync.SideJobSync.SendSnapshotTo(peer); }    catch (Exception ex) { Plugin.Log.LogWarning($"SideJobSync.SendSnapshotTo (reconnect): {ex.Message}"); }
+                try { SoDCoop.Sync.VmailSync.SendSnapshotTo(peer); }      catch (Exception ex) { Plugin.Log.LogWarning($"VmailSync.SendSnapshotTo (reconnect): {ex.Message}"); }
+                try { SoDCoop.Sync.EvidenceSync.SendSnapshotTo(peer); }   catch (Exception ex) { Plugin.Log.LogWarning($"EvidenceSync.SendSnapshotTo (reconnect): {ex.Message}"); }
+                try { SoDCoop.Sync.WorldStateSync.SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"WorldStateSync.SendSnapshotTo (reconnect): {ex.Message}"); }
+                try { SoDCoop.Sync.CaseBoardSync.SendSnapshotTo(peer); }  catch (Exception ex) { Plugin.Log.LogWarning($"CaseBoardSync.SendSnapshotTo (reconnect): {ex.Message}"); }
+                try { SoDCoop.Sync.ItemSync.SendSnapshotTo(peer); }       catch (Exception ex) { Plugin.Log.LogWarning($"ItemSync.SendSnapshotTo (reconnect): {ex.Message}"); }
+                try { SoDCoop.Sync.FootprintSync.SendSnapshotTo(peer); }  catch (Exception ex) { Plugin.Log.LogWarning($"FootprintSync.SendSnapshotTo (reconnect): {ex.Message}"); }
+                try { SoDCoop.Sync.AppearanceSync.SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"AppearanceSync.SendSnapshotTo (reconnect): {ex.Message}"); }
+                return;
+            }
+
+            // Fresh client — look up existing character record by (seed, guid).
+            string seed = CharacterStore.CurrentSeed();
+            var existing = CharacterStore.TryGet(seed, guid);
+            if (existing != null)
+            {
+                Plugin.Log.LogInfo($"[NetworkManager] returning client {guid} → {existing.FirstName} {existing.Surname}");
+                AssignCharacterAndCompleteHandshake(peer, playerId, existing.FirstName, existing.Surname);
+            }
+            else
+            {
+                Plugin.Log.LogInfo($"[NetworkManager] new client {guid} for seed \"{seed}\" — requesting character creation");
+                SendCharacterCreationRequired(peer);
+            }
+            return;
+        }
+
+        // Real submission: validated names from the client.
+        string firstName = reader.GetString();
+        string surName = reader.GetString();
+
         if (info.CharacterAssigned)
         {
             Plugin.Log.LogWarning($"[NetworkManager] CharacterSubmit but {playerId} is already assigned — ignoring resubmission.");
             return;
         }
 
-        // Server-side validation. The client UI also validates, but never
-        // trust the wire.
         var err = CharacterStore.ValidateName(firstName) ?? CharacterStore.ValidateName(surName);
         if (err != null)
         {
@@ -1243,43 +1037,42 @@ public static class NetworkManager
             return;
         }
 
-        string seed = CharacterStore.CurrentSeed();
-        var saved = CharacterStore.Save(seed, info.ClientGuid, firstName, surName);
+        string seedFresh = CharacterStore.CurrentSeed();
+        var saved = CharacterStore.Save(seedFresh, info.ClientGuid, firstName, surName);
 
-        // Phase B.1: pick (or re-confirm) a city citizen as this client's
-        // in-world identity, and stamp the chosen name onto that Human so
-        // SoD's NPC dialog / IDs / banking see them as a real person. The
-        // resulting humanID is persisted into the same record.
-        int twinHumanID = TwinManager.EnsureTwinAssigned(seed, saved);
+        int twinHumanID = TwinManager.EnsureTwinAssigned(seedFresh, saved);
         if (twinHumanID > 0)
             Plugin.Log.LogInfo($"[NetworkManager] {firstName} {surName} → twin citizen humanID={twinHumanID}");
 
         AssignCharacterAndCompleteHandshake(peer, playerId, firstName, surName);
     }
 
-    /// <summary>
-    /// Client-side. Host rejected our submitted character (validation failed).
-    /// Surfaces the reason via <see cref="OnCharacterRejected"/> so the
-    /// creation panel can show it in red.
-    /// </summary>
-    private static void HandleCharacterRejected(NetPacketReader reader)
+    private static (int playerId, PlayerNetInfo info) FindPendingReconnect(string clientGuid)
+    {
+        if (string.IsNullOrEmpty(clientGuid)) return (-1, null);
+        foreach (var kvp in _players)
+        {
+            var p = kvp.Value;
+            if (p == null) continue;
+            if (!p.IsAwaitingReconnect) continue;
+            if (string.IsNullOrEmpty(p.ClientGuid)) continue;
+            if (p.ClientGuid != clientGuid) continue;
+            return (kvp.Key, p);
+        }
+        return (-1, null);
+    }
+
+    private static void HandleCharacterRejected(NetDataReader reader)
     {
         string reason = reader.GetString();
         Plugin.Log.LogWarning($"[NetworkManager] host rejected our character: {reason}");
         OnCharacterRejected?.Invoke(reason);
     }
 
-    /// <summary>
-    /// Host-side. A client requested to forget its character record on this
-    /// world. We delete the record + unfreeze their old twin citizen + kick
-    /// the peer. The client is responsible for wiping its own local
-    /// clientGuid (see <see cref="Player.CharacterIdentity.Reset"/>).
-    /// </summary>
-    private static void HandleCharacterReset(NetPeer peer)
+    private static void HandleCharacterReset(SteamPeer peer)
     {
         if (!IsHost) return;
 
-        // Find the player's record by peer.
         string clientGuid = null;
         int playerId = -1;
         foreach (var kvp in _players)
@@ -1293,7 +1086,7 @@ public static class NetworkManager
         }
         if (string.IsNullOrEmpty(clientGuid))
         {
-            Plugin.Log.LogWarning($"[NetworkManager] CharacterReset from peer {peer.Address}:{peer.Port} with no clientGuid — ignoring.");
+            Plugin.Log.LogWarning($"[NetworkManager] CharacterReset from peer {peer.DisplayName} with no clientGuid — ignoring.");
             return;
         }
 
@@ -1302,17 +1095,9 @@ public static class NetworkManager
         try { TwinManager.ReleaseRecord(CharacterStore.CurrentSeed(), clientGuid); }
         catch (Exception ex) { Plugin.Log.LogWarning($"TwinManager.ReleaseRecord: {ex.Message}"); }
 
-        // Disconnect the peer with a reason. Client-side OnPeerDisconnected
-        // will fire and the UI will route back to Main; we trust the client
-        // to call CharacterIdentity.Reset() locally before reconnecting.
-        try { peer.Disconnect(); } catch { }
+        try { SteamTransport.CloseConnection(peer, "character reset"); } catch { }
     }
 
-    /// <summary>
-    /// Client-only. Asks the host to forget our character record on its
-    /// world. Triggers a host-initiated disconnect; the caller should then
-    /// wipe the local clientGuid via <see cref="Player.CharacterIdentity.Reset"/>.
-    /// </summary>
     public static void RequestCharacterReset()
     {
         if (IsHost || HostPeer == null)
@@ -1320,7 +1105,6 @@ public static class NetworkManager
             Plugin.Log.LogWarning("[NetworkManager] RequestCharacterReset called outside client context — ignored.");
             return;
         }
-
         _writer.Reset();
         SendToHost(PacketType.CharacterReset, _writer);
     }
@@ -1342,11 +1126,11 @@ public static class NetworkManager
         _writer.Put(surName ?? "");
         SendToHost(PacketType.CharacterSubmit, _writer);
     }
-    
-    private static void HandlePlayerLeft(NetPacketReader reader)
+
+    private static void HandlePlayerLeft(NetDataReader reader)
     {
         int playerId = reader.GetInt();
-        
+
         if (_players.TryGetValue(playerId, out var player))
         {
             _players.Remove(playerId);
@@ -1354,12 +1138,12 @@ public static class NetworkManager
             OnPlayerLeft?.Invoke(playerId, player.PlayerName);
         }
     }
-    
+
     #endregion
-    
+
     #region Helpers
-    
-    private static int GetPlayerIdByPeer(NetPeer peer)
+
+    private static int GetPlayerIdByPeer(SteamPeer peer)
     {
         foreach (var kvp in _players)
         {
@@ -1368,7 +1152,7 @@ public static class NetworkManager
         }
         return -1;
     }
-    
+
     #endregion
 }
 
@@ -1378,48 +1162,18 @@ public static class NetworkManager
 public class PlayerNetInfo
 {
     public int PlayerId { get; set; }
-
-    /// <summary>
-    /// Display name — kept for backwards-compat with everything that already
-    /// reads <see cref="PlayerName"/> (chat, nametags, HUD). Always set to
-    /// "<see cref="FirstName"/> <see cref="Surname"/>" once the character is
-    /// known.
-    /// </summary>
     public string PlayerName { get; set; }
-
-    /// <summary>In-game first name. Empty until character creation completes.</summary>
     public string FirstName { get; set; } = "";
-
-    /// <summary>In-game surname. Empty until character creation completes.</summary>
     public string Surname { get; set; } = "";
-
     public bool IsHost { get; set; }
-    public NetPeer Peer { get; set; }
 
-    /// <summary>
-    /// Stable per-installation identifier (only meaningful on the host, used
-    /// to look up the persisted character record per-seed). Empty for the
-    /// host's own self-record.
-    /// </summary>
+    /// <summary>The remote peer, or null when the player is the local host
+    /// (or is currently in the reconnect-grace window).</summary>
+    public SteamPeer Peer { get; set; }
+
     public string ClientGuid { get; set; } = "";
 
-    /// <summary>
-    /// Host-side flag: false during the brief window between LiteNetLib
-    /// connect and character creation completion. While false, the player
-    /// is NOT broadcast to other clients (no PlayerJoined fired) so they
-    /// don't see a half-formed peer.
-    /// </summary>
     public bool CharacterAssigned { get; set; }
-
-    /// <summary>
-    /// Host-side. <c>Time.unscaledTime</c> at which this player's peer
-    /// disconnected, or 0 when they're live. Non-zero means they're in
-    /// the reconnect-grace window — slot kept alive in case they come
-    /// back with the same clientGuid. <see cref="NetworkManager.Update"/>
-    /// finalises removal once grace expires.
-    /// </summary>
     public float DisconnectedAt { get; set; }
-
-    /// <summary>True iff currently waiting for reconnect (grace not yet expired).</summary>
     public bool IsAwaitingReconnect => DisconnectedAt > 0f;
 }

@@ -1,5 +1,6 @@
 using System;
 using LiteNetLib;
+using SoDCoop.Network.Steam;
 using LiteNetLib.Utils;
 using Il2CppInterop.Runtime;
 using SoDCoop.Network;
@@ -71,7 +72,7 @@ public static class SideJobSync
     /// to a single freshly-joined peer. Called from NetworkManager when a
     /// client completes its handshake.
     /// </summary>
-    public static void SendSnapshotTo(NetPeer peer)
+    public static void SendSnapshotTo(SteamPeer peer)
     {
         if (peer == null) return;
         if (!NetworkManager.IsHost) return;
@@ -94,7 +95,7 @@ public static class SideJobSync
                 Broadcast(KIND_SNAPSHOT, kv.Value, peer);
                 sent++;
             }
-            Plugin.Log.LogInfo($"[SideJobSync] snapshot: sent {sent} job(s) to peer {peer.Address}:{peer.Port}.");
+            Plugin.Log.LogInfo($"[SideJobSync] snapshot: sent {sent} job(s) to peer {peer.SteamId.m_SteamID}.");
         }
         catch (Exception ex)
         {
@@ -107,7 +108,7 @@ public static class SideJobSync
     /// is non-null, send only to that peer (snapshot path); otherwise
     /// broadcast to all.
     /// </summary>
-    private static void Broadcast(byte kind, SideJob job, NetPeer peer)
+    private static void Broadcast(byte kind, SideJob job, SteamPeer peer)
     {
         if (!NetworkManager.IsHost) return;
         if (!NetworkManager.IsConnected) return;
@@ -296,7 +297,7 @@ public static class SideJobSync
     //  Inbound (clients)
     // ─────────────────────────────────────────────────────────────────────
 
-    public static void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
+    public static void OnPacketReceived(PacketType type, NetDataReader reader, int senderId)
     {
         try
         {

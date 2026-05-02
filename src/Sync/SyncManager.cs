@@ -105,7 +105,7 @@ public static class SyncManager
         Plugin.Log.LogInfo($"SyncManager deactivated: {reason}");
     }
     
-    private static void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
+    private static void OnPacketReceived(PacketType type, NetDataReader reader, int senderId)
     {
         // Route packet to appropriate sync system
         try

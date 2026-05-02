@@ -9,7 +9,7 @@ namespace SoDCoop.UI.Coop.Panels;
 
 /// <summary>
 /// Root menu — entry point with active profile selector, recent-sessions
-/// quick-rejoin, and Host / Join / Show My IP / Settings.
+/// quick-rejoin via the Steam overlay, and Host / Join / Settings.
 /// </summary>
 public class MainPanel : CoopPanelBase
 {
@@ -68,10 +68,6 @@ public class MainPanel : CoopPanelBase
         CoopMenuFactory.MenuButton("Join",   Body,
             L.Get("main.btn.join"),
             () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Join));
-
-        CoopMenuFactory.MenuButton("ShowIp", Body,
-            L.Get("main.btn.showIp"),
-            () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.IpInfo));
 
         CoopMenuFactory.MenuButton("Settings", Body,
             L.Get("main.btn.settings"),
@@ -216,17 +212,13 @@ public class MainPanel : CoopPanelBase
     {
         try
         {
-            if (e == null) return;
-            // Reuse the same code-path as the manual Join panel.
-            if (NetworkManager.Connect(e.Ip, e.Port))
-            {
-                Plugin.Log.LogInfo($"[MainPanel] quick-connecting to last session: {e.HostName} @ {e.Endpoint}");
-                // Connecting state — wait for OnConnected to route to Lobby.
-            }
-            else
-            {
-                Plugin.Log.LogWarning($"[MainPanel] quick-connect failed for {e.Endpoint}.");
-            }
+            if (e == null || e.HostSteamId == 0) return;
+            // Without a live lobby ID, the cleanest re-entry is via the
+            // Steam overlay — open the friend's profile so the user can
+            // click "Join Game" if the host is online.
+            try { Steamworks.SteamFriends.ActivateGameOverlayToUser("steamid", new Steamworks.CSteamID(e.HostSteamId)); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[MainPanel] open friend overlay: {ex.Message}"); }
+            Plugin.Log.LogInfo($"[MainPanel] opening Steam overlay for last host {e.HostName} ({e.HostSteamId})");
         }
         catch (Exception ex)
         {
@@ -237,7 +229,7 @@ public class MainPanel : CoopPanelBase
     private void OnForget(SessionStore.Entry e)
     {
         if (e == null) return;
-        SessionStore.Forget(e.Ip, e.Port);
+        SessionStore.Forget(e.HostSteamId);
         RebuildSessionsList();
     }
 }

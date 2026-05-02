@@ -420,7 +420,7 @@ public class WorldSync
     //  Receive
     // -------------------------------------------------------------------------
 
-    public void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
+    public void OnPacketReceived(PacketType type, NetDataReader reader, int senderId)
     {
         switch (type)
         {
@@ -454,7 +454,7 @@ public class WorldSync
     //  Ownership packet handlers (host-side authority + client mirror)
     // -------------------------------------------------------------------------
 
-    private void OnOwnershipClaim(NetPacketReader reader, int senderId)
+    private void OnOwnershipClaim(NetDataReader reader, int senderId)
     {
         var p = new CitizenOwnershipPacket();
         p.Deserialize(reader);
@@ -474,7 +474,7 @@ public class WorldSync
         Plugin.Log.LogInfo($"[Ownership] Client {p.OwnerId} claimed citizen {p.CitizenId}");
     }
 
-    private void OnOwnershipRelease(NetPacketReader reader, int senderId)
+    private void OnOwnershipRelease(NetDataReader reader, int senderId)
     {
         var p = new CitizenOwnershipPacket();
         p.Deserialize(reader);
@@ -503,7 +503,7 @@ public class WorldSync
 
     // ── Command batch ─────────────────────────────────────────────────────────
 
-    private void OnCommandBatch(NetPacketReader reader)
+    private void OnCommandBatch(NetDataReader reader)
     {
         try
         {
@@ -575,7 +575,7 @@ public class WorldSync
 
     // ── Correction batch ──────────────────────────────────────────────────────
 
-    private void OnCorrectionBatch(NetPacketReader reader)
+    private void OnCorrectionBatch(NetDataReader reader)
     {
         try
         {
@@ -639,7 +639,7 @@ public class WorldSync
 
     // ── Citizen death ─────────────────────────────────────────────────────────
 
-    private void OnCitizenDeath(NetPacketReader reader)
+    private void OnCitizenDeath(NetDataReader reader)
     {
         try
         {

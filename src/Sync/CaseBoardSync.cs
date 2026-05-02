@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using SoDCoop.Network;
 using LiteNetLib;
+using SoDCoop.Network.Steam;
 using LiteNetLib.Utils;
 using UnityEngine;
 using DataKey = Evidence.DataKey;
@@ -81,7 +82,7 @@ public static class CaseBoardSync
     ///         late-joiners miss pre-existing renames.</item>
     /// </list>
     /// </summary>
-    public static void SendSnapshotTo(NetPeer peer)
+    public static void SendSnapshotTo(SteamPeer peer)
     {
         if (peer == null) return;
         if (!NetworkManager.IsHost) return;
@@ -224,7 +225,7 @@ public static class CaseBoardSync
                 catch { }
             }
 
-            Plugin.Log.LogInfo($"[CaseBoardSync] snapshot: pins={pins} strings={strings} answers={answers} statuses={statuses} → {peer.Address}:{peer.Port}");
+            Plugin.Log.LogInfo($"[CaseBoardSync] snapshot: pins={pins} strings={strings} answers={answers} statuses={statuses} → {peer.SteamId.m_SteamID}");
         }
         catch (System.Exception ex)
         {
@@ -591,7 +592,7 @@ public static class CaseBoardSync
     //  Inbound
     // ─────────────────────────────────────────────────────────────────────────
 
-    public static void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
+    public static void OnPacketReceived(PacketType type, NetDataReader reader, int senderId)
     {
         try
         {

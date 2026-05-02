@@ -1,4 +1,5 @@
 using LiteNetLib;
+using SoDCoop.Network.Steam;
 using LiteNetLib.Utils;
 using SoDCoop.Network;
 using SoDCoop.Player;
@@ -74,7 +75,7 @@ public static class AppearanceSync
     //  Inbound
     // ─────────────────────────────────────────────────────────────────────
 
-    public static void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
+    public static void OnPacketReceived(PacketType type, NetDataReader reader, int senderId)
     {
         if (type != PacketType.PlayerAppearance) return;
 
@@ -184,7 +185,7 @@ public static class AppearanceSync
     /// twin humanID so the receiver can apply locally without further
     /// lookups.
     /// </summary>
-    public static void SendSnapshotTo(NetPeer peer)
+    public static void SendSnapshotTo(SteamPeer peer)
     {
         if (peer == null) return;
         if (!NetworkManager.IsHost) return;
@@ -213,7 +214,7 @@ public static class AppearanceSync
                 NetworkManager.SendTo(peer, PacketType.PlayerAppearance, _writer);
                 sent++;
             }
-            if (sent > 0) Plugin.Log.LogInfo($"[AppearanceSync] sent {sent} appearance snapshot(s) to peer {peer.Id}.");
+            if (sent > 0) Plugin.Log.LogInfo($"[AppearanceSync] sent {sent} appearance snapshot(s) to peer {peer.SteamId.m_SteamID}.");
         }
         catch (System.Exception ex)
         {

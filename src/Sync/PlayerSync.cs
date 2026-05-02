@@ -172,7 +172,7 @@ public class PlayerSync
         NetworkManager.SendToAll(PacketType.PlayerPosition, _writer, DeliveryMethod.Sequenced);
     }
 
-    public void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
+    public void OnPacketReceived(PacketType type, NetDataReader reader, int senderId)
     {
         if (type == PacketType.PlayerPosition)
         {

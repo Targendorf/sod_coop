@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using LiteNetLib;
+using SoDCoop.Network.Steam;
 using LiteNetLib.Utils;
 
 namespace SoDCoop.Zdo;
@@ -75,7 +76,7 @@ public sealed class PeerSendQueue
         return true;
     }
 
-    public void DrainTo(NetPeer peer, int maxBudgetBytes = 16384)
+    public void DrainTo(SteamPeer peer, int maxBudgetBytes = 16384)
     {
         if (peer == null) return;
         int sent = 0;

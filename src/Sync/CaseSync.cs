@@ -37,7 +37,7 @@ public class CaseSync
         // Implementation depends on game's case system
     }
     
-    public void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
+    public void OnPacketReceived(PacketType type, NetDataReader reader, int senderId)
     {
         // Handle case-related packets
         if (type == PacketType.EvidenceFound)

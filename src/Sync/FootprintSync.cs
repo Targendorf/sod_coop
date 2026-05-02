@@ -1,5 +1,6 @@
 using SoDCoop.Network;
 using LiteNetLib;
+using SoDCoop.Network.Steam;
 using LiteNetLib.Utils;
 using UnityEngine;
 
@@ -105,7 +106,7 @@ public static class FootprintSync
     /// <para>Cost: bounded by footprintsList.Count (typically dozens to
     /// low hundreds). Each entry → one packet of ~50 bytes.</para>
     /// </summary>
-    public static void SendSnapshotTo(NetPeer peer)
+    public static void SendSnapshotTo(SteamPeer peer)
     {
         if (peer == null) return;
         if (!NetworkManager.IsHost) return;
@@ -138,7 +139,7 @@ public static class FootprintSync
                 NetworkManager.SendTo(peer, PacketType.FootprintAdd, _writer, DeliveryMethod.ReliableOrdered);
                 sent++;
             }
-            Plugin.Log.LogInfo($"[FootprintSync] snapshot: footprints={sent} → {peer.Address}:{peer.Port}");
+            Plugin.Log.LogInfo($"[FootprintSync] snapshot: footprints={sent} → {peer.SteamId.m_SteamID}");
         }
         catch (System.Exception ex)
         {
@@ -174,7 +175,7 @@ public static class FootprintSync
         }
     }
 
-    public static void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
+    public static void OnPacketReceived(PacketType type, NetDataReader reader, int senderId)
     {
         if (type != PacketType.FootprintAdd) return;
 

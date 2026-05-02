@@ -55,7 +55,7 @@ public static class NpcOutfitSync
         }
     }
 
-    public static void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
+    public static void OnPacketReceived(PacketType type, NetDataReader reader, int senderId)
     {
         if (type != PacketType.NpcOutfit) return;
         try
@@ -185,7 +185,7 @@ public static class PlayerOutfitSync
     //  Inbound — host-only apply
     // ─────────────────────────────────────────────────────────────────────
 
-    public static void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
+    public static void OnPacketReceived(PacketType type, NetDataReader reader, int senderId)
     {
         if (type != PacketType.PlayerOutfit) return;
 

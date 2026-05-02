@@ -1,5 +1,6 @@
 using SoDCoop.Network;
 using LiteNetLib;
+using SoDCoop.Network.Steam;
 using LiteNetLib.Utils;
 using UnityEngine;
 
@@ -145,7 +146,7 @@ public static class ItemSync
     /// for items host moved before the client connected — an acceptable
     /// gap for v1.</para>
     /// </summary>
-    public static void SendSnapshotTo(NetPeer peer)
+    public static void SendSnapshotTo(SteamPeer peer)
     {
         if (peer == null) return;
         if (!NetworkManager.IsHost) return;
@@ -179,7 +180,7 @@ public static class ItemSync
                 NetworkManager.SendTo(peer, PacketType.PlayerPickup, _writer, DeliveryMethod.ReliableOrdered);
                 picked++;
             }
-            Plugin.Log.LogInfo($"[ItemSync] snapshot: pickups={picked} → {peer.Address}:{peer.Port}");
+            Plugin.Log.LogInfo($"[ItemSync] snapshot: pickups={picked} → {peer.SteamId.m_SteamID}");
         }
         catch (System.Exception ex)
         {
@@ -191,7 +192,7 @@ public static class ItemSync
     //  Inbound
     // ─────────────────────────────────────────────────────────────────────────
 
-    public static void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
+    public static void OnPacketReceived(PacketType type, NetDataReader reader, int senderId)
     {
         try
         {

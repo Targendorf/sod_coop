@@ -106,7 +106,7 @@ public static class WeatherSync
     //  Inbound
     // ─────────────────────────────────────────────────────────────────────────
 
-    public static void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
+    public static void OnPacketReceived(PacketType type, NetDataReader reader, int senderId)
     {
         if (type != PacketType.WeatherSync) return;
 

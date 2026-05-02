@@ -33,7 +33,6 @@ public static class CoopMenuController
     private static HostPanel              _hostPanel;
     private static JoinPanel              _joinPanel;
     private static LobbyPanel             _lobbyPanel;
-    private static IpInfoPanel            _ipPanel;
     private static CreateCharacterPanel   _createCharacterPanel;
     private static SettingsPanel          _settingsPanel;
     private static AppearancePanel        _appearancePanel;
@@ -46,7 +45,7 @@ public static class CoopMenuController
     private static bool _showAppearanceAfterConnect;
 
     /// <summary>Current visible panel, or null when menu is hidden.</summary>
-    public enum PanelKind { None, Main, Host, Join, Lobby, IpInfo, CreateCharacter, Settings, Appearance, Profiles, EditProfile }
+    public enum PanelKind { None, Main, Host, Join, Lobby, CreateCharacter, Settings, Appearance, Profiles, EditProfile }
     private static PanelKind _current = PanelKind.None;
 
     private static bool _eventsHooked;
@@ -285,7 +284,6 @@ public static class CoopMenuController
             _hostPanel            = new HostPanel();             _hostPanel.Build(_panelContainer.transform);
             _joinPanel            = new JoinPanel();             _joinPanel.Build(_panelContainer.transform);
             _lobbyPanel           = new LobbyPanel();            _lobbyPanel.Build(_panelContainer.transform);
-            _ipPanel              = new IpInfoPanel();           _ipPanel.Build(_panelContainer.transform);
             _createCharacterPanel = new CreateCharacterPanel();  _createCharacterPanel.Build(_panelContainer.transform);
             _settingsPanel        = new SettingsPanel();         _settingsPanel.Build(_panelContainer.transform);
             _appearancePanel      = new AppearancePanel();       _appearancePanel.Build(_panelContainer.transform);
@@ -315,7 +313,6 @@ public static class CoopMenuController
             case PanelKind.Host:            _hostPanel?.Show();             break;
             case PanelKind.Join:            _joinPanel?.Show();             break;
             case PanelKind.Lobby:           _lobbyPanel?.Show();            break;
-            case PanelKind.IpInfo:          _ipPanel?.Show();               break;
             case PanelKind.CreateCharacter: _createCharacterPanel?.Show();  break;
             case PanelKind.Settings:        _settingsPanel?.Show();         break;
             case PanelKind.Appearance:      _appearancePanel?.Show();       break;
@@ -330,7 +327,6 @@ public static class CoopMenuController
         _hostPanel?.Hide();
         _joinPanel?.Hide();
         _lobbyPanel?.Hide();
-        _ipPanel?.Hide();
         _createCharacterPanel?.Hide();
         _settingsPanel?.Hide();
         _appearancePanel?.Hide();

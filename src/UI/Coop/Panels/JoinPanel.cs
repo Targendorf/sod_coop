@@ -1,5 +1,6 @@
 using SoDCoop.Localization;
 using SoDCoop.Network;
+using SoDCoop.Network.Steam;
 using SoDCoop.Sync;
 using UnityEngine;
 using UnityEngine.UI;
@@ -7,20 +8,19 @@ using UnityEngine.UI;
 namespace SoDCoop.UI.Coop.Panels;
 
 /// <summary>
-/// Join setup. Two ways to fill the connection fields:
-///   • Paste a join code → fields auto-fill from the embedded host info.
-///   • Manual: type IP + port directly.
+/// Join setup. There is no manual IP/port or join code under Steam — the
+/// way you join a session is by accepting a Steam invite or clicking
+/// "Join Game" on a friend's profile in the Steam overlay. The panel
+/// surfaces a single "Open Steam Friends" button as a shortcut and
+/// otherwise just explains the flow.
 /// </summary>
 public class JoinPanel : CoopPanelBase
 {
     protected override string Title => L.Get("join.title");
 
-    private InputField _codeInput;
-    private InputField _ipInput;
-    private InputField _portInput;
-    private Text       _statusLabel;
-    private Text       _gameStateLabel;
-    private Button     _connectBtn;
+    private Text   _statusLabel;
+    private Text   _gameStateLabel;
+    private Button _openFriendsBtn;
 
     protected override void BuildBody()
     {
@@ -30,41 +30,14 @@ public class JoinPanel : CoopPanelBase
 
         _gameStateLabel = WrappedBodyLabel("",
             CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
-        Spacer(4f);
-
-        BodyLabel(L.Get("join.label.code"), CoopMenuTheme.FontSizeSmall,
-            CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
-        _codeInput = CoopMenuFactory.TextInput("Code", Body, "",
-            L.Get("join.code.placeholder"), CoopMenuTheme.PanelWidth - CoopMenuTheme.Padding * 2, 38f);
-        AddLayoutHeight(_codeInput.gameObject, 38f);
-
-        // Auto-fill on text change.
-        try
-        {
-            _codeInput.onValueChanged.AddListener((UnityEngine.Events.UnityAction<string>)OnCodeChanged);
-        }
-        catch (System.Exception ex)
-        {
-            Plugin.Log.LogWarning($"JoinPanel listener wire-up: {ex.Message}");
-        }
-
-        Spacer(6f);
-
-        BodyLabel(L.Get("join.label.manual"), CoopMenuTheme.FontSizeSmall,
-            CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
-
-        _ipInput = CoopMenuFactory.TextInput("IP", Body,
-            "127.0.0.1", L.Get("join.placeholder.ip"), CoopMenuTheme.PanelWidth - CoopMenuTheme.Padding * 2);
-        AddLayoutHeight(_ipInput.gameObject, 36f);
-
-        _portInput = CoopMenuFactory.TextInput("Port", Body,
-            "9050", "9050", CoopMenuTheme.PanelWidth - CoopMenuTheme.Padding * 2);
-        _portInput.contentType = InputField.ContentType.IntegerNumber;
-        AddLayoutHeight(_portInput.gameObject, 36f);
-
         Spacer(8f);
 
-        _connectBtn = CoopMenuFactory.MenuButton("Connect", Body, L.Get("join.btn.connect"), OnConnectClick);
+        WrappedBodyLabel(L.Get("join.instructions"),
+            CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader);
+
+        Spacer(12f);
+
+        _openFriendsBtn = CoopMenuFactory.MenuButton("Friends", Body, L.Get("join.btn.openFriends"), OnOpenFriendsClick);
 
         _statusLabel = WrappedBodyLabel("",
             CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
@@ -75,46 +48,10 @@ public class JoinPanel : CoopPanelBase
             () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Main));
     }
 
-    private void OnCodeChanged(string code)
-    {
-        if (string.IsNullOrWhiteSpace(code))
-        {
-            if (_statusLabel != null) _statusLabel.text = "";
-            return;
-        }
-        if (JoinCode.TryDecode(code, out var cityName, out var seed,
-                               out var version, out var ip, out var port))
-        {
-            if (_ipInput != null)   _ipInput.text   = ip;
-            if (_portInput != null) _portInput.text = port.ToString();
-            if (_statusLabel != null)
-            {
-                _statusLabel.text = string.IsNullOrEmpty(cityName)
-                    ? L.Get("join.status.codeOk", ip, port)
-                    : L.Get("join.status.codeOkCity", ip, port, cityName);
-                _statusLabel.color = CoopMenuTheme.LabelOk;
-            }
-        }
-        else
-        {
-            if (_statusLabel != null)
-            {
-                _statusLabel.text = L.Get("join.status.codeBad");
-                _statusLabel.color = CoopMenuTheme.LabelWarn;
-            }
-        }
-    }
-
-    private void OnConnectClick()
+    private void OnOpenFriendsClick()
     {
         try
         {
-            // Hard guard: don't let the user join while their own save is loaded.
-            // The client plays AS one of the host's citizens (twin) in the host's
-            // world; their local save is irrelevant and a loaded local world
-            // would just keep ticking in the background (NPCs walking around,
-            // time passing, sound playing) while the lobby waits — confusing
-            // state at best, broken sync at worst.
             if (WorldReadyGate.IsWorldReady)
             {
                 if (_statusLabel != null)
@@ -122,36 +59,19 @@ public class JoinPanel : CoopPanelBase
                     _statusLabel.text = L.Get("join.warn.haveSave");
                     _statusLabel.color = CoopMenuTheme.LabelWarn;
                 }
-                Plugin.Log.LogWarning("[JoinPanel] Connect rejected: client has a save loaded; must be on main menu.");
+                Plugin.Log.LogWarning("[JoinPanel] Open Friends rejected: client has a save loaded; must be on main menu.");
                 return;
             }
 
-            string ip = _ipInput?.text ?? "127.0.0.1";
-            int port = int.TryParse(_portInput?.text ?? "9050", out var p) ? p : 9050;
-
-            if (_statusLabel != null)
+            if (SteamLobby.OpenFriendsOverlay() && _statusLabel != null)
             {
-                _statusLabel.text = L.Get("join.status.connecting", ip, port);
-                _statusLabel.color = CoopMenuTheme.LabelWarn;
-            }
-
-            // Note: we deliberately do NOT switch to the Lobby panel here.
-            // The host may need us to create a character first; the menu
-            // controller subscribes to OnCharacterCreationRequired and OnConnected
-            // and routes us to the right panel when the host responds.
-            if (!NetworkManager.Connect(ip, port) && _statusLabel != null)
-            {
-                _statusLabel.text = L.Get("join.status.failed");
-                _statusLabel.color = CoopMenuTheme.LabelError;
-            }
-            else
-            {
-                Plugin.Log.LogInfo($"[CoopMenu] connect-attempt to {ip}:{port}");
+                _statusLabel.text = L.Get("join.status.overlayOpened");
+                _statusLabel.color = CoopMenuTheme.LabelOk;
             }
         }
         catch (System.Exception ex)
         {
-            Plugin.Log.LogError($"JoinPanel.OnConnectClick: {ex}");
+            Plugin.Log.LogError($"JoinPanel.OnOpenFriendsClick: {ex}");
             if (_statusLabel != null)
             {
                 _statusLabel.text = $"Error: {ex.Message}";
@@ -190,14 +110,7 @@ public class JoinPanel : CoopPanelBase
             }
         }
 
-        if (_connectBtn != null)
-            _connectBtn.interactable = !inGame;
-    }
-
-    private static void AddLayoutHeight(GameObject go, float height)
-    {
-        var le = go.AddComponent<LayoutElement>();
-        le.preferredHeight = height;
-        le.flexibleWidth = 1f;
+        if (_openFriendsBtn != null)
+            _openFriendsBtn.interactable = !inGame;
     }
 }

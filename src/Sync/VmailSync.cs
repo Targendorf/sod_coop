@@ -1,5 +1,6 @@
 using SoDCoop.Network;
 using LiteNetLib;
+using SoDCoop.Network.Steam;
 using LiteNetLib.Utils;
 
 namespace SoDCoop.Sync;
@@ -67,7 +68,7 @@ public static class VmailSync
     //  Inbound
     // ─────────────────────────────────────────────────────────────────────────
 
-    public static void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
+    public static void OnPacketReceived(PacketType type, NetDataReader reader, int senderId)
     {
         if (type != PacketType.VmailCreated) return;
 
@@ -136,7 +137,7 @@ public static class VmailSync
     /// is sent — listening / read flags aren't tracked by SoD's
     /// MessageThreadSave anyway.
     /// </summary>
-    public static void SendSnapshotTo(NetPeer peer)
+    public static void SendSnapshotTo(SteamPeer peer)
     {
         if (peer == null) return;
         if (!NetworkManager.IsHost) return;
@@ -172,7 +173,7 @@ public static class VmailSync
                 NetworkManager.SendTo(peer, PacketType.VmailCreated, _writer, DeliveryMethod.ReliableOrdered);
                 sent++;
             }
-            Plugin.Log.LogInfo($"[VmailSync] snapshot: sent {sent} vmail thread(s) to peer {peer.Address}:{peer.Port}.");
+            Plugin.Log.LogInfo($"[VmailSync] snapshot: sent {sent} vmail thread(s) to peer {peer.SteamId.m_SteamID}.");
         }
         catch (System.Exception ex)
         {

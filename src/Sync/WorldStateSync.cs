@@ -1,5 +1,6 @@
 using SoDCoop.Network;
 using LiteNetLib;
+using SoDCoop.Network.Steam;
 using LiteNetLib.Utils;
 using UnityEngine;
 
@@ -126,7 +127,7 @@ public static class WorldStateSync
     /// optionally fires one SendTo. Negligible CPU; bandwidth bounded by
     /// the number of items in non-default state.</para>
     /// </summary>
-    public static void SendSnapshotTo(NetPeer peer)
+    public static void SendSnapshotTo(SteamPeer peer)
     {
         if (peer == null) return;
         if (!NetworkManager.IsHost) return;
@@ -202,7 +203,7 @@ public static class WorldStateSync
                 } catch { }
             }
 
-            Plugin.Log.LogInfo($"[WorldStateSync] snapshot: doors={doors} locks={locks} lights={lights} switches={switches} → {peer.Address}:{peer.Port}");
+            Plugin.Log.LogInfo($"[WorldStateSync] snapshot: doors={doors} locks={locks} lights={lights} switches={switches} → {peer.SteamId.m_SteamID}");
         }
         catch (System.Exception ex)
         {
@@ -214,7 +215,7 @@ public static class WorldStateSync
     //  Inbound
     // -------------------------------------------------------------------------
 
-    public static void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
+    public static void OnPacketReceived(PacketType type, NetDataReader reader, int senderId)
     {
         try
         {

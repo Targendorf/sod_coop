@@ -1,5 +1,6 @@
 using SoDCoop.Localization;
 using SoDCoop.Network;
+using SoDCoop.Network.Steam;
 using SoDCoop.Sync;
 using UnityEngine;
 using UnityEngine.UI;
@@ -7,21 +8,21 @@ using UnityEngine.UI;
 namespace SoDCoop.UI.Coop.Panels;
 
 /// <summary>
-/// Host setup: nickname + port, Start Hosting, then displays the join code
-/// for friends to paste. Polls connection status while live so users see
-/// "Hosting on port X — share this code".
+/// Host setup. Creates a friends-only Steam lobby and exposes a Steam
+/// overlay invite button so friends can join. There are no IPs, ports, or
+/// join-codes any more — Steam SDR handles transport, lobby visibility is
+/// gated to friends, and the overlay's "Join Game" affordance brings them
+/// in.
 /// </summary>
 public class HostPanel : CoopPanelBase
 {
     protected override string Title => L.Get("host.title");
 
-    private InputField _portInput;
-    private Text       _identityLabel;
-    private Text       _statusLabel;
-    private Text       _joinCodeLabel;
-    private Button     _startBtn;
-    private Button     _stopBtn;
-    private Button     _copyBtn;
+    private Text   _identityLabel;
+    private Text   _statusLabel;
+    private Button _startBtn;
+    private Button _stopBtn;
+    private Button _inviteBtn;
 
     protected override void BuildBody()
     {
@@ -33,34 +34,19 @@ public class HostPanel : CoopPanelBase
         _identityLabel = WrappedBodyLabel(L.Get("host.identity.reading"),
             CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelOk, TextAnchor.MiddleLeft, FontStyle.Bold);
 
-        Spacer(6f);
+        Spacer(12f);
 
-        BodyLabel(L.Get("host.label.port"), CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
-        _portInput = CoopMenuFactory.TextInput("PortInput", Body, "9050", "9050",
-            CoopMenuTheme.PanelWidth - CoopMenuTheme.Padding * 2);
-        _portInput.contentType = InputField.ContentType.IntegerNumber;
-        AddLayoutHeight(_portInput.gameObject, 36f);
-
-        Spacer(8f);
-
-        _startBtn = CoopMenuFactory.MenuButton("Start", Body, L.Get("host.btn.start"), OnStartClick);
-        _stopBtn  = CoopMenuFactory.MenuButton("Stop",  Body, L.Get("host.btn.stop"),  OnStopClick);
+        _startBtn  = CoopMenuFactory.MenuButton("Start", Body, L.Get("host.btn.start"), OnStartClick);
+        _stopBtn   = CoopMenuFactory.MenuButton("Stop",  Body, L.Get("host.btn.stop"),  OnStopClick);
         _stopBtn.gameObject.SetActive(false);
+
+        _inviteBtn = CoopMenuFactory.MenuButton("Invite", Body, L.Get("host.btn.invite"), OnInviteClick);
+        _inviteBtn.gameObject.SetActive(false);
 
         Spacer(8f);
 
         _statusLabel = WrappedBodyLabel(L.Get("host.status.notHosting"),
             CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
-
-        BodyLabel(L.Get("host.label.joinCode"),
-            CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader);
-
-        _joinCodeLabel = WrappedBodyLabel(L.Get("host.code.notReady"),
-            CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelOk);
-        _joinCodeLabel.fontStyle = FontStyle.Italic;
-
-        _copyBtn = CoopMenuFactory.MenuButton("Copy", Body, L.Get("host.btn.copy"), OnCopyClick);
-        _copyBtn.gameObject.SetActive(false);
 
         Spacer(20f);
 
@@ -82,21 +68,14 @@ public class HostPanel : CoopPanelBase
 
     private void Refresh()
     {
-        bool hosting   = NetworkManager.IsConnected && NetworkManager.IsHost;
-        bool inGame    = WorldReadyGate.IsWorldReady;
-        bool canHost   = !hosting && inGame;
+        bool hosting = NetworkManager.IsConnected && NetworkManager.IsHost;
+        bool inGame  = WorldReadyGate.IsWorldReady;
+        bool canHost = !hosting && inGame;
 
-        if (_startBtn != null)
-        {
-            _startBtn.gameObject.SetActive(!hosting);
-            _startBtn.interactable = canHost;   // greyed out from main menu
-        }
-        if (_stopBtn != null) _stopBtn.gameObject.SetActive(hosting);
-        if (_copyBtn != null) _copyBtn.gameObject.SetActive(hosting);
+        if (_startBtn  != null) { _startBtn .gameObject.SetActive(!hosting); _startBtn.interactable = canHost; }
+        if (_stopBtn   != null)   _stopBtn  .gameObject.SetActive(hosting);
+        if (_inviteBtn != null)   _inviteBtn.gameObject.SetActive(hosting);
 
-        // Identity preview: read live from Game.Instance pre-host (so user sees
-        // the name they'll be hosting as), then mirror what's in NetworkManager
-        // once hosting is live (in case it differed for any reason).
         if (_identityLabel != null)
         {
             string display;
@@ -146,44 +125,12 @@ public class HostPanel : CoopPanelBase
                 _statusLabel.color = CoopMenuTheme.LabelMuted;
             }
         }
-
-        if (_joinCodeLabel != null)
-        {
-            if (hosting)
-            {
-                _joinCodeLabel.text = BuildJoinCode();
-                _joinCodeLabel.color = CoopMenuTheme.LabelOk;
-                _joinCodeLabel.fontStyle = FontStyle.Bold;
-            }
-            else
-            {
-                _joinCodeLabel.text = L.Get("host.code.notReady");
-                _joinCodeLabel.color = CoopMenuTheme.LabelMuted;
-                _joinCodeLabel.fontStyle = FontStyle.Italic;
-            }
-        }
-    }
-
-    private string BuildJoinCode()
-    {
-        try
-        {
-            var ip   = IpDiscovery.GetLocalIp();
-            var port = int.TryParse(_portInput?.text ?? "9050", out var p) ? p : 9050;
-            string cityName = "";
-            try { cityName = CityData.Instance?.cityName ?? ""; } catch { }
-            return JoinCode.Encode(cityName, "", "0.1", ip, port);
-        }
-        catch { return ""; }
     }
 
     private void OnStartClick()
     {
         try
         {
-            // Hard guard: refuse to host from main menu / mid-load. The host's
-            // identity comes from Game.Instance and the join code embeds the
-            // city name — both meaningless until the world is fully loaded.
             if (!WorldReadyGate.IsWorldReady)
             {
                 if (_statusLabel != null)
@@ -195,10 +142,9 @@ public class HostPanel : CoopPanelBase
                 return;
             }
 
-            int port = int.TryParse(_portInput?.text ?? "9050", out var p) ? p : 9050;
-            if (NetworkManager.StartHost(port))
+            if (NetworkManager.StartHost())
             {
-                Plugin.Log.LogInfo($"[CoopMenu] hosting on port {port} as \"{NetworkManager.LocalPlayerName}\"");
+                Plugin.Log.LogInfo($"[CoopMenu] hosting via Steam as \"{NetworkManager.LocalPlayerName}\"");
             }
         }
         catch (System.Exception ex)
@@ -210,29 +156,26 @@ public class HostPanel : CoopPanelBase
 
     private void OnStopClick()
     {
-        try { NetworkManager.Shutdown(); } catch { }
+        try { NetworkManager.Disconnect(); } catch { }
         Refresh();
     }
 
-    private void OnCopyClick()
+    private void OnInviteClick()
     {
         try
         {
-            var code = _joinCodeLabel?.text ?? "";
-            if (!string.IsNullOrEmpty(code)) GUIUtility.systemCopyBuffer = code;
-            if (_statusLabel != null)
+            if (SteamLobby.OpenInviteDialog())
             {
-                _statusLabel.text = L.Get("host.status.codeCopied");
-                _statusLabel.color = CoopMenuTheme.LabelOk;
+                if (_statusLabel != null)
+                {
+                    _statusLabel.text = L.Get("host.status.invitedOverlay");
+                    _statusLabel.color = CoopMenuTheme.LabelOk;
+                }
             }
         }
-        catch { }
-    }
-
-    private static void AddLayoutHeight(GameObject go, float height)
-    {
-        var le = go.AddComponent<LayoutElement>();
-        le.preferredHeight = height;
-        le.flexibleWidth = 1f;
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"HostPanel.OnInviteClick: {ex.Message}");
+        }
     }
 }

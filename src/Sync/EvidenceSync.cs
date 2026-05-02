@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using SoDCoop.Network;
 using LiteNetLib;
+using SoDCoop.Network.Steam;
 using LiteNetLib.Utils;
 using UnityEngine;
 
@@ -153,7 +154,7 @@ public static class EvidenceSync
     /// discoveryProgress, ApplySetNote / ApplyCustomName overwrite (which
     /// matches what the originating broadcast would have done anyway).</para>
     /// </summary>
-    public static void SendSnapshotTo(NetPeer peer)
+    public static void SendSnapshotTo(SteamPeer peer)
     {
         if (peer == null) return;
         if (!NetworkManager.IsHost) return;
@@ -194,7 +195,7 @@ public static class EvidenceSync
                 }
                 catch { }
             }
-            Plugin.Log.LogInfo($"[EvidenceSync] snapshot: sent {discoveries} discovery record(s) to peer {peer.Address}:{peer.Port}.");
+            Plugin.Log.LogInfo($"[EvidenceSync] snapshot: sent {discoveries} discovery record(s) to peer {peer.SteamId.m_SteamID}.");
         }
         catch (System.Exception ex)
         {
@@ -232,7 +233,7 @@ public static class EvidenceSync
         }
     }
 
-    public static void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
+    public static void OnPacketReceived(PacketType type, NetDataReader reader, int senderId)
     {
         try
         {

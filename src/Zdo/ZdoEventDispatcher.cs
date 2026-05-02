@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using LiteNetLib;
+using SoDCoop.Network.Steam;
 using LiteNetLib.Utils;
 using SoDCoop.Network;
 
@@ -51,7 +52,7 @@ public static class ZdoEventDispatcher
         NetworkManager.SendToAll(PacketType.ZdoEventRpc, _scratchOut, delivery);
     }
 
-    public static void SendTo(NetPeer peer, string name, NetDataWriter payload, DeliveryMethod delivery = DeliveryMethod.ReliableOrdered)
+    public static void SendTo(SteamPeer peer, string name, NetDataWriter payload, DeliveryMethod delivery = DeliveryMethod.ReliableOrdered)
     {
         if (peer == null) return;
         BuildFrame(name, payload);

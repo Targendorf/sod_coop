@@ -7,29 +7,29 @@ namespace SoDCoop.Network;
 
 /// <summary>
 /// Client-side history of co-op sessions the user has joined. Lets the
-/// main menu offer one-click "rejoin" instead of forcing the user to
-/// re-type the host's IP every session.
+/// main menu offer one-click "rejoin" instead of forcing the user back
+/// through the Steam friends list every time.
 ///
 /// <para>Persisted as plain text in
 /// <c>BepInEx/config/SoDCoop/sessions.txt</c>. Capped at
 /// <see cref="MaxEntries"/>; the oldest entry is dropped on overflow.
 /// Records are sorted newest-first when read out.</para>
 ///
-/// <para><b>When a row is recorded:</b> after a successful client-side
-/// handshake (<c>NetworkManager.OnConnected</c>), so failed connects
-/// don't pollute the list. Re-recording an existing (ip, port) just
-/// bumps its timestamp + refreshes the host name.</para>
+/// <para>Keyed by host's SteamID — there are no IPs in the Steam-only
+/// transport. <see cref="LobbyId"/> is also recorded but lobbies are
+/// short-lived and won't survive between sessions; we only retry by
+/// SteamID via the Steam overlay's "Join Game" affordance.</para>
 /// </summary>
 public static class SessionStore
 {
     public class Entry
     {
-        public string Ip;
-        public int    Port;
-        public string HostName;       // human-friendly host display, e.g. "John Smith"
+        public ulong  HostSteamId;
+        public ulong  LobbyId;          // typically 0 by the time a user comes back
+        public string HostName;         // human-friendly host display, e.g. "John Smith"
         public long   LastConnectedUnix;
 
-        public string Endpoint => $"{Ip}:{Port}";
+        public string Endpoint => HostSteamId.ToString();
 
         public DateTime LastConnected => DateTimeOffset.FromUnixTimeSeconds(LastConnectedUnix).LocalDateTime;
     }
@@ -49,16 +49,15 @@ public static class SessionStore
     /// Insert or refresh a session row. Returns the stored entry. Trims to
     /// <see cref="MaxEntries"/> by dropping the oldest tails.
     /// </summary>
-    public static Entry Record(string ip, int port, string hostName)
+    public static Entry Record(ulong hostSteamId, ulong lobbyId, string hostName)
     {
-        if (string.IsNullOrEmpty(ip) || port <= 0) return null;
+        if (hostSteamId == 0) return null;
         EnsureLoaded();
 
-        // Replace existing match on (ip, port) — refresh timestamp + name.
         Entry existing = null;
         for (int i = 0; i < _entries.Count; i++)
         {
-            if (_entries[i].Ip == ip && _entries[i].Port == port)
+            if (_entries[i].HostSteamId == hostSteamId)
             {
                 existing = _entries[i];
                 _entries.RemoveAt(i);
@@ -66,13 +65,13 @@ public static class SessionStore
             }
         }
 
-        var entry = existing ?? new Entry { Ip = ip, Port = port };
-        entry.Ip                = ip;
-        entry.Port              = port;
+        var entry = existing ?? new Entry { HostSteamId = hostSteamId };
+        entry.HostSteamId       = hostSteamId;
+        entry.LobbyId           = lobbyId;
         entry.HostName          = string.IsNullOrEmpty(hostName) ? entry.HostName : hostName;
         entry.LastConnectedUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-        _entries.Insert(0, entry); // newest first
+        _entries.Insert(0, entry);
 
         while (_entries.Count > MaxEntries)
             _entries.RemoveAt(_entries.Count - 1);
@@ -81,10 +80,10 @@ public static class SessionStore
         return entry;
     }
 
-    public static bool Forget(string ip, int port)
+    public static bool Forget(ulong hostSteamId)
     {
         EnsureLoaded();
-        int removed = _entries.RemoveAll(e => e.Ip == ip && e.Port == port);
+        int removed = _entries.RemoveAll(e => e.HostSteamId == hostSteamId);
         if (removed > 0) SaveAll();
         return removed > 0;
     }
@@ -122,19 +121,19 @@ public static class SessionStore
             if (string.IsNullOrWhiteSpace(raw) || raw[0] == '#') continue;
             var parts = raw.Split('|');
             if (parts.Length < 4) continue;
-            if (!int.TryParse(parts[1], out var port)) continue;
+            if (!ulong.TryParse(parts[0], out var sid)) continue;
+            ulong.TryParse(parts[1], out var lobby);
             long.TryParse(parts[3], out var ts);
 
             _entries.Add(new Entry
             {
-                Ip                = parts[0],
-                Port              = port,
+                HostSteamId       = sid,
+                LobbyId           = lobby,
                 HostName          = parts[2],
                 LastConnectedUnix = ts,
             });
         }
 
-        // Newest first.
         _entries.Sort((a, b) => b.LastConnectedUnix.CompareTo(a.LastConnectedUnix));
         Plugin.Log.LogInfo($"[SessionStore] loaded {_entries.Count} session(s).");
     }
@@ -146,12 +145,12 @@ public static class SessionStore
             string path = Path.Combine(ConfigDir, "sessions.txt");
             using var sw = new StreamWriter(path, append: false);
             sw.WriteLine("# SoDCoop recent sessions (most recent first)");
-            sw.WriteLine("# format: ip|port|hostName|lastConnectedUnix");
+            sw.WriteLine("# format: hostSteamId|lobbyId|hostName|lastConnectedUnix");
             foreach (var e in _entries)
             {
                 sw.WriteLine(string.Join("|",
-                    Sanitize(e.Ip),
-                    e.Port.ToString(),
+                    e.HostSteamId.ToString(),
+                    e.LobbyId.ToString(),
                     Sanitize(e.HostName ?? ""),
                     e.LastConnectedUnix.ToString()));
             }
@@ -186,7 +185,6 @@ public static class SessionStore
         }
     }
 
-    /// <summary>Pretty "X minutes ago" / "yesterday" / formatted timestamp.</summary>
     public static string FormatAgo(Entry e)
     {
         if (e == null) return "";

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using LiteNetLib;
+using SoDCoop.Network.Steam;
 using LiteNetLib.Utils;
 using SoDCoop.Network;
 using UnityEngine;
@@ -592,7 +593,7 @@ public static class ZdoMan
 
     // ── Snapshot push (host → joiner) ─────────────────────────────────
 
-    public static void SendSnapshotTo(NetPeer peer)
+    public static void SendSnapshotTo(SteamPeer peer)
     {
         if (peer == null) return;
         if (!NetworkManager.IsHost) return;
@@ -610,7 +611,7 @@ public static class ZdoMan
             _payloadScratch.Put(compressed, 0, compressed.Length);
 
             NetworkManager.SendTo(peer, PacketType.ZdoSnapshot, _payloadScratch, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[ZdoMan] sent snapshot to {peer.Address}: {payload.Length} → {compressed.Length} B, {Count} ZDOs");
+            Plugin.Log.LogInfo($"[ZdoMan] sent snapshot to {peer.SteamId.m_SteamID}: {payload.Length} → {compressed.Length} B, {Count} ZDOs");
         }
         catch (Exception ex)
         {

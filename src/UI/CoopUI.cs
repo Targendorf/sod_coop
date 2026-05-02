@@ -20,11 +20,8 @@ public static class CoopUI
     // unused-assignment warning explicitly.
 #pragma warning disable CS0414
     private static bool _showUI;
-#pragma warning restore CS0414
     private static UIState _currentState = UIState.MainMenu;
-    private static string _connectIP = "127.0.0.1";
-    private static string _connectPort = "7777";
-    private static string _hostPort = "7777";
+#pragma warning restore CS0414
     private static string _playerName = "Player";
     private static string _chatInput = "";
     private static readonly List<ChatMessage> _chatMessages = new();
@@ -164,176 +161,6 @@ public static class CoopUI
         }
     }
     
-    private static void DrawMainWindow(int windowId)
-    {
-        GUILayout.BeginVertical();
-        
-        switch (_currentState)
-        {
-            case UIState.MainMenu:
-                DrawMainMenu();
-                break;
-            case UIState.Hosting:
-                DrawHostingScreen();
-                break;
-            case UIState.Connecting:
-                DrawConnectingScreen();
-                break;
-            case UIState.Lobby:
-                DrawLobbyScreen();
-                break;
-            case UIState.InGame:
-                DrawInGameScreen();
-                break;
-        }
-        
-        GUILayout.EndVertical();
-        GUI.DragWindow();
-    }
-    
-    private static void DrawMainMenu()
-    {
-        GUILayout.Label("Welcome to Shadow of Doubt Co-op!", GUI.skin.label);
-        GUILayout.Space(20);
-        
-        // Player name
-        GUILayout.Label("Your Name:");
-        _playerName = GUILayout.TextField(_playerName, 20);
-        NetworkManager.LocalPlayerName = _playerName;
-        
-        GUILayout.Space(20);
-        
-        // Host section
-        GUILayout.Label("── Host Game ──", GUI.skin.label);
-        GUILayout.BeginHorizontal();
-        GUILayout.Label("Port:", GUILayout.Width(50));
-        _hostPort = GUILayout.TextField(_hostPort, 6);
-        GUILayout.EndHorizontal();
-        
-        if (GUILayout.Button("Host Game", GUILayout.Height(40)))
-        {
-            SavePlayerName();
-            if (int.TryParse(_hostPort, out int port))
-            {
-                if (NetworkManager.StartHost(port))
-                {
-                    _currentState = UIState.Lobby;
-                }
-            }
-        }
-        
-        GUILayout.Space(20);
-        
-        // Join section
-        GUILayout.Label("── Join Game ──", GUI.skin.label);
-        GUILayout.BeginHorizontal();
-        GUILayout.Label("IP:", GUILayout.Width(30));
-        _connectIP = GUILayout.TextField(_connectIP);
-        GUILayout.Label(":", GUILayout.Width(10));
-        _connectPort = GUILayout.TextField(_connectPort, 6, GUILayout.Width(60));
-        GUILayout.EndHorizontal();
-        
-        if (GUILayout.Button("Join Game", GUILayout.Height(40)))
-        {
-            SavePlayerName();
-            if (int.TryParse(_connectPort, out int port))
-            {
-                if (NetworkManager.Connect(_connectIP, port))
-                {
-                    _currentState = UIState.Connecting;
-                }
-            }
-        }
-        
-        GUILayout.FlexibleSpace();
-        
-        // Close button
-        if (GUILayout.Button("Close"))
-        {
-            _showUI = false;
-        }
-    }
-    
-    private static void DrawHostingScreen()
-    {
-        GUILayout.Label("Hosting game...", GUI.skin.label);
-        GUILayout.Label($"Port: {_hostPort}");
-        GUILayout.Label($"Status: {NetworkManager.State}");
-        
-        GUILayout.FlexibleSpace();
-        
-        if (GUILayout.Button("Stop Hosting"))
-        {
-            NetworkManager.Disconnect();
-            _currentState = UIState.MainMenu;
-        }
-    }
-    
-    private static void DrawConnectingScreen()
-    {
-        GUILayout.Label("Connecting...", GUI.skin.label);
-        GUILayout.Label($"Server: {_connectIP}:{_connectPort}");
-        GUILayout.Label($"Status: {NetworkManager.State}");
-        
-        GUILayout.FlexibleSpace();
-        
-        if (GUILayout.Button("Cancel"))
-        {
-            NetworkManager.Disconnect();
-            _currentState = UIState.MainMenu;
-        }
-    }
-    
-    private static void DrawLobbyScreen()
-    {
-        GUILayout.Label("── Lobby ──", GUI.skin.label);
-        GUILayout.Space(10);
-        
-        // Connection info
-        if (NetworkManager.IsHost)
-        {
-            GUILayout.Label($"Hosting on port {_hostPort}");
-            GUILayout.Label("Share your IP with friends to connect!");
-        }
-        else
-        {
-            GUILayout.Label($"Connected to {_connectIP}:{_connectPort}");
-            GUILayout.Label($"Ping: {NetworkManager.Ping}ms");
-        }
-        
-        GUILayout.Space(10);
-        
-        // Player list
-        GUILayout.Label("Players:");
-        GUILayout.BeginVertical(GUI.skin.box);
-        foreach (var player in NetworkManager.Players.Values)
-        {
-            string prefix = player.IsHost ? "[HOST] " : "";
-            string you = player.PlayerId == NetworkManager.LocalPlayerId ? " (You)" : "";
-            GUILayout.Label($"{prefix}{player.PlayerName}{you}");
-        }
-        GUILayout.EndVertical();
-        
-        GUILayout.FlexibleSpace();
-        
-        // Disconnect button
-        if (GUILayout.Button("Disconnect", GUILayout.Height(30)))
-        {
-            NetworkManager.Disconnect();
-            _currentState = UIState.MainMenu;
-        }
-        
-        // Close button
-        if (GUILayout.Button("Close (stay connected)"))
-        {
-            _showUI = false;
-        }
-    }
-    
-    private static void DrawInGameScreen()
-    {
-        DrawLobbyScreen(); // Same as lobby for now
-    }
     
     /// <summary>
     /// Persistent top-right player list shown whenever connected — independent of F9.
@@ -504,7 +331,7 @@ public static class CoopUI
     }
 
     /// <summary>Called by SyncManager on incoming PacketType.ChatMessage.</summary>
-    public static void OnChatPacketReceived(NetPacketReader reader, int senderId)
+    public static void OnChatPacketReceived(NetDataReader reader, int senderId)
     {
         try
         {

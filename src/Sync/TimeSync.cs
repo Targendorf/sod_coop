@@ -79,7 +79,7 @@ public class TimeSync
 
     // -------------------------------------------------------------------------
 
-    public void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
+    public void OnPacketReceived(PacketType type, NetDataReader reader, int senderId)
     {
         if (NetworkManager.IsHost) return;
         if (type != PacketType.TimeSync) return;

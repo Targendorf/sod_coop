@@ -331,12 +331,13 @@ public class Plugin : BasePlugin
         try
         {
             if (NetworkManager.IsHost) return;          // we're hosting, nothing to record
-            string ip   = NetworkManager.LastHostIp;
-            int    port = NetworkManager.LastHostPort;
-            if (string.IsNullOrEmpty(ip) || port <= 0) return;
+            ulong hostSteamId = NetworkManager.LastHostSteamId.m_SteamID;
+            ulong lobbyId     = NetworkManager.LastLobbyId.m_SteamID;
+            if (hostSteamId == 0) return;
 
-            // Pull host's display name out of the player roster (if any).
-            string hostName = "Host";
+            // Prefer the host's in-game character name (from the player
+            // roster) over the Steam display name we cached at lobby time.
+            string hostName = NetworkManager.LastHostName ?? "";
             foreach (var p in NetworkManager.Players.Values)
             {
                 if (p != null && p.IsHost && !string.IsNullOrEmpty(p.PlayerName))
@@ -345,7 +346,7 @@ public class Plugin : BasePlugin
                     break;
                 }
             }
-            SoDCoop.Network.SessionStore.Record(ip, port, hostName);
+            SoDCoop.Network.SessionStore.Record(hostSteamId, lobbyId, hostName);
         }
         catch (System.Exception ex)
         {

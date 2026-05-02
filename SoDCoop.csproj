@@ -124,6 +124,17 @@
       <HintPath>$(BepInExPath)\plugins\Venomaus-SODCommon\SOD.Common.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!--
+      Steamworks.NET — the game's Assembly-CSharp uses `using Steamworks;` so
+      Il2CppInterop emits an interop shim alongside Assembly-CSharp.dll. We
+      reference the shim and call SteamMatchmaking / SteamNetworkingSockets /
+      SteamFriends from our managed plugin. Private=false because the game
+      already loaded the underlying steam_api64.dll into the process.
+    -->
+    <Reference Include="Steamworks.NET">
+      <HintPath>$(BepInExPath)\interop\Steamworks.NET.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
   <!-- Build output -->

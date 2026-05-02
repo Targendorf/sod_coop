@@ -1215,7 +1215,7 @@ public static class InventorySync
     //  Inbound — apply onto the matching RemotePlayer
     // ─────────────────────────────────────────────────────────────────────────
 
-    public static void OnPacketReceived(PacketType type, NetPacketReader reader, int senderId)
+    public static void OnPacketReceived(PacketType type, NetDataReader reader, int senderId)
     {
         try
         {
