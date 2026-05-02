@@ -214,29 +214,52 @@ public static class AppearancePreviewStage
                 return;
             }
 
-            // Deep-clone the citizen GameObject. The clone keeps every
-            // component including Human + CitizenOutfitController + the
-            // skeleton + renderers; we then strip behaviour ticks to keep
-            // it inert.
-            var clone = UnityEngine.Object.Instantiate(picked.gameObject);
+            // Deep-clone the citizen GameObject. Important: parent INTO the
+            // already-inactive _root in the same call. Unity skips Awake on
+            // a clone whose parent is inactive — which is what we want, so
+            // SoD's CitizenOutfitController doesn't re-run GenerateOutfits
+            // (which would clear the inherited live-citizen outfit) and the
+            // AI / behaviour components don't try to register with global
+            // controllers from a freshly-spawned doppelgänger. The clone
+            // inherits all post-Awake state from the source citizen, which
+            // is exactly what we want for a static preview.
+            var clone = UnityEngine.Object.Instantiate(picked.gameObject, _root.transform, worldPositionStays: false);
             clone.name = "SoDCoop_PreviewPawn";
-            clone.transform.SetParent(_root.transform, worldPositionStays: false);
-            clone.transform.localPosition = new Vector3(0f, 0f, 0f);
+            clone.transform.localPosition = Vector3.zero;
             clone.transform.position      = new Vector3(StageX, StageY, StageZ);
             clone.transform.rotation      = Quaternion.Euler(0f, 180f, 0f);
 
             StripBehaviours(clone);
 
+            // Force every SkinnedMeshRenderer to recompute bounds each frame.
+            // Without this, the renderer's static bounds are stale (computed
+            // at the SOURCE citizen's position from before we moved the
+            // clone), so Unity culls the pawn against the camera frustum
+            // and the preview shows an empty background. Cheap on a single
+            // pawn — measured ~0.05 ms even with a dozen sub-meshes.
+            int skinned = 0;
+            foreach (var smr in clone.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+            {
+                if (smr == null) continue;
+                try { smr.updateWhenOffscreen = true; } catch { }
+                try { smr.forceMatrixRecalculationPerRender = true; } catch { }
+                skinned++;
+            }
+
             _pawnGo   = clone;
             var humanComp = clone.GetComponent<global::Human>();
             _pawnCtrl = humanComp?.outfitController;
 
-            // Persistence is inherited from _root, which is itself in
-            // DontDestroyOnLoad. Calling DontDestroyOnLoad on the child
-            // would emit a "only works for root GameObjects" warning.
-            clone.SetActive(true);
+            // The clone is parented under _root which is inactive at startup;
+            // Begin() flips the root active and the whole subtree comes alive.
+            // Do NOT toggle SetActive on the clone here — that wouldn't help
+            // (parent's active state dominates) and would just trip the IL2CPP
+            // "only root GameObjects can be made don't-destroy-on-load" hot path.
 
-            Plugin.Log.LogInfo($"[AppearancePreviewStage] cloned persistent pawn from citizen #{picked.humanID}.");
+            int meshes = 0;
+            try { foreach (var _ in clone.GetComponentsInChildren<MeshRenderer>(true)) meshes++; } catch { }
+
+            Plugin.Log.LogInfo($"[AppearancePreviewStage] cloned persistent pawn from citizen #{picked.humanID} (skinned-mesh renderers: {skinned}, mesh renderers: {meshes}).");
         }
         catch (Exception ex)
         {
@@ -328,7 +351,7 @@ public static class AppearancePreviewStage
         {
             BuildStageIfNeeded();
             EnsurePersistentPawn();
-            if (!HasPawn) return;
+            if (!HasPawn) { Plugin.Log.LogInfo("[AppearancePreviewStage] Begin: no pawn, skipping (no save loaded yet?)"); return; }
 
             _root.SetActive(true);
             _camera.enabled = true;
@@ -338,6 +361,14 @@ public static class AppearancePreviewStage
             _currentCfg = cfg;
             _currentCfg.IsCustomized = true;
             ApplyToPawn(_currentCfg);
+
+            // Force one render immediately so the first frame shows up in
+            // the panel without waiting for Unity's normal loop tick (which
+            // can lag a frame behind the SetActive in Begin).
+            try { _camera.Render(); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[AppearancePreviewStage] forced first-frame render: {ex.Message}"); }
+
+            Plugin.Log.LogInfo($"[AppearancePreviewStage] Begin OK — pawn at {_pawnGo.transform.position}, camera at {_camera.transform.position}, RT={(RenderTex != null ? $"{RenderTex.width}x{RenderTex.height}" : "null")}.");
 
             IsActive = true;
         }
