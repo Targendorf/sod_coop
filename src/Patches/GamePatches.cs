@@ -126,6 +126,9 @@ public static class GamePatches
     //  to 20 Hz internally. IsApplyingRemote guards prevent echo on replay.
     // ─────────────────────────────────────────────────────────────────────────
 
+    // DISABLED Round 3: CaseBoardPoller (host-side, 2 Hz) detects new entries
+    // in Case.caseElements per tick and emits BroadcastPin.
+    /*
     [HarmonyPatch(typeof(CasePanelController), nameof(CasePanelController.PinToCasePanel),
         new System.Type[]
         {
@@ -138,10 +141,6 @@ public static class GamePatches
         public static void Postfix(Case toCase, Evidence ev, Evidence.DataKey evKey,
                                    bool forceAutoPin, Vector2 localPostion)
         {
-            // Cheap-bail FIRST — case-board init during save load fires this
-            // for every seeded card. IL2CPP only marshals __args declared
-            // here (Case ref, Evidence ref, enum, bool, Vector2) — all light
-            // — so this signature is fine to keep with the bail upfront.
             if (!SyncGate.IsOpen) return;
             try
             {
@@ -157,6 +156,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     // ─────────────────────────────────────────────────────────────────────────
     //  CasePanelController.PinToCasePanel(List<DataKey>) overload patch
@@ -235,6 +235,9 @@ public static class GamePatches
     }
     */
 
+    // DISABLED Round 3: CaseBoardPoller (host-side, 2 Hz) detects element
+    // position changes by diffing CaseElement.v per-tick.
+    /*
     [HarmonyPatch(typeof(PinnedItemController), nameof(PinnedItemController.SetPostion))]
     public static class PIC_SetPostion_Patch
     {
@@ -256,6 +259,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     // ─────────────────────────────────────────────────────────────────────────
     //  Case.AddNewStringColour — connect a coloured thread between two pins.
@@ -416,14 +420,12 @@ public static class GamePatches
     //  identifier from __state.
     // ─────────────────────────────────────────────────────────────────────────
 
+    // DISABLED Round 3: CaseBoardPoller (host-side, 2 Hz) detects removed
+    // entries in Case.stringColours per tick and emits BroadcastStringRemoveById.
+    /*
     [HarmonyPatch(typeof(StringController), nameof(StringController.RemoveCustomLink))]
     public static class StringController_RemoveCustomLink_Patch
     {
-        /// <summary>
-        /// Frozen copy of the connection identifier captured in the prefix —
-        /// safe to use in the postfix even if RemoveCustomLink nulls out
-        /// connection / from / to during its cleanup.
-        /// </summary>
         public class State
         {
             public bool   Valid;
@@ -480,6 +482,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     // ─────────────────────────────────────────────────────────────────────────
     //  Fact.SetCustomName — player relabels a fact card. Virtual method.

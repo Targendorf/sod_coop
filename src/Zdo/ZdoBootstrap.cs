@@ -62,6 +62,9 @@ public static class ZdoBootstrap
         CaseStatusPoller.Register();
         SideJobPoller.Register();
 
+        // ── Round 3: case-board pin/move/string ──
+        CaseBoardPoller.Register();
+
         Plugin.Log.LogInfo("[ZdoBootstrap] resolvers + pollers + events registered.");
     }
 }

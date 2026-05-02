@@ -37,6 +37,12 @@ public static class PlayerInputPoller
     private static bool _lastFlashlight;
     private static int  _lastInteractableCount = -1;
 
+    /// <summary>Last-tick set of interactableIDs the local player held in any
+    /// inventory slot. Diff against current tick → diff = (added → pickup,
+    /// removed → drop). Lets us catch pick-up / drop without per-method
+    /// patches on FirstPersonItemController.PickUpItem / EmptySlot.</summary>
+    private static readonly System.Collections.Generic.HashSet<int> _lastSlotIds = new();
+
     public static void Register() => ZdoPollerHost.RegisterAnyPeer(NAME, 1f / TICK_HZ, Tick);
 
     private static void Tick(float now)
@@ -78,6 +84,52 @@ public static class PlayerInputPoller
                 _lastInteractableCount = curInteractables;
             }
 
+            // ── Pickup / drop diff (slot interactableIDs) ──
+            // Walk fpc.slots, collect non-zero interactableIDs, diff against
+            // _lastSlotIds. Added IDs → BroadcastPickup. Removed IDs →
+            // BroadcastDrop. Replaces patches at FirstPersonItemController.
+            // PickUpItem and EmptySlot post-save-load, when patches are dead.
+            try
+            {
+                var curSlotIds = new System.Collections.Generic.HashSet<int>();
+                var slots = fpc.slots;
+                if (slots != null)
+                {
+                    for (int i = 0; i < slots.Count; i++)
+                    {
+                        var s = slots[i];
+                        if (s == null) continue;
+                        int id = s.interactableID;
+                        if (id <= 0) continue;
+                        curSlotIds.Add(id);
+                    }
+                }
+
+                if (_initialized)
+                {
+                    foreach (var id in curSlotIds)
+                    {
+                        if (!_lastSlotIds.Contains(id))
+                        {
+                            try { SoDCoop.Sync.ItemSync.BroadcastPickup(id); }
+                            catch (Exception ex) { Plugin.Log.LogWarning($"[PlayerInputPoller] pickup: {ex.Message}"); }
+                        }
+                    }
+                    foreach (var id in _lastSlotIds)
+                    {
+                        if (!curSlotIds.Contains(id))
+                        {
+                            try { SoDCoop.Sync.ItemSync.BroadcastDrop(id); }
+                            catch (Exception ex) { Plugin.Log.LogWarning($"[PlayerInputPoller] drop: {ex.Message}"); }
+                        }
+                    }
+                }
+
+                _lastSlotIds.Clear();
+                foreach (var id in curSlotIds) _lastSlotIds.Add(id);
+            }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[PlayerInputPoller] slot diff: {ex.Message}"); }
+
             if (!_initialized)
             {
                 _initialized = true;
@@ -110,5 +162,6 @@ public static class PlayerInputPoller
     {
         _initialized = false;
         _lastInteractableCount = -1;
+        _lastSlotIds.Clear();
     }
 }

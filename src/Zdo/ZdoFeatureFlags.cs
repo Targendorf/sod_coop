@@ -36,4 +36,9 @@ public static class ZdoFeatureFlags
     public static bool UseZdoForEvidenceCreation  = true;
     public static bool UseZdoForCaseStatus        = true;
     public static bool UseZdoForSideJobs          = true;
+
+    // ── Round 3 (case-board pin/move/string + held-item slot diff) ──
+    // UseZdoForCaseBoard above is the pin/unpin/move umbrella. The Round 3
+    // CaseBoardPoller honours the same flag.
+    public static bool UseZdoForInventoryDiff     = true;     // pickup/drop slot-id diff
 }
