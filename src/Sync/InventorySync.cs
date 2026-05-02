@@ -59,6 +59,22 @@ public static class InventorySync
     /// <c>SodCommonBridge.OnBeforeLoad</c> via HeldItemPoller.ResetBaseline.</summary>
     public static void ResetHeldItemBaseline() => _lastHeldId = int.MinValue;
 
+    /// <summary>Read the local player's currently-held interactable ID
+    /// without broadcasting. Used by LocalPlayerPoller (Phase G.5 wave 1.3)
+    /// to write the value into the LocalPlayer ZDO under ZdoKeys.Held.</summary>
+    public static int SnapshotHeldItemId()
+    {
+        try
+        {
+            var fpc = FirstPersonItemController.Instance;
+            if (fpc == null) return -1;
+            var fpi = fpc.currentItem;
+            if (fpi == null) return -1;
+            return ResolveHeldInteractableId(fpc, fpi);
+        }
+        catch { return -1; }
+    }
+
     /// <summary>Single tick of held-item polling. Public so HeldItemPoller
     /// can drive scheduling without us duplicating the field-discovery
     /// helpers (ResolveHeldInteractableId etc.) elsewhere.</summary>

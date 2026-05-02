@@ -32,13 +32,15 @@ public static class HeldItemPoller
 
     private static void Tick(float now)
     {
-        try
-        {
-            // Legacy InventorySync.Update is the implementation; we just
-            // drive its scheduling. When the legacy path is fully retired
-            // the poll body moves here verbatim.
-            SoDCoop.Sync.InventorySync.PollHeldItem();
-        }
-        catch (Exception ex) { Plugin.Log.LogWarning($"[HeldItemPoller] tick: {ex.Message}"); }
+        // Phase G.5 (Wave 1.3): no-op. LocalPlayerPoller now writes
+        // ZdoKeys.Held to the LocalPlayer ZDO; LocalPlayerResolver applies
+        // it on receivers. The legacy InventorySync.PollHeldItem broadcast
+        // path is bypassed.
+        //
+        // Poller registration kept so save-load reset and the on-disk
+        // ZdoBootstrap entry stay structurally consistent across builds;
+        // the body becomes alive again only if a future feature flag
+        // re-enables the legacy held-item wire (none planned).
+        _ = now;
     }
 }

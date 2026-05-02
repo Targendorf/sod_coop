@@ -88,8 +88,17 @@ public static class MurderDiscoveryPoller
                 // host-deterministic from the world seed; we don't sync them.
                 if (cur == STATE_UNSOLVED && prev != STATE_UNSOLVED)
                 {
-                    try { SoDCoop.Sync.CitizenDeathSync.BroadcastDiscovery(); }
-                    catch (Exception ex) { Plugin.Log.LogWarning($"[MurderDiscoveryPoller] broadcast: {ex.Message}"); }
+                    // Phase G.5 (Wave 1.5): unified RPC channel via
+                    // ZdoEventDispatcher.MURDER_DISCOVERED. Receiver-side
+                    // ZdoEvents.OnMurderDiscovered calls
+                    // CitizenDeathSync.ApplyDiscoveryFromZdo.
+                    if (ZdoFeatureFlags.UseZdoForEvents)
+                        ZdoEvents.SendMurderDiscovered();
+                    else
+                    {
+                        try { SoDCoop.Sync.CitizenDeathSync.BroadcastDiscovery(); }
+                        catch (Exception ex) { Plugin.Log.LogWarning($"[MurderDiscoveryPoller] broadcast: {ex.Message}"); }
+                    }
                 }
             }
         }

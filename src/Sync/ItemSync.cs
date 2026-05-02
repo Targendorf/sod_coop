@@ -224,11 +224,16 @@ public static class ItemSync
     /// Hide the in-world object — it is now inside another player's inventory.
     /// </summary>
     private static void ApplyPickup(ItemPickupPacket p)
+        => ApplyPickupFromZdo(senderPlayerId: -1, interactableId: p.InteractableId);
+
+    /// <summary>ZDO entry — invoked from <c>ZdoEvents.OnItemPickup</c>.</summary>
+    public static void ApplyPickupFromZdo(int senderPlayerId, int interactableId)
     {
-        var inter = FindInteractableById(p.InteractableId);
+        _ = senderPlayerId;
+        var inter = FindInteractableById(interactableId);
         if (inter == null)
         {
-            Plugin.Log.LogWarning($"[ItemSync] ApplyPickup: id={p.InteractableId} not found");
+            Plugin.Log.LogWarning($"[ItemSync] ApplyPickup: id={interactableId} not found");
             return;
         }
 
@@ -239,12 +244,12 @@ public static class ItemSync
             if (go != null && go.activeSelf)
             {
                 go.SetActive(false);
-                Plugin.Log.LogInfo($"[ItemSync] Applied pickup id={p.InteractableId} (hidden)");
+                Plugin.Log.LogInfo($"[ItemSync] Applied pickup id={interactableId} (hidden)");
             }
         }
         catch (System.Exception ex)
         {
-            Plugin.Log.LogWarning($"[ItemSync] ApplyPickup({p.InteractableId}): {ex.Message}");
+            Plugin.Log.LogWarning($"[ItemSync] ApplyPickup({interactableId}): {ex.Message}");
         }
         finally
         {
@@ -278,6 +283,39 @@ public static class ItemSync
         catch (System.Exception ex)
         {
             Plugin.Log.LogWarning($"[ItemSync] ApplyDrop({p.InteractableId}): {ex.Message}");
+        }
+        finally
+        {
+            IsApplyingRemote = false;
+        }
+    }
+
+    /// <summary>ZDO entry — invoked from <c>ZdoEvents.OnItemDrop</c>. The
+    /// drop position isn't part of the event payload; we look it up from
+    /// the interactable's current world position on the receiver, which
+    /// matches the legacy ApplyDrop behaviour for missed-position fields.</summary>
+    public static void ApplyDropFromZdo(int senderPlayerId, int interactableId)
+    {
+        _ = senderPlayerId;
+        var inter = FindInteractableById(interactableId);
+        if (inter == null)
+        {
+            Plugin.Log.LogWarning($"[ItemSync] ApplyDropFromZdo: id={interactableId} not found");
+            return;
+        }
+        IsApplyingRemote = true;
+        try
+        {
+            var go = inter.spawnedObject;
+            if (go != null && !go.activeSelf)
+            {
+                go.SetActive(true);
+                Plugin.Log.LogInfo($"[ItemSync] Applied drop (zdo) id={interactableId}");
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"[ItemSync] ApplyDropFromZdo({interactableId}): {ex.Message}");
         }
         finally
         {

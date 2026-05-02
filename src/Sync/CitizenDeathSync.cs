@@ -208,6 +208,13 @@ public static class CitizenDeathSync
     }
 
     private static void ApplyDiscovery(CrimeSceneDiscoveredPacket p)
+        => ApplyDiscoveryImpl(p.DiscovererPlayerId);
+
+    /// <summary>ZDO entry — invoked from <c>ZdoEvents.OnMurderDiscovered</c>.</summary>
+    public static void ApplyDiscoveryFromZdo()
+        => ApplyDiscoveryImpl(senderIdForLog: -1);
+
+    private static void ApplyDiscoveryImpl(int senderIdForLog)
     {
         var mc = MurderController.Instance;
         if (mc == null) return;
@@ -216,7 +223,7 @@ public static class CitizenDeathSync
         try
         {
             mc.OnVictimDiscovery();
-            Plugin.Log.LogInfo($"[DeathSync] applied remote discovery from player {p.DiscovererPlayerId}");
+            Plugin.Log.LogInfo($"[DeathSync] applied remote discovery from player {senderIdForLog}");
         }
         catch (System.Exception ex)
         {

@@ -87,7 +87,18 @@ public static class PlayerDamageSync
     }
 
     private static void ApplyDamage(PlayerDamagePacket p)
+        => ApplyImpl(p.PlayerId, p.AttackerHumanId, p.Amount, p.HitPosition, p.HitDirection, p.IsLethal);
+
+    /// <summary>ZDO entry — invoked from <c>ZdoEvents.OnPlayerDamageRich</c>.</summary>
+    public static void ApplyFromZdo(int playerId, int attackerHumanId, float amount,
+                                    UnityEngine.Vector3 hitPosition, UnityEngine.Vector3 hitDirection, bool isLethal)
+        => ApplyImpl(playerId, attackerHumanId, amount, hitPosition, hitDirection, isLethal);
+
+    private static void ApplyImpl(int playerId, int attackerHumanId, float amount,
+                                  UnityEngine.Vector3 hitPosition, UnityEngine.Vector3 hitDirection, bool isLethal)
     {
+        _ = attackerHumanId;
+        _ = hitPosition;
         try
         {
             // Resolve display name for the chat banner.
@@ -95,7 +106,7 @@ public static class PlayerDamageSync
             try
             {
                 if (NetworkManager.Players != null
-                    && NetworkManager.Players.TryGetValue(p.PlayerId, out var info)
+                    && NetworkManager.Players.TryGetValue(playerId, out var info)
                     && !string.IsNullOrEmpty(info?.PlayerName))
                 {
                     victimName = info.PlayerName;
@@ -103,21 +114,17 @@ public static class PlayerDamageSync
             }
             catch { }
 
-            string banner = p.IsLethal
+            string banner = isLethal
                 ? $"☠ {victimName} is down!"
-                : $"💢 {victimName} is hurt ({p.Amount:F0})";
+                : $"💢 {victimName} is hurt ({amount:F0})";
             try { CoopUI.AddChatMessage(-1, "System", banner); } catch { }
 
             // Toggle the visible "downed" pose on the matching RemotePlayer.
-            // For non-lethal hits we still set Down=false — the receiver sees
-            // a brief banner only. Lethal hits trigger the persistent down pose,
-            // which gets cleared by either a fresh damage packet with isLethal=false
-            // or by the PlayerVitals isDead bit flipping back to false.
-            var rp = RemotePlayerManager.GetPlayer(p.PlayerId);
-            if (rp != null && p.IsLethal)
+            var rp = RemotePlayerManager.GetPlayer(playerId);
+            if (rp != null && isLethal)
             {
                 IsApplyingRemote = true;
-                try { rp.SetDown(true, p.HitDirection); } finally { IsApplyingRemote = false; }
+                try { rp.SetDown(true, hitDirection); } finally { IsApplyingRemote = false; }
             }
         }
         catch (System.Exception ex)

@@ -64,8 +64,17 @@ public static class CaseStatusPoller
                 if (!_last.TryGetValue(c.id, out byte prev) || prev != cur)
                 {
                     _last[c.id] = cur;
-                    try { Sync.CaseBoardSync.BroadcastStatus(c.id, cur, cancelObjectives: false); }
-                    catch (Exception ex) { Plugin.Log.LogWarning($"[CaseStatusPoller] broadcast: {ex.Message}"); }
+                    // Phase G.5 (Wave 1.2): write to per-case ZDO instead of
+                    // calling legacy CaseBoardSync.BroadcastStatus. Receiver-
+                    // side CaseResolver.Apply reads the status key and calls
+                    // CaseBoardSync.ApplyStatusFromZdo.
+                    try
+                    {
+                        var z = ZdoMan.GetOrCreateBySodId(ZdoTypeTag.Case, c.id,
+                            owner: ZdoMan.LocalPeerUid, persistent: true);
+                        z.Set(ZdoKeys.CaseStatus, cur);
+                    }
+                    catch (Exception ex) { Plugin.Log.LogWarning($"[CaseStatusPoller] zdo write: {ex.Message}"); }
                 }
             }
         }

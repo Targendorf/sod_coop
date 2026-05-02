@@ -123,6 +123,17 @@ public static class WeatherSync
     }
 
     private static void ApplyWeather(WeatherStatePacket p)
+        => ApplyFromZdo(p.Rain, p.Wind, p.Snow, p.Lightning, p.Fog, p.TransitionSpeed, p.Instant);
+
+    /// <summary>
+    /// ZDO entry-point — invoked from <c>WeatherResolver.Apply</c> after a
+    /// <see cref="ZdoTypeTag.Weather"/> delta arrives. Mirrors the legacy
+    /// packet apply path (same SetWeather call, same IsApplyingRemote
+    /// guard) but skips the per-feature legacy wire entirely.
+    /// </summary>
+    public static void ApplyFromZdo(float rain, float wind, float snow,
+                                    float lightning, float fog,
+                                    float transitionSpeed = 0.1f, bool instant = false)
     {
         var sd = SessionData.Instance;
         if (sd == null) return;
@@ -130,15 +141,14 @@ public static class WeatherSync
         IsApplyingRemote = true;
         try
         {
-            // Mirrors SetWeather(rain, wind, snow, lightning, fog, transitionSpeed, instant).
-            sd.SetWeather(p.Rain, p.Wind, p.Snow, p.Lightning, p.Fog, p.TransitionSpeed, p.Instant);
+            sd.SetWeather(rain, wind, snow, lightning, fog, transitionSpeed, instant);
             Plugin.Log.LogInfo(
-                $"[WeatherSync] applied rain={p.Rain:F2} wind={p.Wind:F2} snow={p.Snow:F2} " +
-                $"lit={p.Lightning:F2} fog={p.Fog:F2} instant={p.Instant}");
+                $"[WeatherSync] applied (zdo) rain={rain:F2} wind={wind:F2} snow={snow:F2} " +
+                $"lit={lightning:F2} fog={fog:F2} instant={instant}");
         }
         catch (System.Exception ex)
         {
-            Plugin.Log.LogWarning($"WeatherSync.ApplyWeather: {ex.Message}");
+            Plugin.Log.LogWarning($"WeatherSync.ApplyFromZdo: {ex.Message}");
         }
         finally
         {

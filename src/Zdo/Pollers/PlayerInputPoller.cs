@@ -114,13 +114,23 @@ public static class PlayerInputPoller
                     {
                         if (!_lastSlotIds.Contains(id))
                         {
-                            try { SoDCoop.Sync.ItemSync.BroadcastPickup(id); }
-                            catch (Exception ex) { Plugin.Log.LogWarning($"[PlayerInputPoller] pickup: {ex.Message}"); }
+                            // Phase G.5 (Wave 1.7): unified RPC via
+                            // ZdoEvents.ITEM_PICKUP. Receiver applies via
+                            // ItemSync.ApplyPickupFromZdo.
+                            if (ZdoFeatureFlags.UseZdoForEvents)
+                            {
+                                try { ZdoEvents.SendItemPickup(id); }
+                                catch (Exception ex) { Plugin.Log.LogWarning($"[PlayerInputPoller] pickup zdo: {ex.Message}"); }
+                            }
+                            else
+                            {
+                                try { SoDCoop.Sync.ItemSync.BroadcastPickup(id); }
+                                catch (Exception ex) { Plugin.Log.LogWarning($"[PlayerInputPoller] pickup: {ex.Message}"); }
+                            }
 
-                            // If the picked-up id is one of our OWN previously-placed
-                            // items, also nuke peers' mirrors. The legacy patch on
-                            // FirstPersonItemController.PickUpItem did this in its
-                            // postfix; PlayerInputPoller now subsumes that branch.
+                            // Place-remove for own previously-placed items
+                            // stays on the legacy InventorySync path until
+                            // Wave 3 PlacedItem ZDO migration replaces it.
                             try
                             {
                                 if (SoDCoop.Sync.InventorySync.IsLocalPlacement(id))
@@ -133,8 +143,16 @@ public static class PlayerInputPoller
                     {
                         if (!curSlotIds.Contains(id))
                         {
-                            try { SoDCoop.Sync.ItemSync.BroadcastDrop(id); }
-                            catch (Exception ex) { Plugin.Log.LogWarning($"[PlayerInputPoller] drop: {ex.Message}"); }
+                            if (ZdoFeatureFlags.UseZdoForEvents)
+                            {
+                                try { ZdoEvents.SendItemDrop(id); }
+                                catch (Exception ex) { Plugin.Log.LogWarning($"[PlayerInputPoller] drop zdo: {ex.Message}"); }
+                            }
+                            else
+                            {
+                                try { SoDCoop.Sync.ItemSync.BroadcastDrop(id); }
+                                catch (Exception ex) { Plugin.Log.LogWarning($"[PlayerInputPoller] drop: {ex.Message}"); }
+                            }
                         }
                     }
                 }
@@ -152,19 +170,13 @@ public static class PlayerInputPoller
                 return;     // baseline — no broadcast
             }
 
-            if (raised != _lastRaised)
-            {
-                _lastRaised = raised;
-                try { SoDCoop.Sync.InventorySync.BroadcastRaised(raised); }
-                catch (Exception ex) { Plugin.Log.LogWarning($"[PlayerInputPoller] raised broadcast: {ex.Message}"); }
-            }
-
-            if (flashlight != _lastFlashlight)
-            {
-                _lastFlashlight = flashlight;
-                try { SoDCoop.Sync.InventorySync.BroadcastFlashlight(flashlight); }
-                catch (Exception ex) { Plugin.Log.LogWarning($"[PlayerInputPoller] flashlight broadcast: {ex.Message}"); }
-            }
+            // Phase G.5 (Wave 1.4): raised + flashlight diffs are emitted
+            // via the LocalPlayer ZDO inside LocalPlayerPoller. No legacy
+            // broadcast call here. The flip-tracking below is preserved
+            // for now in case a future debug log wants the transition
+            // event timing — body is otherwise inert.
+            if (raised != _lastRaised) _lastRaised = raised;
+            if (flashlight != _lastFlashlight) _lastFlashlight = flashlight;
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[PlayerInputPoller] tick: {ex.Message}"); }
     }

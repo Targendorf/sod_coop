@@ -77,6 +77,22 @@ public static class LocalPlayerPoller
             try { z.Set(ZdoKeys.IllegalStatus,       (byte)(p.illegalStatus ? 1 : 0)); } catch { }
             try { z.Set(ZdoKeys.Escalation,          p.trespassingEscalation);  } catch { }
 
+            // Phase G.5 (Wave 1.3-4): held-item + raised + flashlight on
+            // LocalPlayer ZDO — pure ZDO transport replacing legacy
+            // ItemHeldPacket / ItemRaisedPacket / ItemFlashlightPacket.
+            try
+            {
+                var fpc = FirstPersonItemController.Instance;
+                if (fpc != null)
+                {
+                    int heldId = SoDCoop.Sync.InventorySync.SnapshotHeldItemId();
+                    z.Set(ZdoKeys.Held,       heldId);
+                    z.Set(ZdoKeys.Raised,     fpc.isRaised);
+                    z.Set(ZdoKeys.Flashlight, fpc.flashlight);
+                }
+            }
+            catch { /* mid-init */ }
+
             // Player damage diff — broadcasts a banner + downed pose to peers
             // when local health drops. Replaces the player-victim branch of
             // the (now-disabled) Actor.RecieveDamage patch. Player health
@@ -96,16 +112,29 @@ public static class LocalPlayerPoller
                     bool  lethal = curHealth <= 0f;
                     Vector3 pos = Vector3.zero;
                     try { if (p.transform != null) pos = p.transform.position; } catch { }
-                    try
+
+                    // Phase G.5 (Wave 1.6): unified RPC via
+                    // ZdoEventDispatcher.PLAYER_DAMAGE_RICH instead of legacy
+                    // PlayerDamage packet. Receiver-side ZdoEvents.OnPlayerDamageRich
+                    // calls PlayerDamageSync.ApplyFromZdo.
+                    if (ZdoFeatureFlags.UseZdoForEvents)
                     {
-                        Sync.PlayerDamageSync.BroadcastDamage(
-                            attackerHumanId: -1,
-                            amount:          delta,
-                            hitPosition:     pos,
-                            hitDirection:    Vector3.up,
-                            isLethal:        lethal);
+                        try { ZdoEvents.SendPlayerDamage(-1, delta, pos, Vector3.up, lethal); }
+                        catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerPoller] dmg zdo: {ex.Message}"); }
                     }
-                    catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerPoller] dmg broadcast: {ex.Message}"); }
+                    else
+                    {
+                        try
+                        {
+                            Sync.PlayerDamageSync.BroadcastDamage(
+                                attackerHumanId: -1,
+                                amount:          delta,
+                                hitPosition:     pos,
+                                hitDirection:    Vector3.up,
+                                isLethal:        lethal);
+                        }
+                        catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerPoller] dmg broadcast: {ex.Message}"); }
+                    }
                     _lastHealth = curHealth;
                 }
                 else if (curHealth > _lastHealth)

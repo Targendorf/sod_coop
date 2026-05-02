@@ -45,6 +45,7 @@ public static class ZdoBootstrap
         EvidenceNotePoller.Register();
 
         // ── Phase F: Player state ──
+        ZdoResolverRegistry.Register(new LocalPlayerResolver());
         LocalPlayerPoller.Register();
         PlayerInputPoller.Register();
         PauseStatePoller.Register();
@@ -56,6 +57,7 @@ public static class ZdoBootstrap
         ZdoEvents.RegisterAll();
 
         // ── Round 2: weather, elevators, evidence creation, case status, side jobs ──
+        ZdoResolverRegistry.Register(new WeatherResolver());
         WeatherPoller.Register();
         ElevatorPoller.Register();
         EvidenceCreationPoller.Register();
@@ -63,6 +65,7 @@ public static class ZdoBootstrap
         SideJobPoller.Register();
 
         // ── Round 3: case-board pin/move/string ──
+        ZdoResolverRegistry.Register(new CaseResolver());
         CaseBoardPoller.Register();
 
         // ── Round 5: NPC damage diff (currentHealth per citizen) ──

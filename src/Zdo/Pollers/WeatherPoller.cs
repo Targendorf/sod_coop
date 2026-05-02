@@ -5,18 +5,20 @@ namespace SoDCoop.Zdo.Pollers;
 /// <summary>
 /// Host-side weather diff: 1 Hz over <c>SessionData.Instance</c> read of
 /// <c>currentRain / currentWind / currentSnow / currentLightning / currentFog</c>.
-/// Replaces the disabled <c>SessionData.SetWeather</c> Harmony patch at
-/// <c>src/Patches/GamePatches.cs</c>.
+/// Replaces the disabled <c>SessionData.SetWeather</c> postfix.
 ///
-/// <para>Reuses the existing <see cref="Sync.WeatherSync.BroadcastSetWeather"/>
-/// helper as the transport — same packet, same apply path on receivers — so
-/// the migration is purely about the trigger source (poller diff vs Harmony
-/// postfix). When SoD's own weather scheduler mutates the live values, the
-/// poller catches it on the next tick and pushes the change.</para>
+/// <para><b>Phase G.5 (Wave 1):</b> wire format is now pure ZDO. Five
+/// float keys live on a singleton <see cref="ZdoTypeTag.Weather"/> ZDO
+/// (sodId = 0); on diff > <see cref="EPSILON"/> the dirty keys flush through
+/// <c>ZdoMan.TickDeltaFlush</c> → zstd-compressed
+/// <see cref="Network.PacketType.ZdoDeltaBatch"/>. Receivers apply via
+/// <see cref="Resolvers.WeatherResolver"/> which calls
+/// <c>SessionData.SetWeather</c> under <c>WeatherSync.IsApplyingRemote</c>.</para>
 ///
-/// <para>Epsilon = 0.005f — coarser than visible perception, fine enough to
-/// catch any genuine weather-state transition. Keeps idle weather from
-/// emitting noise broadcasts when SoD's interpolation jitters by 0.0001.</para>
+/// <para>The legacy <c>WeatherSync.BroadcastSetWeather</c> path is no
+/// longer called from this poller. <c>WeatherSync</c> stays alive only for
+/// the prefix-block on clients (<c>SessionData.SetWeather</c> patch) and
+/// for snapshot back-compat during cutover.</para>
 /// </summary>
 public static class WeatherPoller
 {
@@ -30,10 +32,7 @@ public static class WeatherPoller
 
     public static void Register() => ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick);
 
-    public static void ResetBaseline()
-    {
-        _initialized = false;
-    }
+    public static void ResetBaseline() => _initialized = false;
 
     private static void Tick(float now)
     {
@@ -54,6 +53,9 @@ public static class WeatherPoller
                 _initialized = true;
                 _lastRain = rain; _lastWind = wind; _lastSnow = snow;
                 _lastLightning = lit; _lastFog = fog;
+                // Still write the baseline into the ZDO so a late-joiner
+                // gets the current weather via ZdoSnapshot.
+                WriteToZdo(rain, wind, snow, lit, fog);
                 return;
             }
 
@@ -66,16 +68,20 @@ public static class WeatherPoller
             _lastRain = rain; _lastWind = wind; _lastSnow = snow;
             _lastLightning = lit; _lastFog = fog;
 
-            // Re-use legacy transport — packet, dispatch, IsApplyingRemote echo
-            // suppression all already exist in WeatherSync. Migration is about
-            // the trigger source, not the wire format.
-            try
-            {
-                Sync.WeatherSync.BroadcastSetWeather(rain, wind, snow, lit, fog,
-                    transitionSpeed: 0.1f, instant: false);
-            }
-            catch (Exception ex) { Plugin.Log.LogWarning($"[WeatherPoller] broadcast: {ex.Message}"); }
+            WriteToZdo(rain, wind, snow, lit, fog);
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[WeatherPoller] tick: {ex.Message}"); }
+    }
+
+    private static void WriteToZdo(float rain, float wind, float snow, float lit, float fog)
+    {
+        // Singleton — sodId = 0 because there's only one weather state per world.
+        var z = ZdoMan.GetOrCreateBySodId(ZdoTypeTag.Weather, 0,
+            owner: ZdoMan.LocalPeerUid, persistent: true);
+        z.Set(ZdoKeys.WeatherRain,      rain);
+        z.Set(ZdoKeys.WeatherWind,      wind);
+        z.Set(ZdoKeys.WeatherSnow,      snow);
+        z.Set(ZdoKeys.WeatherLightning, lit);
+        z.Set(ZdoKeys.WeatherFog,       fog);
     }
 }

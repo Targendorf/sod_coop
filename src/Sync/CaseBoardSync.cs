@@ -782,16 +782,24 @@ public static class CaseBoardSync
     }
 
     private static void ApplyStatus(CaseBoardStatusPacket p)
+        => ApplyStatusImpl(p.CaseId, p.Status, p.CancelObjectives);
+
+    /// <summary>ZDO entry-point — invoked from <c>CaseResolver.Apply</c>
+    /// after a <see cref="ZdoTypeTag.Case"/> delta arrives with a status flip.</summary>
+    public static void ApplyStatusFromZdo(int caseId, byte status, bool cancelObjectives)
+        => ApplyStatusImpl(caseId, status, cancelObjectives);
+
+    private static void ApplyStatusImpl(int caseId, byte status, bool cancelObjectives)
     {
-        var caseObj = FindCase(p.CaseId);
+        var caseObj = FindCase(caseId);
         if (caseObj == null) return;
-        if ((byte)caseObj.caseStatus == p.Status) return;   // idempotent
+        if ((byte)caseObj.caseStatus == status) return;   // idempotent
 
         IsApplyingRemote = true;
         try
         {
-            caseObj.SetStatus((Case.CaseStatus)p.Status, p.CancelObjectives);
-            Plugin.Log.LogInfo($"[CaseBoard] applied remote status case={p.CaseId} status={p.Status}");
+            caseObj.SetStatus((Case.CaseStatus)status, cancelObjectives);
+            Plugin.Log.LogInfo($"[CaseBoard] applied remote status case={caseId} status={status}");
         }
         catch (System.Exception ex)
         {

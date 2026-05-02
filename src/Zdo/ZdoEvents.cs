@@ -43,6 +43,20 @@ public static class ZdoEvents
     /// Credits-only (debits are local per MoneySync asymmetric policy).</summary>
     public const string MONEY_ADDED          = "money-added";
 
+    /// <summary>NPC body discovered → case opens. No payload — host-side
+    /// MurderDiscoveryPoller fires once on Murder.state→unsolved.</summary>
+    public const string MURDER_DISCOVERED    = "murder-discovered";
+
+    /// <summary>Player took damage — payload: <c>(int playerId, int attackerHumanId,
+    /// float amount, Vector3 hitPos, Vector3 hitDir, bool lethal)</c>.</summary>
+    public const string PLAYER_DAMAGE_RICH   = "player-damage-rich";
+
+    /// <summary>Item picked up by a player — payload: <c>(int playerId, int interactableId)</c>.</summary>
+    public const string ITEM_PICKUP          = "item-pickup";
+
+    /// <summary>Item dropped by a player — payload: <c>(int playerId, int interactableId)</c>.</summary>
+    public const string ITEM_DROP            = "item-drop";
+
     public static void RegisterAll()
     {
         ZdoEventDispatcher.Register(CHAT,             OnChat);
@@ -63,6 +77,12 @@ public static class ZdoEvents
 
         // Round 10
         ZdoEventDispatcher.Register(MONEY_ADDED,           OnMoneyAdded);
+
+        // Phase G.5 wave 1
+        ZdoEventDispatcher.Register(MURDER_DISCOVERED,     OnMurderDiscovered);
+        ZdoEventDispatcher.Register(PLAYER_DAMAGE_RICH,    OnPlayerDamageRich);
+        ZdoEventDispatcher.Register(ITEM_PICKUP,           OnItemPickup);
+        ZdoEventDispatcher.Register(ITEM_DROP,             OnItemDrop);
     }
 
     private static readonly NetDataWriter _w = new();
@@ -135,6 +155,46 @@ public static class ZdoEvents
         _w.Put(displayMessage);
         _w.Put(reason ?? "");
         ZdoEventDispatcher.Send(MONEY_ADDED, _w);
+    }
+
+    /// <summary>Body-discovery banner — no payload, fires once on host.</summary>
+    public static void SendMurderDiscovered()
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        ZdoEventDispatcher.Send(MURDER_DISCOVERED, _w);
+    }
+
+    public static void SendPlayerDamage(int attackerHumanId, float amount,
+                                        UnityEngine.Vector3 hitPos, UnityEngine.Vector3 hitDir, bool lethal)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(SoDCoop.Network.NetworkManager.LocalPlayerId);
+        _w.Put(attackerHumanId);
+        _w.Put(amount);
+        _w.Put(hitPos.x); _w.Put(hitPos.y); _w.Put(hitPos.z);
+        _w.Put(hitDir.x); _w.Put(hitDir.y); _w.Put(hitDir.z);
+        _w.Put(lethal);
+        ZdoEventDispatcher.Send(PLAYER_DAMAGE_RICH, _w);
+    }
+
+    public static void SendItemPickup(int interactableId)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(SoDCoop.Network.NetworkManager.LocalPlayerId);
+        _w.Put(interactableId);
+        ZdoEventDispatcher.Send(ITEM_PICKUP, _w);
+    }
+
+    public static void SendItemDrop(int interactableId)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(SoDCoop.Network.NetworkManager.LocalPlayerId);
+        _w.Put(interactableId);
+        ZdoEventDispatcher.Send(ITEM_DROP, _w);
     }
 
     // ── Handlers ──
@@ -233,6 +293,69 @@ public static class ZdoEvents
             SoDCoop.Sync.SideJobSync.RunOnPlayerCallAndRebroadcast(job, senderId);
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnSideJobPlayerCall] {ex.Message}"); }
+    }
+
+    private static void OnMurderDiscovered(NetDataReader r, int senderId)
+    {
+        try
+        {
+            _ = r; _ = senderId;
+            // Host originates; receivers replay the legacy banner via existing
+            // CitizenDeathSync apply path.
+            try { SoDCoop.Sync.CitizenDeathSync.ApplyDiscoveryFromZdo(); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnMurderDiscovered] apply: {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnMurderDiscovered] {ex.Message}"); }
+    }
+
+    private static void OnPlayerDamageRich(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int playerId  = r.GetInt();
+            int attacker  = r.GetInt();
+            float amount  = r.GetFloat();
+            float px = r.GetFloat(), py = r.GetFloat(), pz = r.GetFloat();
+            float dx = r.GetFloat(), dy = r.GetFloat(), dz = r.GetFloat();
+            bool lethal   = r.GetBool();
+            if (playerId == SoDCoop.Network.NetworkManager.LocalPlayerId) return;
+            try
+            {
+                SoDCoop.Sync.PlayerDamageSync.ApplyFromZdo(
+                    playerId, attacker, amount,
+                    new UnityEngine.Vector3(px, py, pz),
+                    new UnityEngine.Vector3(dx, dy, dz),
+                    lethal);
+            }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnPlayerDamageRich] apply: {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnPlayerDamageRich] {ex.Message}"); }
+    }
+
+    private static void OnItemPickup(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int playerId       = r.GetInt();
+            int interactableId = r.GetInt();
+            if (playerId == SoDCoop.Network.NetworkManager.LocalPlayerId) return;
+            try { SoDCoop.Sync.ItemSync.ApplyPickupFromZdo(playerId, interactableId); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnItemPickup] apply: {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnItemPickup] {ex.Message}"); }
+    }
+
+    private static void OnItemDrop(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int playerId       = r.GetInt();
+            int interactableId = r.GetInt();
+            if (playerId == SoDCoop.Network.NetworkManager.LocalPlayerId) return;
+            try { SoDCoop.Sync.ItemSync.ApplyDropFromZdo(playerId, interactableId); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnItemDrop] apply: {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnItemDrop] {ex.Message}"); }
     }
 
     private static void OnMoneyAdded(NetDataReader r, int senderId)

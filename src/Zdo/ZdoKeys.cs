@@ -103,6 +103,11 @@ public static class ZdoKeys
     public static readonly int WeatherPreset   = Hash32.Of("weatherPreset");
     public static readonly int WeatherTransitionTime = Hash32.Of("weatherTransitionTime");
     public static readonly int WeatherInstant  = Hash32.Of("weatherInstant");
+    public static readonly int WeatherRain     = Hash32.Of("weatherRain");
+    public static readonly int WeatherWind     = Hash32.Of("weatherWind");
+    public static readonly int WeatherSnow     = Hash32.Of("weatherSnow");
+    public static readonly int WeatherLightning = Hash32.Of("weatherLightning");
+    public static readonly int WeatherFog      = Hash32.Of("weatherFog");
     public static readonly int GameTime        = Hash32.Of("gameTime");
     public static readonly int DayIndex        = Hash32.Of("dayIndex");
     public static readonly int TimePaused      = Hash32.Of("timePaused");
