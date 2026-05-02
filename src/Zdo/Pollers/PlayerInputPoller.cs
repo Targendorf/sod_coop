@@ -116,6 +116,17 @@ public static class PlayerInputPoller
                         {
                             try { SoDCoop.Sync.ItemSync.BroadcastPickup(id); }
                             catch (Exception ex) { Plugin.Log.LogWarning($"[PlayerInputPoller] pickup: {ex.Message}"); }
+
+                            // If the picked-up id is one of our OWN previously-placed
+                            // items, also nuke peers' mirrors. The legacy patch on
+                            // FirstPersonItemController.PickUpItem did this in its
+                            // postfix; PlayerInputPoller now subsumes that branch.
+                            try
+                            {
+                                if (SoDCoop.Sync.InventorySync.IsLocalPlacement(id))
+                                    SoDCoop.Sync.InventorySync.BroadcastPlaceRemove(id);
+                            }
+                            catch (Exception ex) { Plugin.Log.LogWarning($"[PlayerInputPoller] placeRemove: {ex.Message}"); }
                         }
                     }
                     foreach (var id in _lastSlotIds)

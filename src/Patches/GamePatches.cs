@@ -735,30 +735,17 @@ public static class GamePatches
             if (NetworkManager.IsHost) return true;
 
             // Connected client, not applying a remote packet → swallow the call.
+            // The prefix is the ONLY part of this patch that has to live —
+            // without it clients run their own SoD weather scheduler and drift.
             return false;
         }
 
-        [HarmonyPostfix]
-        public static void Postfix(
-            float newRain, float newWind, float newSnow, float newLightning, float newFog,
-            float newTransitionSpeed, bool updateInstantly)
-        {
-            if (!SyncGate.IsOpen) return;
-            try
-            {
-                if (WeatherSync.IsApplyingRemote) return;       // remote → don't echo
-                if (!NetworkManager.IsConnected)  return;
-                if (!NetworkManager.IsHost)       return;       // client never reaches here (prefix blocked)
-
-                WeatherSync.BroadcastSetWeather(
-                    newRain, newWind, newSnow, newLightning, newFog,
-                    newTransitionSpeed, updateInstantly);
-            }
-            catch (System.Exception ex)
-            {
-                Plugin.Log.LogWarning($"SessionData.SetWeather patch: {ex.Message}");
-            }
-        }
+        // Postfix retired in Round 9: WeatherPoller (host-only, 1 Hz) reads
+        // SessionData.currentRain/currentWind/currentSnow/currentLightning/
+        // currentFog directly and emits via WeatherSync.BroadcastSetWeather
+        // on diff > 0.005f. Same wire format, same apply path; the postfix
+        // was a per-call duplicate that fired on every SetWeather invocation
+        // SoD's scheduler made internally.
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2191,6 +2178,12 @@ public static class GamePatches
     }
     */
 
+    // DISABLED Round 9: PlayerInputPoller (any-peer, 30 Hz) diffs the
+    // FirstPersonItemController.slots interactableID set per tick →
+    // pickup = added id, drop = removed id. Picks up the placement-remove
+    // special branch (BroadcastPlaceRemove on own-placement pickup) too,
+    // matching the previous postfix logic exactly.
+    /*
     [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.PickUpItem))]
     public static class FPItemController_PickUpItem_Patch
     {
@@ -2200,15 +2193,11 @@ public static class GamePatches
             if (!SyncGate.IsOpen) return;
             try
             {
-                if (!__result) return;               // pick-up failed — nothing changed
+                if (!__result) return;
                 if (pickUpThis == null) return;
                 if (ItemSync.IsApplyingRemote) return;
                 ItemSync.BroadcastPickup(pickUpThis.id);
 
-                // If we picked up one of our OWN previously placed items
-                // (codebreaker, doorwedge, etc), tell peers to nuke their
-                // mirror as well. ItemSync's pickup packet alone wouldn't
-                // help them because their Interactable has a different local id.
                 if (InventorySync.IsLocalPlacement(pickUpThis.id))
                     InventorySync.BroadcastPlaceRemove(pickUpThis.id);
             }
@@ -2218,15 +2207,14 @@ public static class GamePatches
             }
         }
     }
+    */
 
+    // DISABLED Round 9: covered by PlayerInputPoller slot-diff (drop = removed
+    // id from the slot set; see PickUpItem note above for full justification).
+    /*
     [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.EmptySlot))]
     public static class FPItemController_EmptySlot_Patch
     {
-        /// <summary>
-        /// Capture the interactableID before the slot is cleared, pass it to the
-        /// postfix via Harmony's __state mechanism.
-        /// -1 means "skip broadcast" (destroyed item or no slot).
-        /// </summary>
         [HarmonyPrefix]
         public static void Prefix(
             FirstPersonItemController.InventorySlot emptySlot,
@@ -2237,7 +2225,7 @@ public static class GamePatches
             try
             {
                 if (ItemSync.IsApplyingRemote) return;
-                if (destroyObject) return;           // item consumed/binned — no drop event
+                if (destroyObject) return;
                 if (emptySlot == null) return;
                 __state = emptySlot.interactableID;
             }
@@ -2259,4 +2247,5 @@ public static class GamePatches
             }
         }
     }
+    */
 }
