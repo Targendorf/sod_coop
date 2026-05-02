@@ -765,38 +765,49 @@ public static class InventorySync
     }
 
     private static void ApplyRestrained(NpcRestrainedPacket p)
+        => ApplyRestrainedByHumanId(p.NpcHumanId, p.IsRestrained, p.Duration);
+
+    /// <summary>
+    /// Public ZDO-side entrypoint: receiver applies restrained state coming
+    /// from a <see cref="Zdo.Resolvers.CitizenResolver"/> apply pass.
+    /// Idempotent — re-issuing the same value is a SoD-side no-op.
+    /// </summary>
+    public static void ApplyRestrainedByHumanId(int humanId, bool restrained, float duration)
     {
         try
         {
-            var aic = ResolveAIController(p.NpcHumanId);
+            var aic = ResolveAIController(humanId);
             if (aic == null) return;
 
             IsApplyingRemote = true;
-            try { aic.SetRestrained(p.IsRestrained, p.Duration); }
+            try { aic.SetRestrained(restrained, duration); }
             finally { IsApplyingRemote = false; }
-            Plugin.Log.LogInfo($"[InventorySync] applied remote restrained npc={p.NpcHumanId} val={p.IsRestrained}");
+            Plugin.Log.LogInfo($"[InventorySync] applied remote restrained npc={humanId} val={restrained}");
         }
         catch (System.Exception ex)
         {
-            Plugin.Log.LogError($"InventorySync.ApplyRestrained failed: {ex.Message}");
+            Plugin.Log.LogError($"InventorySync.ApplyRestrainedByHumanId failed: {ex.Message}");
         }
     }
 
     private static void ApplyStunned(NpcStunnedPacket p)
+        => ApplyStunnedByHumanId(p.NpcHumanId, p.IsStunned);
+
+    public static void ApplyStunnedByHumanId(int humanId, bool stunned)
     {
         try
         {
-            var aic = ResolveAIController(p.NpcHumanId);
+            var aic = ResolveAIController(humanId);
             if (aic == null) return;
 
             IsApplyingRemote = true;
-            try { aic.SetStunned(p.IsStunned); }
+            try { aic.SetStunned(stunned); }
             finally { IsApplyingRemote = false; }
-            Plugin.Log.LogInfo($"[InventorySync] applied remote stunned npc={p.NpcHumanId} val={p.IsStunned}");
+            Plugin.Log.LogInfo($"[InventorySync] applied remote stunned npc={humanId} val={stunned}");
         }
         catch (System.Exception ex)
         {
-            Plugin.Log.LogError($"InventorySync.ApplyStunned failed: {ex.Message}");
+            Plugin.Log.LogError($"InventorySync.ApplyStunnedByHumanId failed: {ex.Message}");
         }
     }
 
@@ -1037,6 +1048,18 @@ public static class InventorySync
     {
         if (!NetworkManager.IsConnected) return;
         if (IsApplyingRemote) return;
+
+        // Phase G + Round 2: route combat-anim events through the unified
+        // ZdoEventRpc channel when the events feature flag is on. Receiver-
+        // side dispatcher resolves the RemotePlayer by sender peer-id and
+        // calls RemotePlayer.ApplyAction the same way the legacy ItemAction
+        // packet did.
+        if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForEvents)
+        {
+            try { SoDCoop.Zdo.ZdoEvents.SendCombatAction((byte)action); }
+            catch (System.Exception ex) { Plugin.Log.LogWarning($"InventorySync.BroadcastAction (ZDO event): {ex.Message}"); }
+            return;
+        }
 
         try
         {

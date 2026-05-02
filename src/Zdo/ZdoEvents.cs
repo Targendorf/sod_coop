@@ -29,6 +29,16 @@ public static class ZdoEvents
     public const string NPC_DAMAGE          = "npc-damage-banner";
     public const string PLAYER_DAMAGE       = "player-damage-banner";
 
+    // ── Round 2 events (one-shot animations / lifecycle pings) ──
+    /// <summary>Player pressed Melee/Block/Counter — payload: <c>(int playerId, byte actionKind)</c>.</summary>
+    public const string COMBAT_ACTION       = "combat-action";
+
+    /// <summary>SideJob.OnPlayerCall fired (player accepted) — payload: <c>(int jobId)</c>.</summary>
+    public const string SIDE_JOB_PLAYER_CALL = "side-job-player-call";
+
+    /// <summary>SideJob.OnRewarded fired — payload: <c>(int jobId, int reward)</c>.</summary>
+    public const string SIDE_JOB_REWARDED    = "side-job-rewarded";
+
     public static void RegisterAll()
     {
         ZdoEventDispatcher.Register(CHAT,             OnChat);
@@ -41,6 +51,11 @@ public static class ZdoEvents
         ZdoEventDispatcher.Register(CRIME_DISCOVERED, OnCrimeDiscovered);
         ZdoEventDispatcher.Register(NPC_DAMAGE,       OnNpcDamage);
         ZdoEventDispatcher.Register(PLAYER_DAMAGE,    OnPlayerDamage);
+
+        // Round 2
+        ZdoEventDispatcher.Register(COMBAT_ACTION,         OnCombatAction);
+        ZdoEventDispatcher.Register(SIDE_JOB_PLAYER_CALL,  OnSideJobPlayerCall);
+        ZdoEventDispatcher.Register(SIDE_JOB_REWARDED,     OnSideJobRewarded);
     }
 
     private static readonly NetDataWriter _w = new();
@@ -63,6 +78,40 @@ public static class ZdoEvents
         _w.Put(playerName ?? "");
         _w.Put(pos.x); _w.Put(pos.y); _w.Put(pos.z);
         ZdoEventDispatcher.Send(MAP_PING, _w, DeliveryMethod.ReliableOrdered);
+    }
+
+    /// <summary>
+    /// Combat one-shot animation event. Sequenced delivery — late frames can
+    /// be dropped, the next stomps anyway. Receiver looks up the
+    /// <c>RemotePlayer</c> by sender peer-id and pulses the matching animator
+    /// trigger via <c>RemotePlayer.ApplyAction</c>. Mirrors what the legacy
+    /// <c>InventorySync.BroadcastAction</c> + <c>ItemActionPacket</c> path
+    /// did, but via the unified RPC channel.
+    /// </summary>
+    public static void SendCombatAction(byte actionKind)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(SoDCoop.Network.NetworkManager.LocalPlayerId);
+        _w.Put(actionKind);
+        ZdoEventDispatcher.Send(COMBAT_ACTION, _w, DeliveryMethod.Sequenced);
+    }
+
+    public static void SendSideJobPlayerCall(int jobId)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(jobId);
+        ZdoEventDispatcher.Send(SIDE_JOB_PLAYER_CALL, _w);
+    }
+
+    public static void SendSideJobRewarded(int jobId, int reward)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(jobId);
+        _w.Put(reward);
+        ZdoEventDispatcher.Send(SIDE_JOB_REWARDED, _w);
     }
 
     // ── Handlers ──
@@ -117,4 +166,63 @@ public static class ZdoEvents
     private static void OnCrimeDiscovered(NetDataReader r, int senderId){ _ = r; _ = senderId; }
     private static void OnNpcDamage(NetDataReader r, int senderId)      { _ = r; _ = senderId; }
     private static void OnPlayerDamage(NetDataReader r, int senderId)   { _ = r; _ = senderId; }
+
+    private static void OnCombatAction(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int  playerId  = r.GetInt();
+            byte actionKind = r.GetByte();
+            // Sender filters itself implicitly — its own LocalPlayerId payload
+            // matches and the lookup returns null below. We still defend
+            // against echoes by checking explicitly.
+            if (playerId == SoDCoop.Network.NetworkManager.LocalPlayerId) return;
+
+            var rp = SoDCoop.Player.RemotePlayerManager.GetPlayer(playerId);
+            if (rp == null) return;
+            try { rp.ApplyAction(actionKind); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCombatAction] ApplyAction: {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCombatAction] {ex.Message}"); }
+    }
+
+    private static void OnSideJobPlayerCall(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int jobId = r.GetInt();
+            // Host is authoritative for side-job state — clients send this
+            // RPC up to host, host runs OnPlayerCall on the real SideJob,
+            // which flips accepted=true + advances state, then the
+            // SideJobPoller picks up the state diff and re-broadcasts.
+            if (!SoDCoop.Network.NetworkManager.IsHost) return;
+            var ctrl = global::SideJobController.Instance;
+            if (ctrl == null) return;
+            var dict = ctrl.allJobsDictionary;
+            if (dict == null) return;
+            foreach (var kv in dict)
+            {
+                if (kv.Value == null) continue;
+                if (kv.Value.jobID != jobId) continue;
+                try { kv.Value.OnPlayerCall(); }
+                catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnSideJobPlayerCall] OnPlayerCall: {ex.Message}"); }
+                break;
+            }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnSideJobPlayerCall] {ex.Message}"); }
+    }
+
+    private static void OnSideJobRewarded(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int jobId  = r.GetInt();
+            int reward = r.GetInt();
+            // Banner-only on receivers — actual money is host-authoritative
+            // and flows via MoneyPoller. Hook left minimal for now; SideJobSync
+            // legacy still delivers the reward state via SideJobNotification.
+            _ = jobId; _ = reward;
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnSideJobRewarded] {ex.Message}"); }
+    }
 }

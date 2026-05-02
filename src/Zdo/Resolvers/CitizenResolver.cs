@@ -4,11 +4,15 @@ namespace SoDCoop.Zdo.Resolvers;
 
 /// <summary>
 /// Apply <see cref="ZdoTypeTag.Citizen"/> state to the live <c>Citizen</c>
-/// looked up by <c>__sodId = humanID</c>. Currently outfit-only on the
-/// non-host side; <c>inBed</c>, <c>asleep</c>, <c>restrained</c>, <c>stunned</c>
-/// are display-only on receiving peers because client-side AI is intentionally
-/// ignored (host-authoritative, see spec section 7.2). The ZDO state is
-/// preserved for snapshot replay so a late-joiner gets the host's truth.
+/// looked up by <c>__sodId = humanID</c>. Receivers mirror outfit, restrained,
+/// stunned, asleep, in-bed transitions so guard / suspicion / animation
+/// systems on the client see the same actor state the host does. The ZDO
+/// state is preserved for snapshot replay so a late-joiner gets the host's
+/// truth.
+///
+/// <para>Idempotent on receivers: setters are guarded with
+/// <c>IsApplyingRemote</c> in the legacy syncs we re-use, so the call doesn't
+/// echo back. Same-value writes are a no-op on the SoD side.</para>
 /// </summary>
 public sealed class CitizenResolver : IZdoResolver
 {
@@ -31,6 +35,27 @@ public sealed class CitizenResolver : IZdoResolver
                 SoDCoop.Sync.NpcOutfitSync.ApplyByHumanId(humanId, cat);
             }
         }
-        catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenResolver] apply: {ex.Message}"); }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenResolver] outfit apply: {ex.Message}"); }
+
+        try
+        {
+            if (z.HasKey(ZdoKeys.Restrained))
+            {
+                bool  restrained = z.GetBool (ZdoKeys.Restrained, false);
+                float duration   = z.GetFloat(ZdoKeys.RestrainedDuration, 0f);
+                SoDCoop.Sync.InventorySync.ApplyRestrainedByHumanId(humanId, restrained, duration);
+            }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenResolver] restrained apply: {ex.Message}"); }
+
+        try
+        {
+            if (z.HasKey(ZdoKeys.Stunned))
+            {
+                bool stunned = z.GetBool(ZdoKeys.Stunned, false);
+                SoDCoop.Sync.InventorySync.ApplyStunnedByHumanId(humanId, stunned);
+            }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenResolver] stunned apply: {ex.Message}"); }
     }
 }

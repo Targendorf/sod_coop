@@ -69,6 +69,12 @@ public static class SodCommonBridge
                     SoDCoop.Zdo.Pollers.PlayerInputPoller.ResetBaseline();
                     SoDCoop.Zdo.Pollers.PauseStatePoller.ResetBaseline();
                     SoDCoop.Zdo.Pollers.MoneyPoller.ResetBaseline();
+                    // Round 2 baselines.
+                    SoDCoop.Zdo.Pollers.WeatherPoller.ResetBaseline();
+                    SoDCoop.Zdo.Pollers.ElevatorPoller.ResetBaseline();
+                    SoDCoop.Zdo.Pollers.EvidenceCreationPoller.ResetBaseline();
+                    SoDCoop.Zdo.Pollers.CaseStatusPoller.ResetBaseline();
+                    SoDCoop.Zdo.Pollers.SideJobPoller.ResetBaseline();
                     // UnpatchSelf so SoD's save-load runs without IL2CPP wrapper
                     // trampoline marshalling cost on patched methods. Empirically
                     // this brought save-load from 200s+ → ~50s in Phase 1 logs.

@@ -29,4 +29,11 @@ public static class ZdoFeatureFlags
     public static bool UseZdoForCaseBoard  = true;
     public static bool UseZdoForPlayerState = true;
     public static bool UseZdoForEvents     = true;
+
+    // ── Round 2 (combat / surveillance / weather / elevator / sidejob / case status) ──
+    public static bool UseZdoForWeather           = true;
+    public static bool UseZdoForElevators         = true;
+    public static bool UseZdoForEvidenceCreation  = true;
+    public static bool UseZdoForCaseStatus        = true;
+    public static bool UseZdoForSideJobs          = true;
 }

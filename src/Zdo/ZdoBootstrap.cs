@@ -55,6 +55,13 @@ public static class ZdoBootstrap
         // ── Phase G: Event RPCs ──
         ZdoEvents.RegisterAll();
 
+        // ── Round 2: weather, elevators, evidence creation, case status, side jobs ──
+        WeatherPoller.Register();
+        ElevatorPoller.Register();
+        EvidenceCreationPoller.Register();
+        CaseStatusPoller.Register();
+        SideJobPoller.Register();
+
         Plugin.Log.LogInfo("[ZdoBootstrap] resolvers + pollers + events registered.");
     }
 }

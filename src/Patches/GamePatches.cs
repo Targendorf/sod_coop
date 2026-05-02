@@ -1343,6 +1343,11 @@ public static class GamePatches
     //  to be mirrored.
     // ─────────────────────────────────────────────────────────────────────────
 
+    // DISABLED Round 2: EvidenceCreationPoller (host-side, 5 Hz) replaces this
+    // patch by polling GameplayController.evidenceDictionary for new entries
+    // each tick. Source-agnostic — covers SaveToTape, AcquireName, TakePicture,
+    // and any future evidence-creation site without per-method patches.
+    /*
     [HarmonyPatch(typeof(SurveillanceApp), nameof(SurveillanceApp.SaveToTapeButton))]
     public static class SurveillanceApp_SaveToTape_Patch
     {
@@ -1365,7 +1370,10 @@ public static class GamePatches
             }
         }
     }
+    */
 
+    // DISABLED Round 2: covered by EvidenceCreationPoller (see SaveToTape note above).
+    /*
     [HarmonyPatch(typeof(SurveillanceApp), nameof(SurveillanceApp.AcquireNameButton))]
     public static class SurveillanceApp_AcquireName_Patch
     {
@@ -1388,7 +1396,10 @@ public static class GamePatches
             }
         }
     }
+    */
 
+    // DISABLED Round 2: covered by EvidenceCreationPoller (see SaveToTape note above).
+    /*
     [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.TakePicture))]
     public static class FPItemController_TakePicture_Patch
     {
@@ -1411,6 +1422,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     // ─────────────────────────────────────────────────────────────────────────
     //  Actor.RecieveDamage — non-lethal NPC hits.
@@ -1726,6 +1738,9 @@ public static class GamePatches
         }
     }
 
+    // DISABLED Round 2: ElevatorPoller (host-side, 5 Hz) catches new entries
+    // in Elevator.calls Dictionary and re-broadcasts via ElevatorSync.BroadcastCall.
+    /*
     [HarmonyPatch(typeof(Elevator), nameof(Elevator.CallElevator))]
     public static class Elevator_CallElevator_Patch
     {
@@ -1745,6 +1760,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     [HarmonyPatch(typeof(Actor), nameof(Actor.RecieveDamage))]
     public static class Actor_RecieveDamage_Patch
@@ -1907,6 +1923,9 @@ public static class GamePatches
     }
     */
 
+    // DISABLED Round 2: SideJobPoller (host-side, 1 Hz) tracks per-job state
+    // diff and re-broadcasts via SideJobSync.BroadcastStateChange.
+    /*
     [HarmonyPatch(typeof(SideJob), nameof(SideJob.SetJobState))]
     public static class SideJob_SetJobState_Patch
     {
@@ -1918,6 +1937,7 @@ public static class GamePatches
             catch (System.Exception ex) { Plugin.Log.LogWarning($"SideJob.SetJobState patch: {ex.Message}"); }
         }
     }
+    */
 
     /// <summary>
     /// Client-only: skip <c>JobCreationCheck</c> entirely. Without this the
