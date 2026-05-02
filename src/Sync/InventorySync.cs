@@ -46,7 +46,23 @@ public static class InventorySync
     //  Update — poll currentItem and broadcast on change
     // ─────────────────────────────────────────────────────────────────────────
 
-    public static void Update()
+    /// <summary>
+    /// Legacy per-frame entrypoint — kept as a no-op alias for back-compat.
+    /// The actual held-item polling now runs through
+    /// <see cref="SoDCoop.Zdo.Pollers.HeldItemPoller"/> which calls
+    /// <see cref="PollHeldItem"/> at 10 Hz on the unified ZdoPollerHost
+    /// schedule.
+    /// </summary>
+    public static void Update() { /* delegated to HeldItemPoller */ }
+
+    /// <summary>Reset diff baseline — called from
+    /// <c>SodCommonBridge.OnBeforeLoad</c> via HeldItemPoller.ResetBaseline.</summary>
+    public static void ResetHeldItemBaseline() => _lastHeldId = int.MinValue;
+
+    /// <summary>Single tick of held-item polling. Public so HeldItemPoller
+    /// can drive scheduling without us duplicating the field-discovery
+    /// helpers (ResolveHeldInteractableId etc.) elsewhere.</summary>
+    public static void PollHeldItem()
     {
         if (!NetworkManager.IsConnected) return;
         if (NetworkManager.LocalPlayerId < 0) return;

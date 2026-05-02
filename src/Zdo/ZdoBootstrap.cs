@@ -71,6 +71,9 @@ public static class ZdoBootstrap
         // ── Round 7: body-discovery via Murder.state transition ──
         MurderDiscoveryPoller.Register();
 
+        // ── Round 10: held-item polling moved off legacy CoopUpdateRunner ──
+        HeldItemPoller.Register();
+
         Plugin.Log.LogInfo("[ZdoBootstrap] resolvers + pollers + events registered.");
     }
 }

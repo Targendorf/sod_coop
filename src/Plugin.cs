@@ -389,7 +389,9 @@ public class CoopUpdateRunner : MonoBehaviour
             SyncManager.Update();
             CoopUI.Update();
             PingSystem.Update();
-            SoDCoop.Sync.InventorySync.Update();
+            // InventorySync.Update is now a no-op alias; held-item polling
+            // runs through HeldItemPoller on the unified ZdoPollerHost tick.
+            // SoDCoop.Sync.InventorySync.Update();
             SoDCoop.Sync.HostStatusSync.Update();
             SoDCoop.Sync.PlayerSuspicionSync.Update();
             // ZDO unified delta-flush: collects every dirty ZDO into one

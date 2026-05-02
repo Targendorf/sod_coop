@@ -39,6 +39,10 @@ public static class ZdoEvents
     /// <summary>SideJob.OnRewarded fired — payload: <c>(int jobId, int reward)</c>.</summary>
     public const string SIDE_JOB_REWARDED    = "side-job-rewarded";
 
+    /// <summary>AddMoney fired — payload: <c>(int amount, bool displayMessage, string reason)</c>.
+    /// Credits-only (debits are local per MoneySync asymmetric policy).</summary>
+    public const string MONEY_ADDED          = "money-added";
+
     public static void RegisterAll()
     {
         ZdoEventDispatcher.Register(CHAT,             OnChat);
@@ -56,6 +60,9 @@ public static class ZdoEvents
         ZdoEventDispatcher.Register(COMBAT_ACTION,         OnCombatAction);
         ZdoEventDispatcher.Register(SIDE_JOB_PLAYER_CALL,  OnSideJobPlayerCall);
         ZdoEventDispatcher.Register(SIDE_JOB_REWARDED,     OnSideJobRewarded);
+
+        // Round 10
+        ZdoEventDispatcher.Register(MONEY_ADDED,           OnMoneyAdded);
     }
 
     private static readonly NetDataWriter _w = new();
@@ -112,6 +119,22 @@ public static class ZdoEvents
         _w.Put(jobId);
         _w.Put(reward);
         ZdoEventDispatcher.Send(SIDE_JOB_REWARDED, _w);
+    }
+
+    /// <summary>
+    /// AddMoney one-shot event. Carries amount + displayMessage + reason
+    /// so the receiver shows the same banner text the originating player
+    /// saw. Replaces the legacy MoneyAdded packet wire (kept as fallback
+    /// when UseZdoForEvents is off for diagnostic A/B).
+    /// </summary>
+    public static void SendMoneyAdded(int amount, bool displayMessage, string reason)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(amount);
+        _w.Put(displayMessage);
+        _w.Put(reason ?? "");
+        ZdoEventDispatcher.Send(MONEY_ADDED, _w);
     }
 
     // ── Handlers ──
@@ -210,6 +233,27 @@ public static class ZdoEvents
             SoDCoop.Sync.SideJobSync.RunOnPlayerCallAndRebroadcast(job, senderId);
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnSideJobPlayerCall] {ex.Message}"); }
+    }
+
+    private static void OnMoneyAdded(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int    amount         = r.GetInt();
+            bool   displayMessage = r.GetBool();
+            string reason         = r.GetString();
+            // Echo dedup: if we sent this, ignore. Mirrors legacy
+            // MoneySync.OnPacketReceived behaviour.
+            if (senderId == SoDCoop.Network.NetworkManager.LocalPlayerId) return;
+
+            // Credits only (defensive — MoneySync.SendMoneyAdded gates this
+            // upstream too).
+            if (amount <= 0) return;
+
+            try { SoDCoop.Sync.MoneySync.ApplyAddMoneyFromZdo(amount, displayMessage, reason); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnMoneyAdded] Apply: {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnMoneyAdded] {ex.Message}"); }
     }
 
     private static void OnSideJobRewarded(NetDataReader r, int senderId)
