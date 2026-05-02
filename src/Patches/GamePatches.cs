@@ -932,6 +932,10 @@ public static class GamePatches
     //  Held item itself is poll-based in InventorySync.Update — no patch needed.
     // ─────────────────────────────────────────────────────────────────────────
 
+    // DISABLED Round 4: PlayerInputPoller (any-peer, 30 Hz) reads
+    // FirstPersonItemController.isRaised + flashlight directly and emits
+    // diff-broadcasts; same wire format, same apply path.
+    /*
     [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.SetRaised))]
     public static class FPItemController_SetRaised_Patch
     {
@@ -969,6 +973,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     // ─────────────────────────────────────────────────────────────────────────
     //  One-shot combat actions (cosmetic broadcast).
@@ -1670,6 +1675,10 @@ public static class GamePatches
     //  Power on/off already covered by Interactable.SetSwitchState patch.
     // ─────────────────────────────────────────────────────────────────────────
 
+    // DISABLED Round 4: ComputerStatePoller (host-only, 2 Hz) polls
+    // ComputerController.loggedInAs and currentApp on every Computer in
+    // CityData.interactableDirectory and emits diff broadcasts.
+    /*
     [HarmonyPatch(typeof(ComputerController), nameof(ComputerController.SetLoggedIn))]
     public static class ComputerController_SetLoggedIn_Patch
     {
@@ -1713,6 +1722,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     // ─────────────────────────────────────────────────────────────────────────
     //  Elevator.CallElevator — player pressed a floor button.
@@ -2094,6 +2104,10 @@ public static class GamePatches
         }
     }
 
+    // DISABLED Round 4: CitizenStatePoller writes Restrained / Stunned /
+    // RestrainedDuration to ZDO each tick; CitizenResolver applies them on
+    // receivers (after the Round 2 fix).
+    /*
     [HarmonyPatch(typeof(NewAIController), nameof(NewAIController.SetRestrained))]
     public static class NewAIController_SetRestrained_Patch
     {
@@ -2144,6 +2158,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.PickUpItem))]
     public static class FPItemController_PickUpItem_Patch
