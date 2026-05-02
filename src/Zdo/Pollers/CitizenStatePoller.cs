@@ -64,6 +64,15 @@ public static class CitizenStatePoller
                 try { z.Set(ZdoKeys.Asleep,   c.isAsleep);   } catch { }
                 try { z.Set(ZdoKeys.Stunned,  c.isStunned);  } catch { }
 
+                // Visual-state floats — drunk staggers walk, bleeding drips
+                // blood. Both auto-drive SoD animation/spatter on the receiver
+                // when the field is set, so client just stamps the value.
+                // Field discovery: Human.drunk float (Human.cs:7938),
+                // Human.bleeding float (Human.cs:8068) — both inherited by
+                // Citizen.
+                try { z.Set(ZdoKeys.Drunk,    c.drunk);     } catch { }
+                try { z.Set(ZdoKeys.Bleeding, c.bleeding);  } catch { }
+
                 // Restrain state — on NewAIController.
                 try
                 {

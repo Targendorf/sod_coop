@@ -57,5 +57,24 @@ public sealed class CitizenResolver : IZdoResolver
             }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenResolver] stunned apply: {ex.Message}"); }
+
+        // Drunk + bleeding are visual-only on the receiver — stamp them
+        // directly via the public Citizen field setter; SoD's animation /
+        // spatter system reads them on the next tick.
+        try
+        {
+            var dict = global::CityData.Instance?.citizenDictionary;
+            if (dict == null || !dict.TryGetValue(humanId, out var c) || c == null) return;
+
+            if (z.HasKey(ZdoKeys.Drunk))
+            {
+                try { c.drunk = z.GetFloat(ZdoKeys.Drunk, 0f); } catch { }
+            }
+            if (z.HasKey(ZdoKeys.Bleeding))
+            {
+                try { c.bleeding = z.GetFloat(ZdoKeys.Bleeding, 0f); } catch { }
+            }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenResolver] drunk/bleeding apply: {ex.Message}"); }
     }
 }

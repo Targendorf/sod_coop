@@ -46,6 +46,8 @@ public static class ZdoKeys
     public static readonly int ClaimedHumanId     = Hash32.Of("claimedHumanId");
     public static readonly int AiFrozen           = Hash32.Of("aiFrozen");
     public static readonly int Appearance         = Hash32.Of("appearance");
+    public static readonly int Drunk              = Hash32.Of("drunk");
+    public static readonly int Bleeding           = Hash32.Of("bleeding");
 
     // ── Forensics ──
     public static readonly int InteractableId     = Hash32.Of("interactableId");
