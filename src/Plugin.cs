@@ -6,6 +6,7 @@ using Il2CppInterop.Runtime.Injection;
 using System.Linq;
 using System.Reflection;
 using SoDCoop.Network;
+using SoDCoop.Network.Steam;
 using SoDCoop.Sync;
 using SoDCoop.Player;
 using SoDCoop.UI;
@@ -77,6 +78,13 @@ public class Plugin : BasePlugin
 
             // Initialize core systems
             InitializeSystems();
+
+            // Snapshot Steam launch args BEFORE the update runner starts so
+            // the per-frame TryDrain can pick up an auto-join the moment
+            // Steam callbacks come online. Friend → "Join Game" while our
+            // copy of SoD wasn't running ⇒ Steam launches us with
+            // "+connect_lobby <id>".
+            SteamLaunchArgs.Parse();
 
             // Create update runner
             CreateUpdateRunner();
@@ -387,6 +395,7 @@ public class CoopUpdateRunner : MonoBehaviour
             Plugin.DrainPendingResume();   // ← Pause/Resume gate check (revived from archive)
             WorldReadyGate.Tick();
             NetworkManager.Update();
+            SteamLaunchArgs.TryDrain();    // ← honours +connect_lobby <id> launch arg once Steam is up
             SyncManager.Update();
             CoopUI.Update();
             PingSystem.Update();
