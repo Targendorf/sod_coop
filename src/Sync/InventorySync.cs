@@ -330,17 +330,28 @@ public static class InventorySync
             }
             catch { }
 
-            var packet = new ItemPlaceVisualPacket
+            // Phase G.5 (Wave 3.1): unified RPC channel via
+            // ZdoEvents.ITEM_PLACE. Receiver applies via
+            // InventorySync.ApplyPlaceFromZdo.
+            if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForEvents)
             {
-                PlayerId        = NetworkManager.LocalPlayerId,
-                PlacerSourceId  = item.id,
-                PresetName      = preset.name,
-                Position        = pos,
-                EulerRotation   = euler,
-            };
-            _writer.Reset();
-            packet.Serialize(_writer);
-            NetworkManager.SendToAll(PacketType.ItemPlaceVisual, _writer, DeliveryMethod.ReliableOrdered);
+                try { SoDCoop.Zdo.ZdoEvents.SendItemPlace(item.id, preset.name, pos, euler); }
+                catch (System.Exception ex) { Plugin.Log.LogWarning($"InventorySync.BroadcastPlace (zdo): {ex.Message}"); }
+            }
+            else
+            {
+                var packet = new ItemPlaceVisualPacket
+                {
+                    PlayerId        = NetworkManager.LocalPlayerId,
+                    PlacerSourceId  = item.id,
+                    PresetName      = preset.name,
+                    Position        = pos,
+                    EulerRotation   = euler,
+                };
+                _writer.Reset();
+                packet.Serialize(_writer);
+                NetworkManager.SendToAll(PacketType.ItemPlaceVisual, _writer, DeliveryMethod.ReliableOrdered);
+            }
 
             // Remember we placed this so a future pickup/destruction can
             // emit a paired ItemPlaceRemovePacket.
@@ -383,28 +394,24 @@ public static class InventorySync
     }
 
     private static void ApplyPlace(ItemPlaceVisualPacket p)
+        => ApplyPlaceFromZdo(p.PlayerId, p.PlacerSourceId, p.PresetName, p.Position, p.EulerRotation);
+
+    /// <summary>ZDO entry — invoked from <c>ZdoEvents.OnItemPlace</c>.</summary>
+    public static void ApplyPlaceFromZdo(int playerId, int placerSourceId, string presetName,
+                                          Vector3 position, Vector3 eulerRotation)
     {
         try
         {
-            var preset = ResolvePreset(p.PresetName);
+            var preset = ResolvePreset(presetName);
             if (preset == null)
             {
-                Plugin.Log.LogWarning($"[InventorySync] ApplyPlace: preset \"{p.PresetName}\" not found");
+                Plugin.Log.LogWarning($"[InventorySync] ApplyPlace: preset \"{presetName}\" not found");
                 return;
             }
 
-            long key = MockKey(p.PlayerId, p.PlacerSourceId);
+            long key = MockKey(playerId, placerSourceId);
             if (_remotePlacements.TryGetValue(key, out var existing) && existing != null) return;
 
-            // Spawn a REAL, registered Interactable via the same factory SoD
-            // uses internally. This means receivers can scan a remote-placed
-            // codebreaker, walk past a remote-placed wedge to keep a door
-            // open, etc. — full functionality, not just a visual mock.
-            //
-            // belongsTo / writer / recipient are passed as null because each
-            // machine has its own local Player and humanIDs don't align.
-            // Falls back to a stripped visual instantiation if the factory
-            // refuses (preset incompatible, missing context, etc.).
             Interactable created = null;
             try
             {
@@ -416,8 +423,8 @@ public static class InventorySync
                         belongsTo:  null,
                         writer:     null,
                         recevier:   null,
-                        worldPos:   p.Position,
-                        worldEuler: p.EulerRotation,
+                        worldPos:   position,
+                        worldEuler: eulerRotation,
                         passedVars: null,
                         passedObject: null,
                         ddsOverride:  "");
@@ -425,26 +432,24 @@ public static class InventorySync
             }
             catch (System.Exception ex)
             {
-                Plugin.Log.LogWarning($"[InventorySync] CreateWorldInteractable failed for \"{p.PresetName}\": {ex.Message} — falling back to visual mock");
+                Plugin.Log.LogWarning($"[InventorySync] CreateWorldInteractable failed for \"{presetName}\": {ex.Message} — falling back to visual mock");
             }
 
             if (created == null)
             {
-                // Visual-mock fallback (legacy path for presets the factory rejects).
                 if (preset.prefab == null) return;
                 var go = Object.Instantiate(preset.prefab);
                 if (go == null) return;
-                go.name = $"CoopPlaceMock_{p.PlayerId}_{p.PlacerSourceId}_{p.PresetName}";
-                go.transform.position    = p.Position;
-                go.transform.eulerAngles = p.EulerRotation;
+                go.name = $"CoopPlaceMock_{playerId}_{placerSourceId}_{presetName}";
+                go.transform.position    = position;
+                go.transform.eulerAngles = eulerRotation;
                 StripPlacementMockComponents(go);
-                Plugin.Log.LogInfo($"[InventorySync] applied place (mock fallback) preset=\"{p.PresetName}\" pos={p.Position}");
-                // No mapping stored for fallback mocks — they go away on disconnect via ClearAllMocks.
+                Plugin.Log.LogInfo($"[InventorySync] applied place (mock fallback) preset=\"{presetName}\" pos={position}");
                 return;
             }
 
             _remotePlacements[key] = created;
-            Plugin.Log.LogInfo($"[InventorySync] applied place (real Interactable id={created.id}) preset=\"{p.PresetName}\" pos={p.Position}");
+            Plugin.Log.LogInfo($"[InventorySync] applied place (real Interactable id={created.id}) preset=\"{presetName}\" pos={position}");
         }
         catch (System.Exception ex)
         {
@@ -640,19 +645,30 @@ public static class InventorySync
             }
             catch { }
 
-            var packet = new ItemThrowPacket
+            // Phase G.5 (Wave 3.1): unified RPC channel via
+            // ZdoEvents.ITEM_THROW. Receiver applies via
+            // InventorySync.ApplyThrowFromZdo.
+            if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForEvents)
             {
-                PlayerId        = NetworkManager.LocalPlayerId,
-                PlacerSourceId  = item.id,
-                PresetName      = preset.name,
-                Position        = pos,
-                EulerRotation   = euler,
-                LinearVelocity  = linVel,
-                AngularVelocity = angVel,
-            };
-            _writer.Reset();
-            packet.Serialize(_writer);
-            NetworkManager.SendToAll(PacketType.ItemThrow, _writer, DeliveryMethod.ReliableOrdered);
+                try { SoDCoop.Zdo.ZdoEvents.SendItemThrow(item.id, preset.name, pos, euler, linVel, angVel); }
+                catch (System.Exception ex) { Plugin.Log.LogWarning($"InventorySync.BroadcastThrow (zdo): {ex.Message}"); }
+            }
+            else
+            {
+                var packet = new ItemThrowPacket
+                {
+                    PlayerId        = NetworkManager.LocalPlayerId,
+                    PlacerSourceId  = item.id,
+                    PresetName      = preset.name,
+                    Position        = pos,
+                    EulerRotation   = euler,
+                    LinearVelocity  = linVel,
+                    AngularVelocity = angVel,
+                };
+                _writer.Reset();
+                packet.Serialize(_writer);
+                NetworkManager.SendToAll(PacketType.ItemThrow, _writer, DeliveryMethod.ReliableOrdered);
+            }
 
             // Throws can also be later picked up — track for symmetry with
             // placements (a thrown coin a player walks over is a pickup that
@@ -667,17 +683,24 @@ public static class InventorySync
     }
 
     private static void ApplyThrow(ItemThrowPacket p)
+        => ApplyThrowFromZdo(p.PlayerId, p.PlacerSourceId, p.PresetName,
+            p.Position, p.EulerRotation, p.LinearVelocity, p.AngularVelocity);
+
+    /// <summary>ZDO entry — invoked from <c>ZdoEvents.OnItemThrow</c>.</summary>
+    public static void ApplyThrowFromZdo(int playerId, int placerSourceId, string presetName,
+                                          Vector3 position, Vector3 eulerRotation,
+                                          Vector3 linearVelocity, Vector3 angularVelocity)
     {
         try
         {
-            var preset = ResolvePreset(p.PresetName);
+            var preset = ResolvePreset(presetName);
             if (preset == null)
             {
-                Plugin.Log.LogWarning($"[InventorySync] ApplyThrow: preset \"{p.PresetName}\" not found");
+                Plugin.Log.LogWarning($"[InventorySync] ApplyThrow: preset \"{presetName}\" not found");
                 return;
             }
 
-            long key = MockKey(p.PlayerId, p.PlacerSourceId);
+            long key = MockKey(playerId, placerSourceId);
             if (_remotePlacements.TryGetValue(key, out var existing) && existing != null) return;
 
             Interactable created = null;
@@ -688,7 +711,7 @@ public static class InventorySync
                 {
                     created = creator.CreateWorldInteractable(
                         preset, null, null, null,
-                        p.Position, p.EulerRotation,
+                        position, eulerRotation,
                         null, null, "");
                 }
             }
@@ -699,22 +722,19 @@ public static class InventorySync
 
             if (created == null) return;
 
-            // Apply linear/angular velocity to give the projectile its proper
-            // arc. SoD prefabs use Rigidbody for thrown objects; if absent
-            // the throw becomes static which is acceptable degradation.
             try
             {
                 var rb = created.spawnedObject?.GetComponent<Rigidbody>();
                 if (rb != null)
                 {
-                    rb.velocity        = p.LinearVelocity;
-                    rb.angularVelocity = p.AngularVelocity;
+                    rb.velocity        = linearVelocity;
+                    rb.angularVelocity = angularVelocity;
                 }
             }
             catch { }
 
             _remotePlacements[key] = created;
-            Plugin.Log.LogInfo($"[InventorySync] applied throw (real id={created.id}) preset=\"{p.PresetName}\"");
+            Plugin.Log.LogInfo($"[InventorySync] applied throw (real id={created.id}) preset=\"{presetName}\"");
         }
         catch (System.Exception ex)
         {

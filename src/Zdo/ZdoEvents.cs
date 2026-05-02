@@ -66,6 +66,14 @@ public static class ZdoEvents
     /// int btmX, int btmY, int btmZ, int newFloor, bool upButton)</c>.</summary>
     public const string ELEVATOR_CALL        = "elevator-call";
 
+    /// <summary>Player placed an item — payload: <c>(int playerId, int sourceId,
+    /// string presetName, Vector3 pos, Vector3 euler)</c>.</summary>
+    public const string ITEM_PLACE           = "item-place";
+
+    /// <summary>Player threw an item — payload: <c>(int playerId, int sourceId,
+    /// string presetName, Vector3 pos, Vector3 euler, Vector3 linVel, Vector3 angVel)</c>.</summary>
+    public const string ITEM_THROW           = "item-throw";
+
     public static void RegisterAll()
     {
         ZdoEventDispatcher.Register(CHAT,             OnChat);
@@ -94,6 +102,8 @@ public static class ZdoEvents
         ZdoEventDispatcher.Register(ITEM_DROP,             OnItemDrop);
         ZdoEventDispatcher.Register(NPC_DAMAGE_RICH,       OnNpcDamageRich);
         ZdoEventDispatcher.Register(ELEVATOR_CALL,         OnElevatorCall);
+        ZdoEventDispatcher.Register(ITEM_PLACE,            OnItemPlace);
+        ZdoEventDispatcher.Register(ITEM_THROW,            OnItemThrow);
     }
 
     private static readonly NetDataWriter _w = new();
@@ -233,6 +243,35 @@ public static class ZdoEvents
         _w.Put(newFloor);
         _w.Put(upButton);
         ZdoEventDispatcher.Send(ELEVATOR_CALL, _w);
+    }
+
+    public static void SendItemPlace(int sourceId, string presetName,
+                                     UnityEngine.Vector3 pos, UnityEngine.Vector3 euler)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(SoDCoop.Network.NetworkManager.LocalPlayerId);
+        _w.Put(sourceId);
+        _w.Put(presetName ?? "");
+        _w.Put(pos.x); _w.Put(pos.y); _w.Put(pos.z);
+        _w.Put(euler.x); _w.Put(euler.y); _w.Put(euler.z);
+        ZdoEventDispatcher.Send(ITEM_PLACE, _w);
+    }
+
+    public static void SendItemThrow(int sourceId, string presetName,
+                                     UnityEngine.Vector3 pos, UnityEngine.Vector3 euler,
+                                     UnityEngine.Vector3 linVel, UnityEngine.Vector3 angVel)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(SoDCoop.Network.NetworkManager.LocalPlayerId);
+        _w.Put(sourceId);
+        _w.Put(presetName ?? "");
+        _w.Put(pos.x); _w.Put(pos.y); _w.Put(pos.z);
+        _w.Put(euler.x); _w.Put(euler.y); _w.Put(euler.z);
+        _w.Put(linVel.x); _w.Put(linVel.y); _w.Put(linVel.z);
+        _w.Put(angVel.x); _w.Put(angVel.y); _w.Put(angVel.z);
+        ZdoEventDispatcher.Send(ITEM_THROW, _w);
     }
 
     // ── Handlers ──
@@ -394,6 +433,52 @@ public static class ZdoEvents
             catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnItemDrop] apply: {ex.Message}"); }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnItemDrop] {ex.Message}"); }
+    }
+
+    private static void OnItemPlace(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int playerId = r.GetInt();
+            int sourceId = r.GetInt();
+            string preset = r.GetString();
+            float px = r.GetFloat(), py = r.GetFloat(), pz = r.GetFloat();
+            float ex = r.GetFloat(), ey = r.GetFloat(), ez = r.GetFloat();
+            if (playerId == SoDCoop.Network.NetworkManager.LocalPlayerId) return;
+            try
+            {
+                SoDCoop.Sync.InventorySync.ApplyPlaceFromZdo(playerId, sourceId, preset,
+                    new UnityEngine.Vector3(px, py, pz),
+                    new UnityEngine.Vector3(ex, ey, ez));
+            }
+            catch (Exception ex2) { Plugin.Log.LogWarning($"[ZdoEvents.OnItemPlace] apply: {ex2.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnItemPlace] {ex.Message}"); }
+    }
+
+    private static void OnItemThrow(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int playerId = r.GetInt();
+            int sourceId = r.GetInt();
+            string preset = r.GetString();
+            float px = r.GetFloat(), py = r.GetFloat(), pz = r.GetFloat();
+            float ex = r.GetFloat(), ey = r.GetFloat(), ez = r.GetFloat();
+            float lvx = r.GetFloat(), lvy = r.GetFloat(), lvz = r.GetFloat();
+            float avx = r.GetFloat(), avy = r.GetFloat(), avz = r.GetFloat();
+            if (playerId == SoDCoop.Network.NetworkManager.LocalPlayerId) return;
+            try
+            {
+                SoDCoop.Sync.InventorySync.ApplyThrowFromZdo(playerId, sourceId, preset,
+                    new UnityEngine.Vector3(px, py, pz),
+                    new UnityEngine.Vector3(ex, ey, ez),
+                    new UnityEngine.Vector3(lvx, lvy, lvz),
+                    new UnityEngine.Vector3(avx, avy, avz));
+            }
+            catch (Exception ex2) { Plugin.Log.LogWarning($"[ZdoEvents.OnItemThrow] apply: {ex2.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnItemThrow] {ex.Message}"); }
     }
 
     private static void OnElevatorCall(NetDataReader r, int senderId)
