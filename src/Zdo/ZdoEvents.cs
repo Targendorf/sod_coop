@@ -74,6 +74,12 @@ public static class ZdoEvents
     /// string presetName, Vector3 pos, Vector3 euler, Vector3 linVel, Vector3 angVel)</c>.</summary>
     public const string ITEM_THROW           = "item-throw";
 
+    /// <summary>Evidence note text changed — payload: <c>(string evId,
+    /// byte[] dataKeys, string text)</c>. Replaces the disabled hot patch on
+    /// <c>Evidence.SetNote</c>; receiver applies via
+    /// <c>EvidenceSync.ApplySetNoteFromZdo</c>.</summary>
+    public const string EVIDENCE_SET_NOTE    = "evidence-set-note";
+
     public static void RegisterAll()
     {
         ZdoEventDispatcher.Register(CHAT,             OnChat);
@@ -104,6 +110,7 @@ public static class ZdoEvents
         ZdoEventDispatcher.Register(ELEVATOR_CALL,         OnElevatorCall);
         ZdoEventDispatcher.Register(ITEM_PLACE,            OnItemPlace);
         ZdoEventDispatcher.Register(ITEM_THROW,            OnItemThrow);
+        ZdoEventDispatcher.Register(EVIDENCE_SET_NOTE,     OnEvidenceSetNote);
     }
 
     private static readonly NetDataWriter _w = new();
@@ -272,6 +279,18 @@ public static class ZdoEvents
         _w.Put(linVel.x); _w.Put(linVel.y); _w.Put(linVel.z);
         _w.Put(angVel.x); _w.Put(angVel.y); _w.Put(angVel.z);
         ZdoEventDispatcher.Send(ITEM_THROW, _w);
+    }
+
+    public static void SendEvidenceSetNote(string evId, byte[] dataKeys, string text)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(evId ?? "");
+        int keyCount = dataKeys?.Length ?? 0;
+        _w.Put(keyCount);
+        for (int i = 0; i < keyCount; i++) _w.Put(dataKeys[i]);
+        _w.Put(text ?? "");
+        ZdoEventDispatcher.Send(EVIDENCE_SET_NOTE, _w);
     }
 
     // ── Handlers ──
@@ -454,6 +473,21 @@ public static class ZdoEvents
             catch (Exception ex2) { Plugin.Log.LogWarning($"[ZdoEvents.OnItemPlace] apply: {ex2.Message}"); }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnItemPlace] {ex.Message}"); }
+    }
+
+    private static void OnEvidenceSetNote(NetDataReader r, int senderId)
+    {
+        try
+        {
+            string evId = r.GetString();
+            int keyCount = r.GetInt();
+            byte[] keys = keyCount > 0 ? new byte[keyCount] : System.Array.Empty<byte>();
+            for (int i = 0; i < keyCount; i++) keys[i] = r.GetByte();
+            string text = r.GetString();
+            try { SoDCoop.Sync.EvidenceSync.ApplySetNoteFromZdo(evId, keys, text); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnEvidenceSetNote] apply: {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnEvidenceSetNote] {ex.Message}"); }
     }
 
     private static void OnItemThrow(NetDataReader r, int senderId)

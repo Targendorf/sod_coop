@@ -381,26 +381,30 @@ public static class EvidenceSync
     }
 
     private static void ApplySetNote(EvidenceSetNotePacket p)
+        => ApplySetNoteFromZdo(p.EvId, p.DataKeys, p.Text);
+
+    /// <summary>ZDO entry — invoked from <c>ZdoEvents.OnEvidenceSetNote</c>.</summary>
+    public static void ApplySetNoteFromZdo(string evId, byte[] dataKeys, string text)
     {
-        if (string.IsNullOrEmpty(p.EvId)) return;
+        if (string.IsNullOrEmpty(evId)) return;
         try
         {
             var dict = GameplayController.Instance?.evidenceDictionary;
             if (dict == null) return;
-            if (!dict.TryGetValue(p.EvId, out var ev) || ev == null) return;
+            if (!dict.TryGetValue(evId, out var ev) || ev == null) return;
 
             var keyList = new Il2CppSystem.Collections.Generic.List<Evidence.DataKey>();
-            if (p.DataKeys != null)
+            if (dataKeys != null)
             {
-                for (int i = 0; i < p.DataKeys.Length; i++)
-                    keyList.Add((Evidence.DataKey)p.DataKeys[i]);
+                for (int i = 0; i < dataKeys.Length; i++)
+                    keyList.Add((Evidence.DataKey)dataKeys[i]);
             }
 
             IsApplyingRemote = true;
             try
             {
-                ev.SetNote(keyList, p.Text ?? "");
-                Plugin.Log.LogInfo($"[EvidenceSync] applied SetNote evID=\"{p.EvId}\" keys={p.DataKeys?.Length ?? 0}");
+                ev.SetNote(keyList, text ?? "");
+                Plugin.Log.LogInfo($"[EvidenceSync] applied SetNote evID=\"{evId}\" keys={dataKeys?.Length ?? 0}");
             }
             finally { IsApplyingRemote = false; }
         }

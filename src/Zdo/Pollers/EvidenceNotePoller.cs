@@ -93,14 +93,24 @@ public static class EvidenceNotePoller
     private static void BroadcastEntries(string evId, Il2CppSystem.Collections.Generic.Dictionary<Evidence.DataKey, string> notes)
     {
         // Build a per-key broadcast: for each (DataKey, text) pair, emit one
-        // SetNote packet. Most evidences have 1-3 notes; total wire is small.
+        // SetNote packet/event. Most evidences have 1-3 notes; total wire is small.
         foreach (var kv in notes)
         {
             try
             {
-                var keyList = new Il2CppSystem.Collections.Generic.List<Evidence.DataKey>();
-                keyList.Add(kv.Key);
-                SoDCoop.Sync.EvidenceSync.BroadcastSetNote(evId, keyList, kv.Value ?? "");
+                // Phase G.5 (Wave 3.3): unified RPC via ZdoEvents.EVIDENCE_SET_NOTE.
+                // Receiver applies via EvidenceSync.ApplySetNoteFromZdo.
+                if (ZdoFeatureFlags.UseZdoForEvents)
+                {
+                    var keys = new byte[] { (byte)kv.Key };
+                    ZdoEvents.SendEvidenceSetNote(evId, keys, kv.Value ?? "");
+                }
+                else
+                {
+                    var keyList = new Il2CppSystem.Collections.Generic.List<Evidence.DataKey>();
+                    keyList.Add(kv.Key);
+                    SoDCoop.Sync.EvidenceSync.BroadcastSetNote(evId, keyList, kv.Value ?? "");
+                }
             }
             catch (Exception ex) { Plugin.Log.LogWarning($"[EvidenceNotePoller] broadcast {evId}: {ex.Message}"); }
         }
