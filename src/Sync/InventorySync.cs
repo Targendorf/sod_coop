@@ -221,6 +221,61 @@ public static class InventorySync
         }
     }
 
+    /// <summary>
+    /// Classifying replacement for the per-method Place/Throw patches: walks
+    /// every new <c>interactableDirectory</c> entry since
+    /// <paramref name="snapshotCount"/> and routes each to either
+    /// <see cref="BroadcastPlace"/> or <see cref="BroadcastThrow"/> based on
+    /// whether the spawned object carries a moving <c>Rigidbody</c> at the
+    /// moment of poll.
+    ///
+    /// <para>Heuristic rationale: place actions spawn the item at rest
+    /// (no Rigidbody, or velocity≈0); throw actions spawn it with kinetic
+    /// energy (linear velocity &gt; 0.05 m/s within the first poll tick).
+    /// 30 Hz polling reliably catches the burst before air drag dampens
+    /// the throw's velocity below threshold.</para>
+    /// </summary>
+    public static void BroadcastNewItemsSince(int snapshotCount)
+    {
+        if (!NetworkManager.IsConnected) return;
+        if (IsApplyingRemote) return;
+
+        try
+        {
+            var dir = CityData.Instance?.interactableDirectory;
+            if (dir == null) return;
+            if (dir.Count <= snapshotCount) return;
+
+            for (int i = snapshotCount; i < dir.Count; i++)
+            {
+                var item = dir[i];
+                if (item == null) continue;
+                if (IsLikelyThrown(item)) BroadcastThrow(item);
+                else                      BroadcastPlace(item);
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"InventorySync.BroadcastNewItemsSince: {ex.Message}");
+        }
+    }
+
+    private static bool IsLikelyThrown(Interactable item)
+    {
+        try
+        {
+            var go = item.spawnedObject;
+            if (go == null) return false;
+            var rb = go.GetComponent<Rigidbody>();
+            if (rb == null) return false;
+            // Thrown items leave the player's hand with > 1 m/s linear
+            // velocity; sqrMagnitude > 1 stays comfortably above the
+            // bleed-out threshold for placed-then-bumped objects.
+            return rb.velocity.sqrMagnitude > 1f;
+        }
+        catch { return false; }
+    }
+
     private static void BroadcastPlace(Interactable item)
     {
         try

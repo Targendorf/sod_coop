@@ -1054,6 +1054,12 @@ public static class GamePatches
     //  is the placer's task anyway.
     // ─────────────────────────────────────────────────────────────────────────
 
+    // DISABLED Round 6: PlayerInputPoller.BroadcastNewItemsSince walks every
+    // new interactableDirectory entry per tick and classifies it as place vs
+    // throw via Rigidbody.velocity heuristic. Single poll covers all 7 patches:
+    //   • PlaceCodebreaker / PlaceDoorWedge / PlaceTracker / PlaceGrenade
+    //   • ThrowCoin / ThrowFood / ThrowGrenade
+    /*
     [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.PlaceCodebreaker))]
     public static class FPItemController_PlaceCodebreaker_Patch
     {
@@ -1142,14 +1148,6 @@ public static class GamePatches
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  Throws — ThrowCoin, ThrowFood, ThrowGrenade.  Diff-snapshot approach:
-    //  the throw method spawns a projectile Interactable; we capture the new
-    //  entries via interactableDirectory.Count delta and broadcast preset +
-    //  initial transform + Rigidbody velocities. Receivers spawn an identical
-    //  physics object on their machine.
-    // ─────────────────────────────────────────────────────────────────────────
-
     [HarmonyPatch(typeof(FirstPersonItemController), nameof(FirstPersonItemController.ThrowCoin))]
     public static class FPItemController_ThrowCoin_Patch
     {
@@ -1215,6 +1213,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     // ─────────────────────────────────────────────────────────────────────────
     //  TakePicture — diff over evidenceDictionary so any new Evidence created

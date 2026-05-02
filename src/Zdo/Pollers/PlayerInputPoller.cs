@@ -74,8 +74,11 @@ public static class PlayerInputPoller
             }
             else if (curInteractables > _lastInteractableCount)
             {
-                try { SoDCoop.Sync.InventorySync.BroadcastPlacedSince(_lastInteractableCount); }
-                catch (Exception ex) { Plugin.Log.LogWarning($"[PlayerInputPoller] place: {ex.Message}"); }
+                // BroadcastNewItemsSince classifies each new entry via
+                // Rigidbody.velocity → place vs throw. Replaces the four
+                // Place* patches and three Throw* patches.
+                try { SoDCoop.Sync.InventorySync.BroadcastNewItemsSince(_lastInteractableCount); }
+                catch (Exception ex) { Plugin.Log.LogWarning($"[PlayerInputPoller] place/throw: {ex.Message}"); }
                 _lastInteractableCount = curInteractables;
             }
             else if (curInteractables < _lastInteractableCount)
