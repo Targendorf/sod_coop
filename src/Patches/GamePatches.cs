@@ -1775,6 +1775,17 @@ public static class GamePatches
     }
     */
 
+    // DISABLED Round 5: damage events are now poll-driven.
+    //   • NPC victim → NpcDamagePoller (host-only, 5 Hz) diffs
+    //     citizenDictionary[*].currentHealth and emits via DamageSync.
+    //   • Local player victim → LocalPlayerPoller (any-peer, 1 Hz) diffs
+    //     Player.Instance.currentHealth and emits via PlayerDamageSync.
+    //
+    //   Tradeoff: precise spatter / ragdoll / attacker / hit-direction
+    //   are LOST on the NPC side (sentinels are sent). Receiver gameplay
+    //   is preserved — NPCs take damage, ragdoll, die. Visual fidelity
+    //   reduced. Player damage banner + downed pose still fires.
+    /*
     [HarmonyPatch(typeof(Actor), nameof(Actor.RecieveDamage))]
     public static class Actor_RecieveDamage_Patch
     {
@@ -1802,11 +1813,6 @@ public static class GamePatches
                 if (DamageSync.IsApplyingRemote) return;
                 if (PlayerDamageSync.IsApplyingRemote) return;
 
-                // Player victim path — HP itself is per-machine state, but we
-                // still want to notify peers of the discrete damage event so
-                // they get a chat banner and (on lethal) a downed pose on the
-                // RemotePlayer. Then early-return — the NPC broadcast below
-                // doesn't apply.
                 if (global::Player.Instance != null && __instance.Pointer == global::Player.Instance.Pointer)
                 {
                     int playerAttackerHumanId = -1;
@@ -1823,7 +1829,6 @@ public static class GamePatches
                     return;
                 }
 
-                // Look up victim humanID via Human cast.
                 var victimHuman = __instance.TryCast<Human>();
                 if (victimHuman == null) return;
 
@@ -1855,6 +1860,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     // ─────────────────────────────────────────────────────────────────────────
     //  Outfit / disguise — when the LOCAL player's CitizenOutfitController

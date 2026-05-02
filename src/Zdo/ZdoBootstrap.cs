@@ -65,6 +65,9 @@ public static class ZdoBootstrap
         // ── Round 3: case-board pin/move/string ──
         CaseBoardPoller.Register();
 
+        // ── Round 5: NPC damage diff (currentHealth per citizen) ──
+        NpcDamagePoller.Register();
+
         Plugin.Log.LogInfo("[ZdoBootstrap] resolvers + pollers + events registered.");
     }
 }

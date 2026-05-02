@@ -1,5 +1,6 @@
 using System;
 using SoDCoop.Network;
+using UnityEngine;
 
 namespace SoDCoop.Zdo.Pollers;
 
@@ -35,7 +36,19 @@ public static class LocalPlayerPoller
     public const float TICK_HZ = 1f;
     public const string NAME = "local-player";
 
+    /// <summary>Below this delta, ignore — SoD's bleed tick can write tiny
+    /// fractional drops every frame which we don't want to broadcast.</summary>
+    private const float DAMAGE_EPSILON = 1f;
+
+    private static bool  _healthInitialized;
+    private static float _lastHealth;
+
     public static void Register() => ZdoPollerHost.RegisterAnyPeer(NAME, 1f / TICK_HZ, Tick);
+
+    public static void ResetBaseline()
+    {
+        _healthInitialized = false;
+    }
 
     private static void Tick(float now)
     {
@@ -63,6 +76,44 @@ public static class LocalPlayerPoller
             try { z.Set(ZdoKeys.IllegalAreaActive,   p.illegalAreaActive);      } catch { }
             try { z.Set(ZdoKeys.IllegalStatus,       (byte)(p.illegalStatus ? 1 : 0)); } catch { }
             try { z.Set(ZdoKeys.Escalation,          p.trespassingEscalation);  } catch { }
+
+            // Player damage diff — broadcasts a banner + downed pose to peers
+            // when local health drops. Replaces the player-victim branch of
+            // the (now-disabled) Actor.RecieveDamage patch. Player health
+            // itself is per-machine state, but the discrete damage event
+            // gets a banner and (on lethal) a downed RemotePlayer.
+            try
+            {
+                float curHealth = p.currentHealth;
+                if (!_healthInitialized)
+                {
+                    _healthInitialized = true;
+                    _lastHealth = curHealth;
+                }
+                else if (_lastHealth - curHealth > DAMAGE_EPSILON)
+                {
+                    float delta = _lastHealth - curHealth;
+                    bool  lethal = curHealth <= 0f;
+                    Vector3 pos = Vector3.zero;
+                    try { if (p.transform != null) pos = p.transform.position; } catch { }
+                    try
+                    {
+                        Sync.PlayerDamageSync.BroadcastDamage(
+                            attackerHumanId: -1,
+                            amount:          delta,
+                            hitPosition:     pos,
+                            hitDirection:    Vector3.up,
+                            isLethal:        lethal);
+                    }
+                    catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerPoller] dmg broadcast: {ex.Message}"); }
+                    _lastHealth = curHealth;
+                }
+                else if (curHealth > _lastHealth)
+                {
+                    _lastHealth = curHealth;     // healed — refresh baseline silently
+                }
+            }
+            catch { /* currentHealth getter may throw mid-init */ }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerPoller] tick: {ex.Message}"); }
     }
