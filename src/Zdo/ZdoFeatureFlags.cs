@@ -42,4 +42,5 @@ public static class ZdoFeatureFlags
     // CaseBoardPoller honours the same flag.
     public static bool UseZdoForInventoryDiff     = true;     // pickup/drop slot-id diff
     public static bool UseZdoForNpcDamage         = true;     // currentHealth diff per citizen
+    public static bool UseZdoForMurderDiscovery   = true;     // Murder.state → unsolved transition
 }

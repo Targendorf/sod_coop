@@ -519,6 +519,12 @@ public static class GamePatches
     //  Skip while CitizenDeathSync.IsApplyingRemote so we don't echo.
     // ─────────────────────────────────────────────────────────────────────────
 
+    // DISABLED Round 7: MurderPoller (host-only, 2 Hz) detects isDead
+    // false→true transitions per citizen and reads killer + weapon
+    // attribution from the citizen's Human.death record (a nested Death
+    // object exposing killer/weapon/victim humanIDs — see dump line 1683
+    // and 8451). Full attribution preserved without the patch.
+    /*
     [HarmonyPatch(typeof(Human), nameof(Human.Murder))]
     public static class Human_Murder_Patch
     {
@@ -530,12 +536,7 @@ public static class GamePatches
             {
                 if (__instance == null) return;
                 if (CitizenDeathSync.IsApplyingRemote) return;
-                // Damage with enableKill=true ends up here. If we're applying
-                // a remote damage event, the originator already broadcast the
-                // CitizenDeath that will follow — don't echo.
                 if (DamageSync.IsApplyingRemote) return;
-                // Don't broadcast deaths of the local player — there is no shared
-                // identity for "the local player" across machines.
                 if (global::Player.Instance != null && __instance.Pointer == global::Player.Instance.Pointer)
                     return;
 
@@ -554,6 +555,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     // ─────────────────────────────────────────────────────────────────────────
     //  MurderController.OnVictimDiscovery — fired the moment a player walks past
@@ -561,6 +563,12 @@ public static class GamePatches
     //  discovered on every machine without each player having to find the body.
     // ─────────────────────────────────────────────────────────────────────────
 
+    // DISABLED Round 7: MurderDiscoveryPoller (host-only, 1 Hz) walks
+    // MurderController.activeMurders and emits BroadcastDiscovery on the
+    // Murder.state transition into MurderState.unsolved (the moment SoD
+    // opens a case in response to a discovered body — same trigger SoD
+    // dispatches OnVictimDiscovery from internally).
+    /*
     [HarmonyPatch(typeof(MurderController), nameof(MurderController.OnVictimDiscovery))]
     public static class MurderController_OnVictimDiscovery_Patch
     {
@@ -579,6 +587,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     // ─────────────────────────────────────────────────────────────────────────
     //  TelephoneController.AddActiveCall / RemoveActiveCall — only the host

@@ -9,12 +9,14 @@ namespace SoDCoop.Zdo.Pollers;
 /// <c>citizen.isDead</c> false→true transitions. Triggers broadcasts via
 /// existing <see cref="SoDCoop.Sync.CitizenDeathSync.BroadcastDeath"/>.
 ///
-/// <para>Death context (killer, weapon, deathPos) is taken from
-/// <c>citizen.deathController</c> if available; otherwise uses safe
-/// defaults (-1 humanId, -1 weaponId, citizen.transform.position).</para>
+/// <para>Death context (killer, weapon, deathPos) read from
+/// <c>citizen.death</c> (a nested <c>Human.Death</c> object) which carries
+/// <c>killer</c> (int humanID), <c>weapon</c> (int interactableID), and
+/// <c>victim</c> (int). Field discovery via Assembly-CSharp_Dump/Human.cs
+/// line 1683 (class Death) and line 8451 (Human.death property).</para>
 ///
-/// <para>Replaces the Harmony patch on <c>Human.Murder</c> for
-/// post-save-load survival.</para>
+/// <para>Replaces the Harmony patch on <c>Human.Murder</c> entirely with
+/// full attribution preserved. Patch can be disabled.</para>
 /// </summary>
 public static class MurderPoller
 {
@@ -24,6 +26,8 @@ public static class MurderPoller
     private static readonly HashSet<int> _knownDead = new();
 
     public static void Register() => ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick);
+
+    public static void ResetBaseline() => _knownDead.Clear();
 
     private static void Tick(float now)
     {
@@ -50,11 +54,22 @@ public static class MurderPoller
                 if (_knownDead.Contains(id)) continue;
                 _knownDead.Add(id);
 
-                // Killer/weapon attribution unavailable from polling-side state
-                // (Human.GetMurder is in nested helper class, hard to reach via
-                // Il2CppInterop). Pass sentinels; receivers handle gracefully.
+                // Read killer + weapon from the citizen's Human.death record.
+                // SoD populates this in Actor.RecieveDamage when enableKill=true
+                // and in Human.Murder, before the postfix would have fired.
                 int killerId = -1;
                 int weaponId = -1;
+                try
+                {
+                    var d = c.death;
+                    if (d != null)
+                    {
+                        try { killerId = d.killer; } catch { }
+                        try { weaponId = d.weapon; } catch { }
+                    }
+                }
+                catch { /* death may be null mid-init */ }
+
                 UnityEngine.Vector3 pos = default;
                 try { pos = c.transform.position; } catch { }
 

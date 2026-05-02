@@ -68,6 +68,9 @@ public static class ZdoBootstrap
         // ── Round 5: NPC damage diff (currentHealth per citizen) ──
         NpcDamagePoller.Register();
 
+        // ── Round 7: body-discovery via Murder.state transition ──
+        MurderDiscoveryPoller.Register();
+
         Plugin.Log.LogInfo("[ZdoBootstrap] resolvers + pollers + events registered.");
     }
 }
