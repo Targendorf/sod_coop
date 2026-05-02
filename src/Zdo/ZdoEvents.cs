@@ -193,21 +193,21 @@ public static class ZdoEvents
             int jobId = r.GetInt();
             // Host is authoritative for side-job state — clients send this
             // RPC up to host, host runs OnPlayerCall on the real SideJob,
-            // which flips accepted=true + advances state, then the
-            // SideJobPoller picks up the state diff and re-broadcasts.
+            // which flips accepted=true + advances state, then we
+            // re-broadcast the upsert so all peers see the new state.
+            // Mirrors the legacy SideJobSync.HandleAcceptRequest.
             if (!SoDCoop.Network.NetworkManager.IsHost) return;
             var ctrl = global::SideJobController.Instance;
             if (ctrl == null) return;
             var dict = ctrl.allJobsDictionary;
             if (dict == null) return;
-            foreach (var kv in dict)
+            if (!dict.TryGetValue(jobId, out var job) || job == null)
             {
-                if (kv.Value == null) continue;
-                if (kv.Value.jobID != jobId) continue;
-                try { kv.Value.OnPlayerCall(); }
-                catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnSideJobPlayerCall] OnPlayerCall: {ex.Message}"); }
-                break;
+                Plugin.Log.LogWarning($"[ZdoEvents.OnSideJobPlayerCall] jobID={jobId} not in allJobsDictionary on host.");
+                return;
             }
+
+            SoDCoop.Sync.SideJobSync.RunOnPlayerCallAndRebroadcast(job, senderId);
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnSideJobPlayerCall] {ex.Message}"); }
     }
@@ -218,10 +218,20 @@ public static class ZdoEvents
         {
             int jobId  = r.GetInt();
             int reward = r.GetInt();
-            // Banner-only on receivers — actual money is host-authoritative
-            // and flows via MoneyPoller. Hook left minimal for now; SideJobSync
-            // legacy still delivers the reward state via SideJobNotification.
-            _ = jobId; _ = reward;
+            _ = reward;     // host re-derives from job.reward; payload kept for log/banner
+            // Mirrors SideJobSync.HandleHandInRequest.
+            if (!SoDCoop.Network.NetworkManager.IsHost) return;
+            var ctrl = global::SideJobController.Instance;
+            if (ctrl == null) return;
+            var dict = ctrl.allJobsDictionary;
+            if (dict == null) return;
+            if (!dict.TryGetValue(jobId, out var job) || job == null)
+            {
+                Plugin.Log.LogWarning($"[ZdoEvents.OnSideJobRewarded] jobID={jobId} not in allJobsDictionary on host.");
+                return;
+            }
+
+            SoDCoop.Sync.SideJobSync.RunOnRewardedAndRebroadcast(job, senderId);
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnSideJobRewarded] {ex.Message}"); }
     }

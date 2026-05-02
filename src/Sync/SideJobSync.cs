@@ -317,6 +317,58 @@ public static class SideJobSync
     }
 
     /// <summary>
+    /// ZDO entry-point: invoked from <c>ZdoEvents.OnSideJobPlayerCall</c>
+    /// after looking up the job. Runs vanilla OnPlayerCall under the
+    /// IsApplyingRemote guard and re-broadcasts the upsert.
+    /// </summary>
+    public static void RunOnPlayerCallAndRebroadcast(SideJob job, int senderId)
+    {
+        if (!NetworkManager.IsHost) return;
+        if (job == null) return;
+        try
+        {
+            IsApplyingRemote = true;
+            try
+            {
+                job.OnPlayerCall();
+                Plugin.Log.LogInfo($"[SideJobSync] applied accept (zdo) for jobID={job.jobID} from playerId={senderId}; accepted={TryReadBool(() => job.accepted)} state={TryReadInt(() => (int)job.state)}");
+            }
+            finally { IsApplyingRemote = false; }
+            Broadcast(KIND_UPDATED, job, peer: null);
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogError($"SideJobSync.RunOnPlayerCallAndRebroadcast: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// ZDO entry-point: invoked from <c>ZdoEvents.OnSideJobRewarded</c>.
+    /// Runs vanilla OnRewarded under the IsApplyingRemote guard and
+    /// re-broadcasts the upsert.
+    /// </summary>
+    public static void RunOnRewardedAndRebroadcast(SideJob job, int senderId)
+    {
+        if (!NetworkManager.IsHost) return;
+        if (job == null) return;
+        try
+        {
+            IsApplyingRemote = true;
+            try
+            {
+                job.OnRewarded();
+                Plugin.Log.LogInfo($"[SideJobSync] applied hand-in (zdo) for jobID={job.jobID} from playerId={senderId}; state={TryReadInt(() => (int)job.state)}");
+            }
+            finally { IsApplyingRemote = false; }
+            Broadcast(KIND_ENDED, job, peer: null);
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogError($"SideJobSync.RunOnRewardedAndRebroadcast: {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// Host-side. Look up the live SideJob in <c>allJobsDictionary</c> and
     /// invoke vanilla <c>OnPlayerCall</c> — which flips <c>accepted=true</c>,
     /// transitions phase, etc. Then broadcast a fresh upsert so all peers

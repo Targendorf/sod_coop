@@ -72,6 +72,11 @@ public static class GamePatches
     //  Read Time.timeScale right after to determine the new pause state.
     // ─────────────────────────────────────────────────────────────────────────
 
+    // DISABLED Round 8: PauseStatePoller (any-peer, 5 Hz) watches
+    // Time.timeScale for 1.0↔0.0 transitions and calls
+    // PingSystem.NotifyLocalPauseChanged on flip — same code path as
+    // the patch postfix.
+    /*
     [HarmonyPatch(typeof(SessionData), nameof(SessionData.TogglePause))]
     public static class SessionData_TogglePause_Patch
     {
@@ -90,6 +95,7 @@ public static class GamePatches
             }
         }
     }
+    */
 
     // ─────────────────────────────────────────────────────────────────────────
     //  LightController.SetOn(bool val, bool instant)
@@ -2020,7 +2026,13 @@ public static class GamePatches
                 if (NetworkManager.IsHost) return true;
 
                 int jobID = __instance.jobID;
-                SideJobSync.RequestAccept(jobID);
+                // Phase G+ migration: prefer the unified ZdoEventRpc channel
+                // (SIDE_JOB_PLAYER_CALL). Falls back to the legacy
+                // SideJobAcceptRequest packet when the events flag is off.
+                if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForEvents)
+                    SoDCoop.Zdo.ZdoEvents.SendSideJobPlayerCall(jobID);
+                else
+                    SideJobSync.RequestAccept(jobID);
 
                 Plugin.Log.LogInfo($"[SideJob.OnPlayerCall] client suppressed local invocation for jobID={jobID}; accept-request sent to host.");
                 return false; // skip original
@@ -2053,8 +2065,13 @@ public static class GamePatches
                 if (!NetworkManager.IsConnected) return true;
                 if (NetworkManager.IsHost) return true;
 
-                int jobID = __instance.jobID;
-                SideJobSync.RequestHandIn(jobID);
+                int jobID  = __instance.jobID;
+                int reward = 0;
+                try { reward = __instance.reward; } catch { }
+                if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForEvents)
+                    SoDCoop.Zdo.ZdoEvents.SendSideJobRewarded(jobID, reward);
+                else
+                    SideJobSync.RequestHandIn(jobID);
 
                 Plugin.Log.LogInfo($"[SideJob.OnRewarded] client suppressed local invocation for jobID={jobID}; hand-in-request sent to host.");
                 return false;
