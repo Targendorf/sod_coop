@@ -105,6 +105,17 @@ public static class EvidenceSync
             try { writerId   = ev.writer?.humanID   ?? -1; } catch { }
             try { receiverId = ev.reciever?.humanID ?? -1; } catch { }
 
+            // Phase G.5 (Wave 3.4): unified RPC channel via
+            // ZdoEvents.EVIDENCE_CREATE. Receiver applies via
+            // EvidenceSync.ApplyCreateFromZdo.
+            if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForEvents)
+            {
+                try { SoDCoop.Zdo.ZdoEvents.SendEvidenceCreate(ev.evID, preset.name, parentId, ownerId, writerId, receiverId, true); }
+                catch (System.Exception ex) { Plugin.Log.LogWarning($"EvidenceSync.BroadcastEvidence (zdo): {ex.Message}"); }
+                Plugin.Log.LogInfo($"[EvidenceSync] zdo create evID=\"{ev.evID}\" preset=\"{preset.name}\"");
+                return;
+            }
+
             var packet = new EvidenceCreatePacket
             {
                 EvId            = ev.evID,
@@ -281,6 +292,14 @@ public static class EvidenceSync
         if (string.IsNullOrEmpty(evId)) return;
         if (!BroadcastBudget.TryConsume("evidence.discovery")) return;
 
+        // Phase G.5 (Wave 3.5): unified RPC channel via ZdoEvents.
+        if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForEvents)
+        {
+            try { SoDCoop.Zdo.ZdoEvents.SendEvidenceDiscovery(evId, discovery); }
+            catch (System.Exception ex) { Plugin.Log.LogWarning($"EvidenceSync.BroadcastDiscovery (zdo): {ex.Message}"); }
+            return;
+        }
+
         try
         {
             var packet = new EvidenceDiscoveryAddPacket
@@ -328,6 +347,13 @@ public static class EvidenceSync
                 keyBytes = System.Array.Empty<byte>();
             }
 
+            // Phase G.5: unified RPC.
+            if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForEvents)
+            {
+                SoDCoop.Zdo.ZdoEvents.SendEvidenceSetNote(evId, keyBytes, text ?? "");
+                return;
+            }
+
             var packet = new EvidenceSetNotePacket
             {
                 SenderId = NetworkManager.LocalPlayerId,
@@ -359,6 +385,14 @@ public static class EvidenceSync
         if (IsApplyingRemote) return;
         if (string.IsNullOrEmpty(evId)) return;
         if (!BroadcastBudget.TryConsume("evidence.customname")) return;
+
+        // Phase G.5 (Wave 3.5): unified RPC.
+        if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForEvents)
+        {
+            try { SoDCoop.Zdo.ZdoEvents.SendEvidenceCustomName(evId, (byte)dk, customName ?? ""); }
+            catch (System.Exception ex) { Plugin.Log.LogWarning($"EvidenceSync.BroadcastCustomName (zdo): {ex.Message}"); }
+            return;
+        }
 
         try
         {
@@ -415,19 +449,23 @@ public static class EvidenceSync
     }
 
     private static void ApplyCustomName(EvidenceCustomNamePacket p)
+        => ApplyCustomNameFromZdo(p.EvId, p.DataKey, p.CustomName);
+
+    /// <summary>ZDO entry — invoked from <c>ZdoEvents.OnEvidenceCustomName</c>.</summary>
+    public static void ApplyCustomNameFromZdo(string evId, byte dataKey, string customName)
     {
-        if (string.IsNullOrEmpty(p.EvId)) return;
+        if (string.IsNullOrEmpty(evId)) return;
         try
         {
             var dict = GameplayController.Instance?.evidenceDictionary;
             if (dict == null) return;
-            if (!dict.TryGetValue(p.EvId, out var ev) || ev == null) return;
+            if (!dict.TryGetValue(evId, out var ev) || ev == null) return;
 
             IsApplyingRemote = true;
             try
             {
-                ev.AddOrSetCustomName((Evidence.DataKey)p.DataKey, p.CustomName ?? "");
-                Plugin.Log.LogInfo($"[EvidenceSync] applied CustomName evID=\"{p.EvId}\" dk={p.DataKey}");
+                ev.AddOrSetCustomName((Evidence.DataKey)dataKey, customName ?? "");
+                Plugin.Log.LogInfo($"[EvidenceSync] applied CustomName evID=\"{evId}\" dk={dataKey}");
             }
             finally { IsApplyingRemote = false; }
         }
@@ -438,38 +476,32 @@ public static class EvidenceSync
     }
 
     private static void ApplyDiscovery(EvidenceDiscoveryAddPacket p)
+        => ApplyDiscoveryFromZdo(p.EvId, p.Discovery);
+
+    /// <summary>ZDO entry — invoked from <c>ZdoEvents.OnEvidenceDiscovery</c>.</summary>
+    public static void ApplyDiscoveryFromZdo(string evId, byte discovery)
     {
-        if (string.IsNullOrEmpty(p.EvId)) return;
+        if (string.IsNullOrEmpty(evId)) return;
 
         try
         {
             var dict = GameplayController.Instance?.evidenceDictionary;
             if (dict == null) return;
-            if (!dict.TryGetValue(p.EvId, out var ev) || ev == null)
+            if (!dict.TryGetValue(evId, out var ev) || ev == null)
             {
-                // Not always present — maybe the evidence was created via
-                // case generation that the host hasn't broadcast (case-gen
-                // pipeline runs deterministic per-seed and is silent).
-                Plugin.Log.LogInfo($"[EvidenceSync] ApplyDiscovery: evID=\"{p.EvId}\" not found locally — skipping.");
+                Plugin.Log.LogInfo($"[EvidenceSync] ApplyDiscovery: evID=\"{evId}\" not found locally — skipping.");
                 return;
             }
 
-            // Skip if the same Discovery value is already in discoveryProgress
-            // (idempotency — SoD's AddDiscovery may also self-dedup, but
-            // checking here avoids a useless cross-machine roundtrip on
-            // redundant signals).
             try
             {
                 var prog = ev.discoveryProgress;
                 if (prog != null)
                 {
-                    var target = (Evidence.Discovery)p.Discovery;
+                    var target = (Evidence.Discovery)discovery;
                     for (int i = 0; i < prog.Count; i++)
                     {
-                        if (prog[i] == target)
-                        {
-                            return;
-                        }
+                        if (prog[i] == target) return;
                     }
                 }
             }
@@ -478,8 +510,8 @@ public static class EvidenceSync
             IsApplyingRemote = true;
             try
             {
-                ev.AddDiscovery((Evidence.Discovery)p.Discovery);
-                Plugin.Log.LogInfo($"[EvidenceSync] applied discovery evID=\"{p.EvId}\" disc={p.Discovery}");
+                ev.AddDiscovery((Evidence.Discovery)discovery);
+                Plugin.Log.LogInfo($"[EvidenceSync] applied discovery evID=\"{evId}\" disc={discovery}");
             }
             finally
             {
@@ -493,54 +525,50 @@ public static class EvidenceSync
     }
 
     private static void ApplyCreate(EvidenceCreatePacket p, int senderId)
+        => ApplyCreateFromZdo(p.EvId, p.PresetName, p.ParentEvId,
+            p.OwnerHumanId, p.WriterHumanId, p.ReceiverHumanId, p.ForceDiscovery, senderId);
+
+    /// <summary>ZDO entry — invoked from <c>ZdoEvents.OnEvidenceCreate</c>.</summary>
+    public static void ApplyCreateFromZdo(string evId, string presetName, string parentEvId,
+                                           int ownerHumanId, int writerHumanId, int receiverHumanId,
+                                           bool forceDiscovery, int senderId)
     {
-        if (string.IsNullOrEmpty(p.EvId) || string.IsNullOrEmpty(p.PresetName)) return;
+        if (string.IsNullOrEmpty(evId) || string.IsNullOrEmpty(presetName)) return;
 
         try
         {
             var dict = GameplayController.Instance?.evidenceDictionary;
-            if (dict != null && dict.ContainsKey(p.EvId)) return; // already have it
+            if (dict != null && dict.ContainsKey(evId)) return; // already have it
 
-            var preset = ResolvePreset(p.PresetName);
+            var preset = ResolvePreset(presetName);
             if (preset == null)
             {
-                Plugin.Log.LogWarning($"[EvidenceSync] ApplyCreate: preset \"{p.PresetName}\" not found");
+                Plugin.Log.LogWarning($"[EvidenceSync] ApplyCreate: preset \"{presetName}\" not found");
                 return;
             }
 
-            // Phase B.2: remote-client created evidence is attributed via the
-            // WriterHumanId field — that's the actual creator. Remap it to
-            // the sender's twin citizen on the host. Owner / Receiver are
-            // semantic (subject of a photo, recipient of a vmail) and stay
-            // as the originator labelled them.
-            int writerId = p.WriterHumanId;
+            // Twin remap of writer humanID for client-originated creation.
+            int writerId = writerHumanId;
             int twin = TwinManager.GetTwinHumanIDForSender(senderId);
             if (twin > 0) writerId = twin;
 
-            // Resolve owner / writer / receiver Humans by humanID. May be null.
-            Human owner    = ResolveHuman(p.OwnerHumanId);
+            Human owner    = ResolveHuman(ownerHumanId);
             Human writer   = ResolveHuman(writerId);
-            Human receiver = ResolveHuman(p.ReceiverHumanId);
+            Human receiver = ResolveHuman(receiverHumanId);
 
-            // Resolve parent Evidence by evID. May be null.
             Evidence parent = null;
-            if (!string.IsNullOrEmpty(p.ParentEvId))
+            if (!string.IsNullOrEmpty(parentEvId))
             {
-                if (dict != null) dict.TryGetValue(p.ParentEvId, out parent);
+                if (dict != null) dict.TryGetValue(parentEvId, out parent);
             }
 
             IsApplyingRemote = true;
             try
             {
                 EvidenceCreator.Instance.CreateEvidence(
-                    preset,
-                    p.EvId,
-                    /*controller*/ null,
-                    owner, writer, receiver,
-                    parent,
-                    p.ForceDiscovery,
-                    /*passedObjects*/ null);
-                Plugin.Log.LogInfo($"[EvidenceSync] applied evidence evID=\"{p.EvId}\" preset=\"{p.PresetName}\"");
+                    preset, evId, null, owner, writer, receiver,
+                    parent, forceDiscovery, null);
+                Plugin.Log.LogInfo($"[EvidenceSync] applied evidence evID=\"{evId}\" preset=\"{presetName}\"");
             }
             finally
             {

@@ -80,6 +80,36 @@ public static class ZdoEvents
     /// <c>EvidenceSync.ApplySetNoteFromZdo</c>.</summary>
     public const string EVIDENCE_SET_NOTE    = "evidence-set-note";
 
+    /// <summary>Evidence created — payload: <c>(string evId, string presetName,
+    /// string parentEvId, int ownerHumanId, int writerHumanId, int receiverHumanId,
+    /// bool forceDiscovery)</c>. Receiver invokes EvidenceCreator.CreateEvidence.</summary>
+    public const string EVIDENCE_CREATE      = "evidence-create";
+
+    /// <summary>Evidence discovery flag added — payload: <c>(string evId, byte discovery)</c>.</summary>
+    public const string EVIDENCE_DISCOVERY   = "evidence-discovery";
+
+    /// <summary>Evidence custom name set — payload: <c>(string evId, byte dataKey, string name)</c>.</summary>
+    public const string EVIDENCE_CUSTOM_NAME = "evidence-custom-name";
+
+    /// <summary>Case board card pinned — payload: <c>(int caseId, string evId,
+    /// byte[] dataKeys, Vector2 pos, bool forceAutoPin)</c>.</summary>
+    public const string CB_PIN               = "cb-pin";
+
+    /// <summary>Case board card unpinned — payload: <c>(int caseId, string evId,
+    /// byte[] dataKeys)</c>.</summary>
+    public const string CB_UNPIN             = "cb-unpin";
+
+    /// <summary>Case board card moved — payload: <c>(int caseId, string evId,
+    /// byte[] dataKeys, Vector2 pos)</c>.</summary>
+    public const string CB_MOVE              = "cb-move";
+
+    /// <summary>Case board string-link added — payload: <c>(int caseId,
+    /// string fromEvId, byte[] fromKeys, string toEvId, byte[] toKeys, byte colour)</c>.</summary>
+    public const string CB_STRING            = "cb-string";
+
+    /// <summary>Case board string-link removed — payload matches CB_STRING minus colour.</summary>
+    public const string CB_STRING_REMOVE     = "cb-string-remove";
+
     public static void RegisterAll()
     {
         ZdoEventDispatcher.Register(CHAT,             OnChat);
@@ -111,6 +141,14 @@ public static class ZdoEvents
         ZdoEventDispatcher.Register(ITEM_PLACE,            OnItemPlace);
         ZdoEventDispatcher.Register(ITEM_THROW,            OnItemThrow);
         ZdoEventDispatcher.Register(EVIDENCE_SET_NOTE,     OnEvidenceSetNote);
+        ZdoEventDispatcher.Register(EVIDENCE_CREATE,       OnEvidenceCreate);
+        ZdoEventDispatcher.Register(EVIDENCE_DISCOVERY,    OnEvidenceDiscovery);
+        ZdoEventDispatcher.Register(EVIDENCE_CUSTOM_NAME,  OnEvidenceCustomName);
+        ZdoEventDispatcher.Register(CB_PIN,                OnCbPin);
+        ZdoEventDispatcher.Register(CB_UNPIN,              OnCbUnpin);
+        ZdoEventDispatcher.Register(CB_MOVE,               OnCbMove);
+        ZdoEventDispatcher.Register(CB_STRING,             OnCbString);
+        ZdoEventDispatcher.Register(CB_STRING_REMOVE,      OnCbStringRemove);
     }
 
     private static readonly NetDataWriter _w = new();
@@ -291,6 +329,112 @@ public static class ZdoEvents
         for (int i = 0; i < keyCount; i++) _w.Put(dataKeys[i]);
         _w.Put(text ?? "");
         ZdoEventDispatcher.Send(EVIDENCE_SET_NOTE, _w);
+    }
+
+    public static void SendEvidenceCreate(string evId, string presetName, string parentEvId,
+                                          int ownerHumanId, int writerHumanId, int receiverHumanId,
+                                          bool forceDiscovery)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(evId ?? "");
+        _w.Put(presetName ?? "");
+        _w.Put(parentEvId ?? "");
+        _w.Put(ownerHumanId);
+        _w.Put(writerHumanId);
+        _w.Put(receiverHumanId);
+        _w.Put(forceDiscovery);
+        ZdoEventDispatcher.Send(EVIDENCE_CREATE, _w);
+    }
+
+    public static void SendEvidenceDiscovery(string evId, byte discovery)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(evId ?? "");
+        _w.Put(discovery);
+        ZdoEventDispatcher.Send(EVIDENCE_DISCOVERY, _w);
+    }
+
+    public static void SendEvidenceCustomName(string evId, byte dataKey, string customName)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(evId ?? "");
+        _w.Put(dataKey);
+        _w.Put(customName ?? "");
+        ZdoEventDispatcher.Send(EVIDENCE_CUSTOM_NAME, _w);
+    }
+
+    public static void SendCbPin(int caseId, string evId, byte[] dataKeys,
+                                 UnityEngine.Vector2 pos, bool forceAutoPin)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(caseId);
+        _w.Put(evId ?? "");
+        int kc = dataKeys?.Length ?? 0;
+        _w.Put(kc);
+        for (int i = 0; i < kc; i++) _w.Put(dataKeys[i]);
+        _w.Put(pos.x); _w.Put(pos.y);
+        _w.Put(forceAutoPin);
+        ZdoEventDispatcher.Send(CB_PIN, _w);
+    }
+
+    public static void SendCbUnpin(int caseId, string evId, byte[] dataKeys)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(caseId);
+        _w.Put(evId ?? "");
+        int kc = dataKeys?.Length ?? 0;
+        _w.Put(kc);
+        for (int i = 0; i < kc; i++) _w.Put(dataKeys[i]);
+        ZdoEventDispatcher.Send(CB_UNPIN, _w);
+    }
+
+    public static void SendCbMove(int caseId, string evId, byte[] dataKeys, UnityEngine.Vector2 pos)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(caseId);
+        _w.Put(evId ?? "");
+        int kc = dataKeys?.Length ?? 0;
+        _w.Put(kc);
+        for (int i = 0; i < kc; i++) _w.Put(dataKeys[i]);
+        _w.Put(pos.x); _w.Put(pos.y);
+        ZdoEventDispatcher.Send(CB_MOVE, _w);
+    }
+
+    public static void SendCbString(int caseId, string fromEvId, byte[] fromKeys,
+                                    string toEvId, byte[] toKeys, byte colour)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(caseId);
+        _w.Put(fromEvId ?? "");
+        int fk = fromKeys?.Length ?? 0; _w.Put(fk);
+        for (int i = 0; i < fk; i++) _w.Put(fromKeys[i]);
+        _w.Put(toEvId ?? "");
+        int tk = toKeys?.Length ?? 0; _w.Put(tk);
+        for (int i = 0; i < tk; i++) _w.Put(toKeys[i]);
+        _w.Put(colour);
+        ZdoEventDispatcher.Send(CB_STRING, _w);
+    }
+
+    public static void SendCbStringRemove(int caseId, string fromEvId, byte[] fromKeys,
+                                          string toEvId, byte[] toKeys)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(caseId);
+        _w.Put(fromEvId ?? "");
+        int fk = fromKeys?.Length ?? 0; _w.Put(fk);
+        for (int i = 0; i < fk; i++) _w.Put(fromKeys[i]);
+        _w.Put(toEvId ?? "");
+        int tk = toKeys?.Length ?? 0; _w.Put(tk);
+        for (int i = 0; i < tk; i++) _w.Put(toKeys[i]);
+        ZdoEventDispatcher.Send(CB_STRING_REMOVE, _w);
     }
 
     // ── Handlers ──
@@ -488,6 +632,130 @@ public static class ZdoEvents
             catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnEvidenceSetNote] apply: {ex.Message}"); }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnEvidenceSetNote] {ex.Message}"); }
+    }
+
+    private static void OnEvidenceCreate(NetDataReader r, int senderId)
+    {
+        try
+        {
+            string evId       = r.GetString();
+            string presetName = r.GetString();
+            string parentEvId = r.GetString();
+            int ownerId       = r.GetInt();
+            int writerId      = r.GetInt();
+            int receiverId    = r.GetInt();
+            bool forceDisc    = r.GetBool();
+            try { SoDCoop.Sync.EvidenceSync.ApplyCreateFromZdo(evId, presetName, parentEvId, ownerId, writerId, receiverId, forceDisc, senderId); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnEvidenceCreate] apply: {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnEvidenceCreate] {ex.Message}"); }
+    }
+
+    private static void OnEvidenceDiscovery(NetDataReader r, int senderId)
+    {
+        try
+        {
+            string evId = r.GetString();
+            byte disc   = r.GetByte();
+            try { SoDCoop.Sync.EvidenceSync.ApplyDiscoveryFromZdo(evId, disc); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnEvidenceDiscovery] apply: {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnEvidenceDiscovery] {ex.Message}"); }
+    }
+
+    private static void OnEvidenceCustomName(NetDataReader r, int senderId)
+    {
+        try
+        {
+            string evId = r.GetString();
+            byte dk     = r.GetByte();
+            string name = r.GetString();
+            try { SoDCoop.Sync.EvidenceSync.ApplyCustomNameFromZdo(evId, dk, name); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnEvidenceCustomName] apply: {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnEvidenceCustomName] {ex.Message}"); }
+    }
+
+    private static byte[] ReadByteList(NetDataReader r)
+    {
+        int n = r.GetInt();
+        if (n <= 0) return System.Array.Empty<byte>();
+        var arr = new byte[n];
+        for (int i = 0; i < n; i++) arr[i] = r.GetByte();
+        return arr;
+    }
+
+    private static void OnCbPin(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int caseId = r.GetInt();
+            string evId = r.GetString();
+            byte[] dk = ReadByteList(r);
+            float px = r.GetFloat(), py = r.GetFloat();
+            bool forceAuto = r.GetBool();
+            try { SoDCoop.Sync.CaseBoardSync.ApplyPinFromZdo(caseId, evId, dk, new UnityEngine.Vector2(px, py), forceAuto); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCbPin] apply: {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCbPin] {ex.Message}"); }
+    }
+
+    private static void OnCbUnpin(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int caseId = r.GetInt();
+            string evId = r.GetString();
+            byte[] dk = ReadByteList(r);
+            try { SoDCoop.Sync.CaseBoardSync.ApplyUnpinFromZdo(caseId, evId, dk); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCbUnpin] apply: {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCbUnpin] {ex.Message}"); }
+    }
+
+    private static void OnCbMove(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int caseId = r.GetInt();
+            string evId = r.GetString();
+            byte[] dk = ReadByteList(r);
+            float px = r.GetFloat(), py = r.GetFloat();
+            try { SoDCoop.Sync.CaseBoardSync.ApplyMoveFromZdo(caseId, evId, dk, new UnityEngine.Vector2(px, py), senderId); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCbMove] apply: {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCbMove] {ex.Message}"); }
+    }
+
+    private static void OnCbString(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int caseId = r.GetInt();
+            string fromEv = r.GetString();
+            byte[] fromK = ReadByteList(r);
+            string toEv = r.GetString();
+            byte[] toK = ReadByteList(r);
+            byte colour = r.GetByte();
+            try { SoDCoop.Sync.CaseBoardSync.ApplyStringFromZdo(caseId, fromEv, fromK, toEv, toK, colour); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCbString] apply: {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCbString] {ex.Message}"); }
+    }
+
+    private static void OnCbStringRemove(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int caseId = r.GetInt();
+            string fromEv = r.GetString();
+            byte[] fromK = ReadByteList(r);
+            string toEv = r.GetString();
+            byte[] toK = ReadByteList(r);
+            try { SoDCoop.Sync.CaseBoardSync.ApplyStringRemoveFromZdo(caseId, fromEv, fromK, toEv, toK); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCbStringRemove] apply: {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCbStringRemove] {ex.Message}"); }
     }
 
     private static void OnItemThrow(NetDataReader r, int senderId)

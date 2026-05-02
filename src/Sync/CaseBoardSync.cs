@@ -255,6 +255,14 @@ public static class CaseBoardSync
         if (IsApplyingRemote) return;
         if (string.IsNullOrEmpty(evId)) return;
 
+        // Phase G.5 (Wave 3.6): unified RPC channel.
+        if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForEvents)
+        {
+            try { SoDCoop.Zdo.ZdoEvents.SendCbPin(caseId, evId, ToByteArray(evKeys), pos, forceAutoPin); }
+            catch (System.Exception ex) { Plugin.Log.LogWarning($"BroadcastPin (zdo): {ex.Message}"); }
+            return;
+        }
+
         try
         {
             var packet = new CaseBoardPinPacket
@@ -283,6 +291,13 @@ public static class CaseBoardSync
         if (IsApplyingRemote) return;
         if (string.IsNullOrEmpty(evId)) return;
 
+        if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForEvents)
+        {
+            try { SoDCoop.Zdo.ZdoEvents.SendCbUnpin(caseId, evId, ToByteArray(evKeys)); }
+            catch (System.Exception ex) { Plugin.Log.LogWarning($"BroadcastUnpin (zdo): {ex.Message}"); }
+            return;
+        }
+
         try
         {
             var packet = new CaseBoardUnpinPacket
@@ -309,6 +324,13 @@ public static class CaseBoardSync
         if (!NetworkManager.IsConnected) return;
         if (IsApplyingRemote) return;
         if (string.IsNullOrEmpty(fromEvId) || string.IsNullOrEmpty(toEvId)) return;
+
+        if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForEvents)
+        {
+            try { SoDCoop.Zdo.ZdoEvents.SendCbString(caseId, fromEvId, ToByteArray(fromKeys), toEvId, ToByteArray(toKeys), colour); }
+            catch (System.Exception ex) { Plugin.Log.LogWarning($"BroadcastString (zdo): {ex.Message}"); }
+            return;
+        }
 
         try
         {
@@ -426,6 +448,13 @@ public static class CaseBoardSync
         if (IsApplyingRemote) return;
         if (string.IsNullOrEmpty(fromEvId) || string.IsNullOrEmpty(toEvId)) return;
 
+        if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForEvents)
+        {
+            try { SoDCoop.Zdo.ZdoEvents.SendCbStringRemove(caseId, fromEvId, fromKeys, toEvId, toKeys); }
+            catch (System.Exception ex) { Plugin.Log.LogWarning($"BroadcastStringRemoveById (zdo): {ex.Message}"); }
+            return;
+        }
+
         try
         {
             var packet = new CaseBoardStringRemovePacket
@@ -531,6 +560,14 @@ public static class CaseBoardSync
             if (_lastMoveSendTime.TryGetValue(key, out var t) && (now - t) < MOVE_THROTTLE) return;
             _lastMoveSendTime[key] = now;
 
+            // Phase G.5 (Wave 3.6): unified RPC channel.
+            if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForEvents)
+            {
+                try { SoDCoop.Zdo.ZdoEvents.SendCbMove(caseId, evId, keys, pos); }
+                catch (System.Exception ex) { Plugin.Log.LogWarning($"BroadcastMove (zdo): {ex.Message}"); }
+                return;
+            }
+
             var packet = new CaseBoardMovePacket
             {
                 CaseId   = caseId,
@@ -626,84 +663,87 @@ public static class CaseBoardSync
     }
 
     private static void ApplyPin(CaseBoardPinPacket p)
+        => ApplyPinFromZdo(p.CaseId, p.EvId, p.DataKeys, p.Position, p.ForceAutoPin);
+
+    /// <summary>ZDO entry — invoked from <c>ZdoEvents.OnCbPin</c>.</summary>
+    public static void ApplyPinFromZdo(int caseId, string evId, byte[] dataKeys,
+                                        UnityEngine.Vector2 position, bool forceAutoPin)
     {
-        var caseObj = FindCase(p.CaseId);
-        var evidence = FindEvidence(p.EvId);
+        var caseObj = FindCase(caseId);
+        var evidence = FindEvidence(evId);
         if (caseObj == null || evidence == null)
         {
-            Plugin.Log.LogWarning($"[CaseBoard] ApplyPin: case={p.CaseId} ev={p.EvId} not found");
+            Plugin.Log.LogWarning($"[CaseBoard] ApplyPin: case={caseId} ev={evId} not found");
             return;
         }
+        if (FindPinElement(caseObj, evId, dataKeys) != null) return;
 
-        // Already pinned? no-op (idempotent).
-        if (FindPinElement(caseObj, p.EvId, p.DataKeys) != null) return;
-
-        var keysList = ToIl2CppList(p.DataKeys);
+        var keysList = ToIl2CppList(dataKeys);
 
         IsApplyingRemote = true;
         try
         {
             var cpc = CasePanelController.Instance;
             if (cpc == null) return;
-            // PinToCasePanel(toCase, ev, evKeys, forceAutoPin, localPos, debugFlag)
-            cpc.PinToCasePanel(caseObj, evidence, keysList, p.ForceAutoPin, p.Position, false);
-            Plugin.Log.LogInfo($"[CaseBoard] applied remote pin case={p.CaseId} ev={p.EvId}");
+            cpc.PinToCasePanel(caseObj, evidence, keysList, forceAutoPin, position, false);
+            Plugin.Log.LogInfo($"[CaseBoard] applied remote pin case={caseId} ev={evId}");
         }
         catch (System.Exception ex)
         {
             Plugin.Log.LogWarning($"ApplyPin: {ex.Message}");
         }
-        finally
-        {
-            IsApplyingRemote = false;
-        }
+        finally { IsApplyingRemote = false; }
     }
 
     private static void ApplyUnpin(CaseBoardUnpinPacket p)
+        => ApplyUnpinFromZdo(p.CaseId, p.EvId, p.DataKeys);
+
+    /// <summary>ZDO entry — invoked from <c>ZdoEvents.OnCbUnpin</c>.</summary>
+    public static void ApplyUnpinFromZdo(int caseId, string evId, byte[] dataKeys)
     {
-        var caseObj = FindCase(p.CaseId);
-        var evidence = FindEvidence(p.EvId);
+        var caseObj = FindCase(caseId);
+        var evidence = FindEvidence(evId);
         if (caseObj == null || evidence == null) return;
 
-        var keysList = ToIl2CppList(p.DataKeys);
+        var keysList = ToIl2CppList(dataKeys);
 
         IsApplyingRemote = true;
         try
         {
             var cpc = CasePanelController.Instance;
             if (cpc == null) return;
-            // UnPinFromCasePanel(thisCase, ev, evKeys, uniqueKeysOnly=false, forceElement=null)
             cpc.UnPinFromCasePanel(caseObj, evidence, keysList, false, null);
-            Plugin.Log.LogInfo($"[CaseBoard] applied remote unpin case={p.CaseId} ev={p.EvId}");
+            Plugin.Log.LogInfo($"[CaseBoard] applied remote unpin case={caseId} ev={evId}");
         }
         catch (System.Exception ex)
         {
             Plugin.Log.LogWarning($"ApplyUnpin: {ex.Message}");
         }
-        finally
-        {
-            IsApplyingRemote = false;
-        }
+        finally { IsApplyingRemote = false; }
     }
 
     private static void ApplyMove(CaseBoardMovePacket p)
+        => ApplyMoveFromZdo(p.CaseId, p.EvId, p.DataKeys, p.Position, p.SenderId);
+
+    /// <summary>ZDO entry — invoked from <c>ZdoEvents.OnCbMove</c>. Same throttle
+    /// + host-priority logic as the legacy ApplyMove.</summary>
+    public static void ApplyMoveFromZdo(int caseId, string evId, byte[] dataKeys,
+                                         UnityEngine.Vector2 position, int senderId)
     {
-        // Host-priority tie-break: if our last move came from the host (sender 0)
-        // and now a non-host packet arrived in the same frame, ignore the client.
-        long key = PinKey(p.CaseId, p.EvId, p.DataKeys);
+        long key = PinKey(caseId, evId, dataKeys);
         if (_lastMoveSender.TryGetValue(key, out var lastSender)
-            && lastSender == 0 && p.SenderId != 0)
+            && lastSender == 0 && senderId != 0)
         {
             float now = Time.unscaledTime;
             if (_lastMoveSendTime.TryGetValue(key, out var lastT) && (now - lastT) < MOVE_THROTTLE)
                 return;
         }
-        _lastMoveSender[key] = p.SenderId;
+        _lastMoveSender[key] = senderId;
 
-        var caseObj = FindCase(p.CaseId);
+        var caseObj = FindCase(caseId);
         if (caseObj == null) return;
 
-        var element = FindPinElement(caseObj, p.EvId, p.DataKeys);
+        var element = FindPinElement(caseObj, evId, dataKeys);
         if (element == null) return;
         var pic = element.pinnedController;
         if (pic == null) return;
@@ -711,45 +751,43 @@ public static class CaseBoardSync
         IsApplyingRemote = true;
         try
         {
-            pic.SetPostion(p.Position);
+            pic.SetPostion(position);
         }
         catch (System.Exception ex)
         {
             Plugin.Log.LogWarning($"ApplyMove: {ex.Message}");
         }
-        finally
-        {
-            IsApplyingRemote = false;
-        }
+        finally { IsApplyingRemote = false; }
     }
 
     private static void ApplyString(CaseBoardStringPacket p)
+        => ApplyStringFromZdo(p.CaseId, p.FromEvId, p.FromKeys, p.ToEvId, p.ToKeys, p.Colour);
+
+    /// <summary>ZDO entry — invoked from <c>ZdoEvents.OnCbString</c>.</summary>
+    public static void ApplyStringFromZdo(int caseId, string fromEvId, byte[] fromKeys,
+                                           string toEvId, byte[] toKeys, byte colour)
     {
-        var caseObj = FindCase(p.CaseId);
+        var caseObj = FindCase(caseId);
         if (caseObj == null) return;
 
-        var link = FindFactLink(p.FromEvId, p.FromKeys, p.ToEvId, p.ToKeys);
+        var link = FindFactLink(fromEvId, fromKeys, toEvId, toKeys);
         if (link == null)
         {
-            Plugin.Log.LogWarning($"[CaseBoard] ApplyString: link {p.FromEvId}→{p.ToEvId} not found");
+            Plugin.Log.LogWarning($"[CaseBoard] ApplyString: link {fromEvId}→{toEvId} not found");
             return;
         }
 
         IsApplyingRemote = true;
         try
         {
-            // AddNewStringColour(FactLink, EvidenceColours)
-            caseObj.AddNewStringColour(link, (InterfaceControls.EvidenceColours)p.Colour);
-            Plugin.Log.LogInfo($"[CaseBoard] applied remote string case={p.CaseId} colour={p.Colour}");
+            caseObj.AddNewStringColour(link, (InterfaceControls.EvidenceColours)colour);
+            Plugin.Log.LogInfo($"[CaseBoard] applied remote string case={caseId} colour={colour}");
         }
         catch (System.Exception ex)
         {
             Plugin.Log.LogWarning($"ApplyString: {ex.Message}");
         }
-        finally
-        {
-            IsApplyingRemote = false;
-        }
+        finally { IsApplyingRemote = false; }
     }
 
     private static void ApplyHide(CaseBoardHidePacket p)
@@ -887,12 +925,17 @@ public static class CaseBoardSync
     }
 
     private static void ApplyStringRemove(CaseBoardStringRemovePacket p)
+        => ApplyStringRemoveFromZdo(p.CaseId, p.FromEvId, p.FromKeys, p.ToEvId, p.ToKeys);
+
+    /// <summary>ZDO entry — invoked from <c>ZdoEvents.OnCbStringRemove</c>.</summary>
+    public static void ApplyStringRemoveFromZdo(int caseId, string fromEvId, byte[] fromKeys,
+                                                 string toEvId, byte[] toKeys)
     {
-        var sc = FindStringController(p.CaseId, p.FromEvId, p.FromKeys, p.ToEvId, p.ToKeys);
+        var sc = FindStringController(caseId, fromEvId, fromKeys, toEvId, toKeys);
         if (sc == null)
         {
             Plugin.Log.LogWarning(
-                $"[CaseBoard] ApplyStringRemove: no StringController for case={p.CaseId} {p.FromEvId}→{p.ToEvId}");
+                $"[CaseBoard] ApplyStringRemove: no StringController for case={caseId} {fromEvId}→{toEvId}");
             return;
         }
 
@@ -900,16 +943,13 @@ public static class CaseBoardSync
         try
         {
             sc.RemoveCustomLink();
-            Plugin.Log.LogInfo($"[CaseBoard] applied remote string-remove case={p.CaseId} {p.FromEvId}→{p.ToEvId}");
+            Plugin.Log.LogInfo($"[CaseBoard] applied remote string-remove case={caseId} {fromEvId}→{toEvId}");
         }
         catch (System.Exception ex)
         {
             Plugin.Log.LogWarning($"ApplyStringRemove: {ex.Message}");
         }
-        finally
-        {
-            IsApplyingRemote = false;
-        }
+        finally { IsApplyingRemote = false; }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
