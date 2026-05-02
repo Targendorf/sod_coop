@@ -121,6 +121,24 @@ public static class ZdoKeys
     public static readonly int JobPhase        = Hash32.Of("jobPhase");
     public static readonly int JobAccepted     = Hash32.Of("jobAccepted");
     public static readonly int JobState        = Hash32.Of("jobState");
+    public static readonly int JobMotiveStr    = Hash32.Of("jobMotiveStr");
+    public static readonly int JobCaseId       = Hash32.Of("jobCaseId");
+    public static readonly int JobPostId       = Hash32.Of("jobPostId");
+    public static readonly int JobPurpHumanId  = Hash32.Of("jobPurpHumanId");
+    public static readonly int JobRewardSyncDisk = Hash32.Of("jobRewardSyncDisk");
+    public static readonly int JobInfoDialogMsg = Hash32.Of("jobInfoDialogMsg");
+    public static readonly int JobPosterName   = Hash32.Of("jobPosterName");
+    public static readonly int JobIntro        = Hash32.Of("jobIntro");
+    public static readonly int JobHandIn       = Hash32.Of("jobHandIn");
+    public static readonly int JobPostImmediately = Hash32.Of("jobPostImmediately");
+    public static readonly int JobFakeNumber   = Hash32.Of("jobFakeNumber");
+    public static readonly int JobFakeNumberStr = Hash32.Of("jobFakeNumberStr");
+    public static readonly int JobGooseChasePhone = Hash32.Of("jobGooseChasePhone");
+    public static readonly int JobGooseChaseFromPhone = Hash32.Of("jobGooseChaseFromPhone");
+    public static readonly int JobTriggerHandIn = Hash32.Of("jobTriggerHandIn");
+    /// <summary>Notification kind byte (CREATED/POSTED/ENDED/UPDATED). Lives on
+    /// SideJob ZDO so banner-on-flip works via ZdoSnapshot for late-joiners too.</summary>
+    public static readonly int JobKind         = Hash32.Of("jobKind");
 
     // ── Money / wallet ──
     public static readonly int Amount          = Hash32.Of("amount");

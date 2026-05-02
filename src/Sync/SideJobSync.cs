@@ -114,6 +114,17 @@ public static class SideJobSync
         if (job == null) return;
         if (IsApplyingRemote) return;
 
+        // Phase G.5 (Wave 3.2): write to per-job SideJob ZDO. ZdoMan delta
+        // tick flushes via zstd-compressed ZdoDeltaBatch; SideJobResolver
+        // applies on receivers. Late-join replay carries the job state via
+        // ZdoSnapshot so the snapshot-to-peer branch becomes redundant.
+        if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForSideJobs && peer == null)
+        {
+            try { WriteUpsertToZdo(kind, job); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"SideJobSync.Broadcast (zdo): {ex.Message}"); }
+            return;
+        }
+
         try
         {
             var packet = BuildUpsertFromJob(kind, job);
@@ -187,6 +198,99 @@ public static class SideJobSync
     private static int    TryReadInt   (Func<int> f)    { try { return f(); } catch { return 0; } }
     private static bool   TryReadBool  (Func<bool> f)   { try { return f(); } catch { return false; } }
     private static string TryReadString(Func<string> f) { try { return f() ?? ""; } catch { return ""; } }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  ZDO transport (Phase G.5 wave 3.2) — writes the same upsert payload
+    //  into a per-job SideJob ZDO so it flows through ZdoDeltaBatch
+    //  (zstd + queue + 10 Hz cap + late-join via ZdoSnapshot) instead of
+    //  the legacy SideJobNotification packet.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>Write the full upsert payload onto the per-job
+    /// <see cref="SoDCoop.Zdo.ZdoTypeTag.SideJob"/> ZDO.</summary>
+    public static void WriteUpsertToZdo(byte kind, SideJob job)
+    {
+        if (job == null) return;
+        try
+        {
+            var packet = BuildUpsertFromJob(kind, job);
+            var z = SoDCoop.Zdo.ZdoMan.GetOrCreateBySodId(
+                SoDCoop.Zdo.ZdoTypeTag.SideJob, packet.JobId,
+                owner: SoDCoop.Zdo.ZdoMan.LocalPeerUid, persistent: true);
+
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobKind,                 kind);
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobId,                   packet.JobId);
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobPreset,               packet.PresetName ?? "");
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobMotiveStr,            packet.MotiveStr ?? "");
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobState,                packet.State);
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobAccepted,             packet.Accepted);
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobCaseId,               packet.CaseId);
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobPhase,                packet.Phase);
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobPostId,               packet.PostId);
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobPoster,               packet.PosterHumanId);
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobPurpHumanId,          packet.PurpHumanId);
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobReward,               packet.Reward);
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobRewardSyncDisk,       packet.RewardSyncDisk ?? "");
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobInfoDialogMsg,        packet.JobInfoDialogMsg ?? "");
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobPosterName,           packet.PosterName ?? "");
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobIntro,                packet.Intro ?? "");
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobHandIn,               packet.HandIn ?? "");
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobPostImmediately,      packet.PostImmediately);
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobFakeNumber,           packet.FakeNumber);
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobFakeNumberStr,        packet.FakeNumberStr ?? "");
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobGooseChasePhone,      packet.GooseChasePhone);
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobGooseChaseFromPhone,  packet.GooseChaseFromPhone);
+            z.Set(SoDCoop.Zdo.ZdoKeys.JobTriggerHandIn,        packet.TriggerHandIn);
+
+            Plugin.Log.LogInfo($"[SideJobSync] zdo upsert kind={kind} jobID={packet.JobId} preset=\"{packet.PresetName}\" state={packet.State}");
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"SideJobSync.WriteUpsertToZdo: {ex.Message}");
+        }
+    }
+
+    /// <summary>Read the upsert payload back out of a SideJob ZDO and
+    /// dispatch through <see cref="ApplyUpsert"/>. Invoked from
+    /// <c>SideJobResolver.Apply</c> on receivers.</summary>
+    public static void ApplyFromZdo(SoDCoop.Zdo.Zdo z)
+    {
+        if (z == null) return;
+        try
+        {
+            var p = new SideJobUpsertPacket
+            {
+                Kind                = z.GetByte(SoDCoop.Zdo.ZdoKeys.JobKind, KIND_UPDATED),
+                JobId               = z.GetInt (SoDCoop.Zdo.ZdoKeys.JobId, 0),
+                PresetName          = z.GetString(SoDCoop.Zdo.ZdoKeys.JobPreset, ""),
+                MotiveStr           = z.GetString(SoDCoop.Zdo.ZdoKeys.JobMotiveStr, ""),
+                State               = z.GetByte(SoDCoop.Zdo.ZdoKeys.JobState, 0),
+                Accepted            = z.GetBool(SoDCoop.Zdo.ZdoKeys.JobAccepted, false),
+                CaseId              = z.GetInt (SoDCoop.Zdo.ZdoKeys.JobCaseId, 0),
+                Phase               = z.GetInt (SoDCoop.Zdo.ZdoKeys.JobPhase, 0),
+                PostId              = z.GetInt (SoDCoop.Zdo.ZdoKeys.JobPostId, 0),
+                PosterHumanId       = z.GetInt (SoDCoop.Zdo.ZdoKeys.JobPoster, -1),
+                PurpHumanId         = z.GetInt (SoDCoop.Zdo.ZdoKeys.JobPurpHumanId, -1),
+                Reward              = z.GetInt (SoDCoop.Zdo.ZdoKeys.JobReward, 0),
+                RewardSyncDisk      = z.GetString(SoDCoop.Zdo.ZdoKeys.JobRewardSyncDisk, ""),
+                JobInfoDialogMsg    = z.GetString(SoDCoop.Zdo.ZdoKeys.JobInfoDialogMsg, ""),
+                PosterName          = z.GetString(SoDCoop.Zdo.ZdoKeys.JobPosterName, ""),
+                Intro               = z.GetString(SoDCoop.Zdo.ZdoKeys.JobIntro, ""),
+                HandIn              = z.GetString(SoDCoop.Zdo.ZdoKeys.JobHandIn, ""),
+                PostImmediately     = z.GetBool(SoDCoop.Zdo.ZdoKeys.JobPostImmediately, false),
+                FakeNumber          = z.GetInt (SoDCoop.Zdo.ZdoKeys.JobFakeNumber, 0),
+                FakeNumberStr       = z.GetString(SoDCoop.Zdo.ZdoKeys.JobFakeNumberStr, ""),
+                GooseChasePhone     = z.GetInt (SoDCoop.Zdo.ZdoKeys.JobGooseChasePhone, 0),
+                GooseChaseFromPhone = z.GetInt (SoDCoop.Zdo.ZdoKeys.JobGooseChaseFromPhone, 0),
+                TriggerHandIn       = z.GetBool(SoDCoop.Zdo.ZdoKeys.JobTriggerHandIn, false),
+            };
+            ApplyUpsert(p);
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"SideJobSync.ApplyFromZdo: {ex.Message}");
+        }
+    }
 
     // ─────────────────────────────────────────────────────────────────────
     //  Inbound (clients)

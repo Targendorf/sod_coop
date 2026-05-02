@@ -63,6 +63,7 @@ public static class ZdoBootstrap
         ElevatorPoller.Register();
         EvidenceCreationPoller.Register();
         CaseStatusPoller.Register();
+        ZdoResolverRegistry.Register(new SideJobResolver());
         SideJobPoller.Register();
 
         // ── Round 3: case-board pin/move/string ──
