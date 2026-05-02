@@ -478,7 +478,12 @@ public static class ZdoMan
         if (pt == PacketType.ZdoDeltaBatch) flags |= 0x02;
 
         _wrapScratch.Put(flags);
-        _wrapScratch.Put((ushort)len);
+        // Phase G.5 wire-tuning: uncompressed length is `int` (was `ushort`)
+        // so snapshots / large delta batches > 64 KB don't truncate. Header
+        // grows by 2 bytes (negligible vs the payload). Reader matches via
+        // a feature-flag bit if we need to keep wire-compat with old peers
+        // — currently no old peers exist on the wire, so straight upgrade.
+        _wrapScratch.Put(len);
 
         if (compress)
         {
@@ -501,7 +506,7 @@ public static class ZdoMan
     private static NetDataReader UnwrapHeader(NetDataReader r)
     {
         byte flags = r.GetByte();
-        ushort uncompressedLen = r.GetUShort();
+        int uncompressedLen = r.GetInt();
         int compressedLen = r.GetInt();
 
         byte[] body = new byte[compressedLen];

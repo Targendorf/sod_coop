@@ -236,7 +236,15 @@ public static class NetworkManager
             UpdateTime = UPDATE_INTERVAL,
             IPv6Enabled = false,
             NatPunchEnabled = true,
-            EnableStatistics = true
+            EnableStatistics = true,
+            // Phase G.5 wire-tuning: explicit values matching BetterNetworking-
+            // Valheim's profile so reliable retransmits don't pile up under
+            // 4-player burst load and reconnection retries are predictable.
+            PingInterval        = 1000,   // ms — keep-alive heartbeat
+            ReconnectDelay      = 500,    // ms between connection retries
+            MaxConnectAttempts  = 10,     // ~5 s total before giving up
+            ChannelsCount       = 4,      // critical / reliable / sequenced / unreliable
+            UnconnectedMessagesEnabled = false,
         };
         
         Plugin.Log.LogInfo("NetworkManager initialized.");
@@ -481,6 +489,37 @@ public static class NetworkManager
         _netManager?.PollEvents();
         if (IsHost) FinalisePendingDisconnects();
         else if (State == ConnectionState.Reconnecting) TickReconnect();
+        TickStatsLog();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  NetStatistics periodic dump — BetterNetworking-style observability.
+    //  Every 30 s logs bytes/packets in/out + outgoing reliable/unreliable
+    //  splits + last-known peer ping. Written as one line so users can grep
+    //  LogOutput.log for "NetStats" and produce a quick bandwidth report.
+    // ─────────────────────────────────────────────────────────────────────────
+    private const float STATS_LOG_INTERVAL_S = 30f;
+    private static float _nextStatsLogAt;
+    private static void TickStatsLog()
+    {
+        if (_netManager == null) return;
+        if (!IsConnected) return;
+        float now = UnityEngine.Time.unscaledTime;
+        if (now < _nextStatsLogAt) return;
+        _nextStatsLogAt = now + STATS_LOG_INTERVAL_S;
+
+        try
+        {
+            var s = _netManager.Statistics;
+            if (s == null) return;
+            int peers = IsHost ? _clients.Count : (HostPeer != null ? 1 : 0);
+            float pingMs = 0;
+            try { if (HostPeer != null) pingMs = HostPeer.Ping; } catch { }
+            Plugin.Log.LogInfo(
+                $"[NetStats] peers={peers} pkts(in/out)={s.PacketsReceived}/{s.PacketsSent} " +
+                $"bytes(in/out)={s.BytesReceived}/{s.BytesSent} ping={pingMs:F0}ms");
+        }
+        catch { /* statistics may be disposed mid-shutdown */ }
     }
 
     /// <summary>
