@@ -137,6 +137,10 @@ public static class Translations
 
         // Deep appearance panel — extra rows on top of the basic panel.
         ["appearanceDeep.title"]                = "Deep customization",
+        ["appearanceDeep.section.preset"]       = "Preset — start from a citizen",
+        ["appearanceDeep.preset.hint"]          = "Pick any citizen to copy their full appearance (gender, build, hair, eyes, skin, outfit). Tweak any field afterwards and the row label flips to (custom).",
+        ["appearanceDeep.row.preset"]           = "Preset",
+        ["appearanceDeep.preset.custom"]        = "(custom)",
         ["appearanceDeep.section.body"]         = "Body & wear",
         ["appearanceDeep.section.slots"]        = "Outfit slots — pick a different citizen per slot",
         ["appearanceDeep.slots.hint"]           = "Each slot pulls clothing covering that body part from the picked citizen, layered on top of the whole-outfit wardrobe pick below.",
@@ -150,6 +154,7 @@ public static class Translations
         ["appearanceDeep.shoeType.heel"]        = "Heels",
         ["appearanceDeep.shoeType.barefoot"]    = "Barefoot",
         ["appearanceDeep.grub.value"]           = "{0} / {1}",
+        ["appearanceDeep.slot.hair"]            = "Hair",
         ["appearanceDeep.slot.hat"]             = "Hat",
         ["appearanceDeep.slot.top"]             = "Top (shirt/jacket)",
         ["appearanceDeep.slot.bottom"]          = "Bottom (pants/skirt)",

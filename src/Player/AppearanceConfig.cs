@@ -66,12 +66,22 @@ public struct AppearanceConfig
     public int ShoesSourceHumanId;
     public int GlassesSourceHumanId;
     public int HandsSourceHumanId;
+    public int HairSourceHumanId;
+
+    /// <summary>HumanID of the citizen whose full appearance was last
+    /// "loaded as preset" via the deep panel's preset cycle. Pure UX
+    /// label — <see cref="ApplyTo"/> doesn't read it. Cleared the moment
+    /// the user nudges any other field, so the preset row reads
+    /// "(custom)" once they start tweaking. Surviving panel-close means
+    /// the user can come back later and still see "Sarah's preset" if
+    /// they didn't change anything in between.</summary>
+    public int PresetSourceHumanId;
 
     public bool IsCustomized;
 
     /// <summary>Bytes written by <see cref="Write"/>. Receivers tolerate
     /// shorter payloads (legacy records) by defaulting trailing fields.</summary>
-    public const int WireSize = 1 /*flag*/ + 9 + 4 /*WardrobeSourceHumanId*/ + 2 /*ShoeType+Grub*/ + 24 /*6 per-slot ints*/;
+    public const int WireSize = 1 /*flag*/ + 9 + 4 /*WardrobeSourceHumanId*/ + 2 /*ShoeType+Grub*/ + 24 /*6 per-slot ints*/ + 4 /*HairSource*/ + 4 /*PresetSource*/;
     public const int LegacyMinWireSize = 1 /*flag*/ + 8;
 
     /// <summary>Sentinel for <see cref="ShoeType"/> meaning "do not override
@@ -120,6 +130,8 @@ public struct AppearanceConfig
         w.Put(ShoesSourceHumanId);
         w.Put(GlassesSourceHumanId);
         w.Put(HandsSourceHumanId);
+        w.Put(HairSourceHumanId);
+        w.Put(PresetSourceHumanId);
     }
 
     public void Read(NetDataReader r)
@@ -145,6 +157,8 @@ public struct AppearanceConfig
         ShoesSourceHumanId     = r.AvailableBytes >= 4 ? r.GetInt() : 0;
         GlassesSourceHumanId   = r.AvailableBytes >= 4 ? r.GetInt() : 0;
         HandsSourceHumanId     = r.AvailableBytes >= 4 ? r.GetInt() : 0;
+        HairSourceHumanId      = r.AvailableBytes >= 4 ? r.GetInt() : 0;
+        PresetSourceHumanId    = r.AvailableBytes >= 4 ? r.GetInt() : 0;
     }
 
     public byte[] ToBytes()
@@ -228,6 +242,7 @@ public struct AppearanceConfig
             WardrobeSlots.ApplySlotBorrow(ctrl, category, WardrobeSlot.Shoes,   ShoesSourceHumanId);
             WardrobeSlots.ApplySlotBorrow(ctrl, category, WardrobeSlot.Glasses, GlassesSourceHumanId);
             WardrobeSlots.ApplySlotBorrow(ctrl, category, WardrobeSlot.Hands,   HandsSourceHumanId);
+            WardrobeSlots.ApplySlotBorrow(ctrl, category, WardrobeSlot.Hair,    HairSourceHumanId);
 
             ctrl.SetCurrentOutfit(category, /*forceLoad:*/ true, /*forceReload:*/ true, /*ignoreIfDead:*/ true);
         }

@@ -479,9 +479,17 @@ public class AppearancePanel : CoopPanelBase
         return m < 0 ? m + count : m;
     }
 
-    protected void Mutate(Action change)
+    protected virtual void Mutate(Action change)
     {
         _cfg.IsCustomized = true;
+        // Any user-driven knob nudge invalidates a previously-loaded
+        // citizen preset — the deep panel's preset row reads this field
+        // to decide whether to show a citizen name or "(custom)". Clearing
+        // here means BOTH panels respect the invariant: as soon as you
+        // touch ANY control after loading a preset, the label flips to
+        // "(custom)" because the cfg no longer matches that citizen
+        // verbatim.
+        _cfg.PresetSourceHumanId = 0;
         change();
         RefreshAllValues();
         PushPreview();

@@ -23,6 +23,7 @@ public enum WardrobeSlot
     Shoes,
     Glasses,
     Hands,
+    Hair,
 }
 
 /// <summary>
@@ -41,6 +42,7 @@ public static class WardrobeSlots
         WardrobeSlot.Shoes,
         WardrobeSlot.Glasses,
         WardrobeSlot.Hands,
+        WardrobeSlot.Hair,
     };
 
     /// <summary>Anchor positions a slot is responsible for. Multi-anchor
@@ -56,6 +58,7 @@ public static class WardrobeSlots
             WardrobeSlot.Shoes   => _shoes,
             WardrobeSlot.Glasses => _glasses,
             WardrobeSlot.Hands   => _hands,
+            WardrobeSlot.Hair    => _hair,
             _                    => System.Array.Empty<global::CitizenOutfitController.CharacterAnchor>(),
         };
 
@@ -98,6 +101,11 @@ public static class WardrobeSlots
     {
         global::CitizenOutfitController.CharacterAnchor.HandRight,
         global::CitizenOutfitController.CharacterAnchor.HandLeft,
+    };
+
+    private static readonly global::CitizenOutfitController.CharacterAnchor[] _hair =
+    {
+        global::CitizenOutfitController.CharacterAnchor.Hair,
     };
 
     /// <summary>

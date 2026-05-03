@@ -34,6 +34,7 @@ public class DeepAppearancePanel : AppearancePanel
     /// <summary>The deep panel IS the deep panel — no point linking to itself.</summary>
     protected override bool ShowDeepCustomizationButton => false;
 
+    private Text _presetValue;
     private Text _shoeTypeValue;
     private Text _grubValue;
 
@@ -44,6 +45,7 @@ public class DeepAppearancePanel : AppearancePanel
     private Text _slotShoesValue;
     private Text _slotGlassesValue;
     private Text _slotHandsValue;
+    private Text _slotHairValue;
 
     // Wardrobe browser state.
     private GameObject _wardrobeListGo;
@@ -53,6 +55,19 @@ public class DeepAppearancePanel : AppearancePanel
 
     protected override void AppendExtraRows()
     {
+        // ── Preset row at the very top of the extra section ─────────────
+        // Picks ALL appearance values (gender, build, hair, eyes, skin,
+        // outfit) from a citizen as a starting "preset". The moment the
+        // user touches any other field, the row label flips to "(custom)"
+        // — that signal lives in PresetSourceHumanId, cleared by the
+        // Mutate override below.
+        Spacer(8f);
+        BodyLabel(L.Get("appearanceDeep.section.preset"),
+            CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelTitle, TextAnchor.MiddleLeft, FontStyle.Bold);
+        BodyLabel(L.Get("appearanceDeep.preset.hint"),
+            CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted, TextAnchor.MiddleLeft, FontStyle.Italic);
+        _presetValue = AddCycleRow(L.Get("appearanceDeep.row.preset"), OnPresetDec, OnPresetInc);
+
         Spacer(8f);
         BodyLabel(L.Get("appearanceDeep.section.body"),
             CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelTitle, TextAnchor.MiddleLeft, FontStyle.Bold);
@@ -70,6 +85,7 @@ public class DeepAppearancePanel : AppearancePanel
         // for one anchor group. Click arrows to cycle through "(use own)" +
         // every loaded citizen. Apply / preview happens immediately via
         // Mutate → PushPreview path inherited from the base panel.
+        _slotHairValue    = AddCycleRow(L.Get("appearanceDeep.slot.hair"),    () => StepSlot(WardrobeSlot.Hair,    -1), () => StepSlot(WardrobeSlot.Hair,    +1));
         _slotHatValue     = AddCycleRow(L.Get("appearanceDeep.slot.hat"),     () => StepSlot(WardrobeSlot.Hat,     -1), () => StepSlot(WardrobeSlot.Hat,     +1));
         _slotTopValue     = AddCycleRow(L.Get("appearanceDeep.slot.top"),     () => StepSlot(WardrobeSlot.Top,     -1), () => StepSlot(WardrobeSlot.Top,     +1));
         _slotBottomValue  = AddCycleRow(L.Get("appearanceDeep.slot.bottom"),  () => StepSlot(WardrobeSlot.Bottom,  -1), () => StepSlot(WardrobeSlot.Bottom,  +1));
@@ -142,6 +158,150 @@ public class DeepAppearancePanel : AppearancePanel
             ? entry.DisplayName
             : $"{entry.DisplayName}  <i>({entry.Subtitle})</i>";
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Preset cycle — load a citizen as a starting point
+    // ─────────────────────────────────────────────────────────────────────
+
+    private void OnPresetDec() => StepPreset(-1);
+    private void OnPresetInc() => StepPreset(+1);
+
+    /// <summary>
+    /// Cycle the "starting preset" through "(custom)" + every loaded
+    /// citizen. Picking a citizen copies their descriptors (gender, build,
+    /// hair, eyes, skin) and full wardrobe onto <see cref="_cfg"/>; per-slot
+    /// overrides + ShoeType + Grub are reset so the preset comes through
+    /// clean. The change goes through <see cref="ApplyPresetChange"/> which
+    /// bypasses <see cref="Mutate"/>'s preset-clearing — otherwise the
+    /// label would flip to "(custom)" the same frame we set it.
+    /// </summary>
+    private void StepPreset(int delta)
+    {
+        int total = CitizenWardrobeBrowser.Count;
+        int currentVirtual = _cfg.PresetSourceHumanId == 0
+            ? 0
+            : 1 + System.Math.Max(0, CitizenWardrobeBrowser.IndexOfHumanId(_cfg.PresetSourceHumanId));
+        int next = Wrap(currentVirtual + delta, total + 1);
+
+        if (next == 0)
+        {
+            // "(custom)" — clear preset id but leave _cfg as-is.
+            ApplyPresetChange(() => _cfg.PresetSourceHumanId = 0);
+            return;
+        }
+
+        var entry = CitizenWardrobeBrowser.GetByIndex(next - 1);
+        if (entry == null || entry.HumanID == 0) return;
+        ApplyPresetChange(() => LoadCitizenAsPreset(entry.HumanID));
+    }
+
+    /// <summary>Like <see cref="Mutate"/> but skips the preset-id clear so
+    /// preset selection itself stays sticky.</summary>
+    private void ApplyPresetChange(Action change)
+    {
+        _cfg.IsCustomized = true;
+        change();
+        RefreshAllValues();
+        PushPreview();
+    }
+
+    /// <summary>
+    /// Snapshot the citizen's runtime descriptors (gender, build, hair,
+    /// eyes, skin, shoes) into <see cref="_cfg"/>, set the legacy
+    /// WardrobeSourceHumanId so their full outfit comes along, and clear
+    /// per-slot / Grub overrides so the preset doesn't "leak" the
+    /// previous user's tweaks. Skin is reverse-resolved from the citizen's
+    /// raw <see cref="Color"/> via the closest match in
+    /// <see cref="AppearancePalette.SkinColourFor"/>.
+    /// </summary>
+    private void LoadCitizenAsPreset(int humanId)
+    {
+        try
+        {
+            var dict = global::CityData.Instance?.citizenDictionary;
+            if (dict == null) return;
+            if (!dict.TryGetValue(humanId, out var human) || human == null) return;
+
+            var d = human.descriptors;
+            byte gender = (byte)human.gender;
+            byte build  = d != null ? (byte)d.build : _cfg.Build;
+            byte hair   = d != null ? (byte)d.hairType : _cfg.HairStyle;
+            byte hairC  = d != null ? (byte)d.hairColourCategory : _cfg.HairColour;
+            byte eye    = d != null ? (byte)d.eyeColour : _cfg.EyeColour;
+            byte skin   = d != null ? FindClosestSkinIndex(d.skinColour) : _cfg.SkinIndex;
+            byte shoe   = d != null ? (byte)d.footwear : AppearanceConfig.ShoeType_NoOverride;
+
+            _cfg.Gender     = gender;
+            _cfg.Build      = build;
+            _cfg.HairStyle  = hair;
+            _cfg.HairColour = hairC;
+            _cfg.EyeColour  = eye;
+            _cfg.SkinIndex  = skin;
+            _cfg.ShoeType   = shoe;
+            _cfg.WardrobeSourceHumanId = humanId;
+            // Reset surgical overrides — this is a fresh starting point.
+            _cfg.HatSourceHumanId     = 0;
+            _cfg.TopSourceHumanId     = 0;
+            _cfg.BottomSourceHumanId  = 0;
+            _cfg.ShoesSourceHumanId   = 0;
+            _cfg.GlassesSourceHumanId = 0;
+            _cfg.HandsSourceHumanId   = 0;
+            _cfg.HairSourceHumanId    = 0;
+            _cfg.Grub                 = 0;
+            _cfg.Lipstick             = 0;
+            _cfg.Expression           = (byte)global::CitizenOutfitController.Expression.neutral;
+
+            _cfg.PresetSourceHumanId = humanId;
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"DeepAppearancePanel.LoadCitizenAsPreset({humanId}): {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Find the palette index whose <c>skinColourRange1</c> Color is
+    /// nearest (squared-RGB distance) to <paramref name="target"/>. The
+    /// citizen's actual skin tone may have been picked from a per-ethnicity
+    /// gradient, so an exact match isn't guaranteed; the closest stop is
+    /// the best we can do without storing the original palette index.
+    /// </summary>
+    private static byte FindClosestSkinIndex(Color target)
+    {
+        try
+        {
+            var ss = global::SocialStatistics.Instance;
+            var list = ss?.ethnicityStats;
+            if (list == null || list.Count == 0) return 0;
+
+            int bestIdx = 0;
+            float bestD = float.MaxValue;
+            for (int i = 0; i < list.Count && i < AppearancePalette.SkinPaletteSize; i++)
+            {
+                var s = list[i];
+                if (s == null) continue;
+                var c = s.skinColourRange1;
+                float dr = c.r - target.r;
+                float dg = c.g - target.g;
+                float db = c.b - target.b;
+                float d = dr * dr + dg * dg + db * db;
+                if (d < bestD) { bestD = d; bestIdx = i; }
+            }
+            return (byte)bestIdx;
+        }
+        catch { return 0; }
+    }
+
+    private string DescribePreset()
+    {
+        if (_cfg.PresetSourceHumanId == 0) return L.Get("appearanceDeep.preset.custom");
+        var entry = CitizenWardrobeBrowser.GetByHumanId(_cfg.PresetSourceHumanId);
+        if (entry == null) return L.Get("appearance.wardrobe.unknown", _cfg.PresetSourceHumanId);
+        return string.IsNullOrEmpty(entry.Subtitle)
+            ? entry.DisplayName
+            : $"{entry.DisplayName}  <i>({entry.Subtitle})</i>";
+    }
+
 
     // ─────────────────────────────────────────────────────────────────────
     //  Shoe type
@@ -354,6 +514,8 @@ public class DeepAppearancePanel : AppearancePanel
             int step = _cfg.Grub * (GRUB_STOPS - 1) / 255;
             _grubValue.text = L.Get("appearanceDeep.grub.value", step, GRUB_STOPS - 1);
         }
+        if (_presetValue      != null) _presetValue     .text = DescribePreset();
+        if (_slotHairValue    != null) _slotHairValue   .text = DescribeSlotSource(_cfg.HairSourceHumanId);
         if (_slotHatValue     != null) _slotHatValue    .text = DescribeSlotSource(_cfg.HatSourceHumanId);
         if (_slotTopValue     != null) _slotTopValue    .text = DescribeSlotSource(_cfg.TopSourceHumanId);
         if (_slotBottomValue  != null) _slotBottomValue .text = DescribeSlotSource(_cfg.BottomSourceHumanId);
