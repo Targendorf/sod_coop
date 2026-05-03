@@ -27,7 +27,7 @@ public class AppearancePanel : CoopPanelBase
     protected override float PanelHeight   => 880f;
     protected override bool  ScrollableBody => true;
 
-    private AppearanceConfig _cfg = AppearanceConfig.Default;
+    protected AppearanceConfig _cfg = AppearanceConfig.Default;
 
     // Cycle-row text components, refreshed on each Inc/Dec.
     private Text _genderValue;
@@ -60,9 +60,9 @@ public class AppearancePanel : CoopPanelBase
         ProfileEdit,
     }
 
-    private Mode _mode = Mode.InSession;
-    private Action<AppearanceConfig> _onProfileConfirm;
-    private Action _onProfileCancel;
+    protected Mode _mode = Mode.InSession;
+    protected Action<AppearanceConfig> _onProfileConfirm;
+    protected Action _onProfileCancel;
 
     /// <summary>In-session entry point: confirm broadcasts and routes to Lobby.</summary>
     public void Configure(AppearanceConfig initial, bool firstTimeFlow)
@@ -114,12 +114,19 @@ public class AppearancePanel : CoopPanelBase
         _outfitValue     = AddCycleRow(L.Get("appearance.row.outfit"),     OnOutfitDec,     OnOutfitInc);
         _wardrobeValue   = AddCycleRow(L.Get("appearance.row.wardrobe"),   OnWardrobeDec,   OnWardrobeInc);
 
+        // Subclass extension point — DeepAppearancePanel slots additional
+        // rows (ShoeType, Grub, full wardrobe browser…) here, before the
+        // action row. Default impl is a no-op.
+        AppendExtraRows();
+
         Spacer(8f);
 
-        // Action row: Randomize | Reset
+        // Action row: Randomize | Reset | Deep
         var actionsRow = MakeRow();
         AddRowButton(actionsRow, L.Get("appearance.btn.randomize"), OnRandomize);
         AddRowButton(actionsRow, L.Get("appearance.btn.reset"),     OnReset);
+        if (ShowDeepCustomizationButton)
+            AddRowButton(actionsRow, L.Get("appearance.btn.deep"),  OnOpenDeep);
 
         Spacer(6f);
 
@@ -129,6 +136,30 @@ public class AppearancePanel : CoopPanelBase
         _backLabel = _backBtn?.GetComponentInChildren<Text>();
 
         _statusLabel = WrappedBodyLabel("", CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
+    }
+
+    /// <summary>Hook for subclasses to append additional cycle rows / blocks
+    /// between the standard rows and the action row. Default = no-op.</summary>
+    protected virtual void AppendExtraRows() { }
+
+    /// <summary>Whether to render the "Deep customization →" button in the
+    /// action row. The deep panel itself overrides this to false (no point
+    /// jumping to itself).</summary>
+    protected virtual bool ShowDeepCustomizationButton => true;
+
+    private void OnOpenDeep()
+    {
+        try
+        {
+            // Persist the in-flight tweaks into the panel-controller's
+            // shared state and switch panels. The deep panel re-reads the
+            // active profile / record on Show.
+            CoopMenuController.OpenAppearanceDeep(_cfg, _mode, _onProfileConfirm, _onProfileCancel);
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogError($"AppearancePanel.OnOpenDeep: {ex}");
+        }
     }
 
     private Button AddRowButtonReturn(GameObject row, string label, Action onClick)
@@ -197,7 +228,7 @@ public class AppearancePanel : CoopPanelBase
         }
     }
 
-    private void PushPreview()
+    protected void PushPreview()
     {
         if (!AppearancePreviewStage.IsActive) return;
         try { AppearancePreviewStage.Update(_cfg); } catch { }
@@ -274,7 +305,7 @@ public class AppearancePanel : CoopPanelBase
         AddArrowButton(row.transform, ">", () => RotatePreview(-25f));
     }
 
-    private void RotatePreview(float deg)
+    protected void RotatePreview(float deg)
     {
         try { AppearancePreviewStage.Rotate(deg); } catch { }
     }
@@ -283,10 +314,10 @@ public class AppearancePanel : CoopPanelBase
     //  Row factories
     // ─────────────────────────────────────────────────────────────────────
 
-    private Text AddCycleRow(string label, Action onDec, Action onInc)
+    protected Text AddCycleRow(string label, Action onDec, Action onInc)
         => AddCycleRow(label, onDec, onInc, out _);
 
-    private Text AddCycleRow(string label, Action onDec, Action onInc, out Image swatch)
+    protected Text AddCycleRow(string label, Action onDec, Action onInc, out Image swatch)
     {
         var row = CoopMenuFactory.Group("Row", Body);
         var rt = row.GetComponent<RectTransform>();
@@ -362,7 +393,7 @@ public class AppearancePanel : CoopPanelBase
         return valText;
     }
 
-    private Button AddArrowButton(Transform parent, string glyph, Action onClick)
+    protected Button AddArrowButton(Transform parent, string glyph, Action onClick)
     {
         var go = new GameObject($"Arrow_{glyph}");
         go.transform.SetParent(parent, false);
@@ -409,7 +440,7 @@ public class AppearancePanel : CoopPanelBase
         return btn;
     }
 
-    private GameObject MakeRow()
+    protected GameObject MakeRow()
     {
         var row = CoopMenuFactory.Group("ButtonRow", Body);
         var rt = row.GetComponent<RectTransform>();
@@ -427,7 +458,7 @@ public class AppearancePanel : CoopPanelBase
         return row;
     }
 
-    private void AddRowButton(GameObject row, string label, Action onClick)
+    protected void AddRowButton(GameObject row, string label, Action onClick)
     {
         var btn = CoopMenuFactory.MenuButton(label, row.transform, label, onClick);
         var le = btn.gameObject.AddComponent<LayoutElement>();
@@ -435,20 +466,20 @@ public class AppearancePanel : CoopPanelBase
         le.preferredHeight = CoopMenuTheme.ButtonHeight;
     }
 
-    private static void Unused(object _) { }
+    protected static void Unused(object _) { }
 
     // ─────────────────────────────────────────────────────────────────────
     //  Cycling
     // ─────────────────────────────────────────────────────────────────────
 
-    private static int Wrap(int value, int count)
+    protected static int Wrap(int value, int count)
     {
         if (count <= 0) return 0;
         int m = value % count;
         return m < 0 ? m + count : m;
     }
 
-    private void Mutate(Action change)
+    protected void Mutate(Action change)
     {
         _cfg.IsCustomized = true;
         change();
@@ -654,7 +685,7 @@ public class AppearancePanel : CoopPanelBase
     //  Refresh value labels & swatches
     // ─────────────────────────────────────────────────────────────────────
 
-    private void RefreshAllValues()
+    protected virtual void RefreshAllValues()
     {
         if (_genderValue != null)
             _genderValue.text = L.Get($"appearance.gender.{((global::Human.Gender)_cfg.Gender).ToString().ToLowerInvariant()}");

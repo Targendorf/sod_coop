@@ -28,6 +28,14 @@ public struct AppearanceConfig
     public byte Expression;   // CitizenOutfitController.Expression
     public byte Lipstick;     // 0..255 → 0..1f
     public byte Outfit;       // ClothesPreset.OutfitCategory — picks from citizen's pre-generated wardrobe
+    /// <summary>Shoe variant pinned via CitizenOutfitController.debugOverrideShoeType.
+    /// 0=normal, 1=boots, 2=heel, 3=barefoot. Sentinel 0xFF = "leave default"
+    /// so the basic AppearancePanel doesn't override what the user only
+    /// touched in the deep panel.</summary>
+    public byte ShoeType;
+    /// <summary>Grime / dirt level forwarded to debugOverrideGrub (0..1f).
+    /// Stored as 0..255 on the wire to match Lipstick's encoding.</summary>
+    public byte Grub;
 
     /// <summary>HumanID of a citizen whose wardrobe to borrow for the
     /// current <see cref="Outfit"/> category. 0 = use the twin's own
@@ -43,9 +51,14 @@ public struct AppearanceConfig
     public bool IsCustomized;
 
     /// <summary>Bytes written by <see cref="Write"/>. Receivers tolerate
-    /// shorter payloads (legacy v6 records) by defaulting trailing fields.</summary>
-    public const int WireSize = 1 /*flag*/ + 9 + 4 /*WardrobeSourceHumanId*/;
+    /// shorter payloads (legacy records) by defaulting trailing fields.</summary>
+    public const int WireSize = 1 /*flag*/ + 9 + 4 /*WardrobeSourceHumanId*/ + 2 /*ShoeType+Grub*/;
     public const int LegacyMinWireSize = 1 /*flag*/ + 8;
+
+    /// <summary>Sentinel for <see cref="ShoeType"/> meaning "do not override
+    /// — let the citizen's procedural shoe pick stand". 0xFF picked so the
+    /// real shoe enum (0..3) never collides.</summary>
+    public const byte ShoeType_NoOverride = 0xFF;
 
     public static AppearanceConfig Default => new()
     {
@@ -58,6 +71,8 @@ public struct AppearanceConfig
         Expression   = (byte)global::CitizenOutfitController.Expression.neutral,
         Lipstick     = 0,
         Outfit       = (byte)global::ClothesPreset.OutfitCategory.casual,
+        ShoeType     = ShoeType_NoOverride,
+        Grub         = 0,
         IsCustomized = false,
     };
 
@@ -78,6 +93,8 @@ public struct AppearanceConfig
         w.Put(Lipstick);
         w.Put(Outfit);
         w.Put(WardrobeSourceHumanId);
+        w.Put(ShoeType);
+        w.Put(Grub);
     }
 
     public void Read(NetDataReader r)
@@ -91,9 +108,11 @@ public struct AppearanceConfig
         SkinIndex    = r.GetByte();
         Expression   = r.GetByte();
         Lipstick     = r.GetByte();
-        // Optional trailing fields — legacy 9-byte payloads default these.
+        // Optional trailing fields — legacy payloads default these.
         Outfit                 = r.AvailableBytes > 0 ? r.GetByte() : (byte)global::ClothesPreset.OutfitCategory.casual;
         WardrobeSourceHumanId  = r.AvailableBytes >= 4 ? r.GetInt()  : 0;
+        ShoeType               = r.AvailableBytes > 0 ? r.GetByte() : ShoeType_NoOverride;
+        Grub                   = r.AvailableBytes > 0 ? r.GetByte() : (byte)0;
     }
 
     public byte[] ToBytes()
@@ -143,6 +162,11 @@ public struct AppearanceConfig
             ctrl.debugOverrideHairColour = AppearancePalette.HairColourFor((global::Descriptors.HairColour)HairColour);
             ctrl.debugOverrideSkinColour = AppearancePalette.SkinColourFor(SkinIndex);
             ctrl.debugOverrideLipstick  = Lipstick / 255f;
+            ctrl.debugOverrideGrub      = Grub / 255f;
+            // ShoeType: only override when the deep panel set a real value;
+            // 0xFF leaves the citizen's procedural pick alone.
+            if (ShoeType != ShoeType_NoOverride)
+                ctrl.debugOverrideShoeType = (global::Human.ShoeType)ShoeType;
 
             // SetCurrentOutfit picks the citizen's pre-generated outfit for
             // the requested category and triggers LoadCurrentOutfit internally

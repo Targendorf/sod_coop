@@ -24,6 +24,12 @@ public abstract class CoopPanelBase
     /// (Appearance, EditProfile) bump this higher than the default.</summary>
     protected virtual float PanelHeight => CoopMenuTheme.PanelHeightMain;
 
+    /// <summary>Per-panel width override. Defaults to the global theme
+    /// width; deep customization panels override to be visibly wider so
+    /// long cycle-row labels and embedded scrollable lists fit comfortably
+    /// without truncation.</summary>
+    protected virtual float PanelWidth => CoopMenuTheme.PanelWidth;
+
     /// <summary>If true, <see cref="Body"/> is wrapped in a ScrollRect so
     /// content taller than the panel scrolls on mouse wheel.</summary>
     protected virtual bool ScrollableBody => false;
@@ -31,7 +37,7 @@ public abstract class CoopPanelBase
     public void Build(Transform parent)
     {
         Root = CoopMenuFactory.Panel(GetType().Name, parent,
-            CoopMenuTheme.PanelWidth, PanelHeight,
+            PanelWidth, PanelHeight,
             CoopMenuTheme.PanelBg);
         var rt = Root.GetComponent<RectTransform>();
         rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
@@ -179,7 +185,7 @@ public abstract class CoopPanelBase
     {
         // Average glyph width ≈ 0.5 × fontSize for the proportional default font;
         // 0.5 is intentionally conservative so we round up on line count.
-        float availWidth   = CoopMenuTheme.PanelWidth - CoopMenuTheme.Padding * 2f - 16f;
+        float availWidth   = PanelWidth - CoopMenuTheme.Padding * 2f - 16f;
         float charsPerLine = Mathf.Max(1f, availWidth / (fontSize * 0.5f));
         int approxLines    = Mathf.Max(1, Mathf.CeilToInt((text?.Length ?? 0) / charsPerLine));
         int height         = approxLines * (fontSize + 4) + 6;

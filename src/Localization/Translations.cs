@@ -132,7 +132,22 @@ public static class Translations
         ["appearance.btn.confirm"]    = "✓  Confirm",
         ["appearance.btn.cancel"]     = "✕  Cancel",
         ["appearance.btn.back"]       = "←  Back",
+        ["appearance.btn.deep"]       = "⚙  Deep customization →",
         ["appearance.preview.unavailable"] = "3D preview needs a loaded world.\nLoad any single-player save first,\nthen reopen this panel.",
+
+        // Deep appearance panel — extra rows on top of the basic panel.
+        ["appearanceDeep.title"]                = "Deep customization",
+        ["appearanceDeep.section.body"]         = "Body & wear",
+        ["appearanceDeep.section.wardrobe"]     = "Wardrobe — borrow from a citizen",
+        ["appearanceDeep.wardrobe.hint"]        = "Click any citizen to copy their clothes for the current outfit category. \"(use own outfit)\" returns to your twin's procedural wardrobe.",
+        ["appearanceDeep.row.shoeType"]         = "Shoe type",
+        ["appearanceDeep.row.grub"]             = "Grime",
+        ["appearanceDeep.shoeType.default"]    = "(citizen default)",
+        ["appearanceDeep.shoeType.normal"]      = "Normal",
+        ["appearanceDeep.shoeType.boots"]       = "Boots",
+        ["appearanceDeep.shoeType.heel"]        = "Heels",
+        ["appearanceDeep.shoeType.barefoot"]    = "Barefoot",
+        ["appearanceDeep.grub.value"]           = "{0} / {1}",
 
         // Profile management
         ["main.btn.profiles"]      = "👤  Manage profiles",

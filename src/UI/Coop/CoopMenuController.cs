@@ -36,6 +36,7 @@ public static class CoopMenuController
     private static CreateCharacterPanel   _createCharacterPanel;
     private static SettingsPanel          _settingsPanel;
     private static AppearancePanel        _appearancePanel;
+    private static DeepAppearancePanel    _deepAppearancePanel;
     private static ProfilesPanel          _profilesPanel;
     private static EditProfilePanel       _editProfilePanel;
 
@@ -45,7 +46,7 @@ public static class CoopMenuController
     private static bool _showAppearanceAfterConnect;
 
     /// <summary>Current visible panel, or null when menu is hidden.</summary>
-    public enum PanelKind { None, Main, Host, Join, Lobby, CreateCharacter, Settings, Appearance, Profiles, EditProfile }
+    public enum PanelKind { None, Main, Host, Join, Lobby, CreateCharacter, Settings, Appearance, AppearanceDeep, Profiles, EditProfile }
     private static PanelKind _current = PanelKind.None;
 
     private static bool _eventsHooked;
@@ -287,6 +288,7 @@ public static class CoopMenuController
             _createCharacterPanel = new CreateCharacterPanel();  _createCharacterPanel.Build(_panelContainer.transform);
             _settingsPanel        = new SettingsPanel();         _settingsPanel.Build(_panelContainer.transform);
             _appearancePanel      = new AppearancePanel();       _appearancePanel.Build(_panelContainer.transform);
+            _deepAppearancePanel  = new DeepAppearancePanel();   _deepAppearancePanel.Build(_panelContainer.transform);
             _profilesPanel        = new ProfilesPanel();         _profilesPanel.Build(_panelContainer.transform);
             _editProfilePanel     = new EditProfilePanel();      _editProfilePanel.Build(_panelContainer.transform);
 
@@ -316,6 +318,7 @@ public static class CoopMenuController
             case PanelKind.CreateCharacter: _createCharacterPanel?.Show();  break;
             case PanelKind.Settings:        _settingsPanel?.Show();         break;
             case PanelKind.Appearance:      _appearancePanel?.Show();       break;
+            case PanelKind.AppearanceDeep:  _deepAppearancePanel?.Show();   break;
             case PanelKind.Profiles:        _profilesPanel?.Show();         break;
             case PanelKind.EditProfile:     _editProfilePanel?.Show();      break;
         }
@@ -330,6 +333,7 @@ public static class CoopMenuController
         _createCharacterPanel?.Hide();
         _settingsPanel?.Hide();
         _appearancePanel?.Hide();
+        _deepAppearancePanel?.Hide();
         _profilesPanel?.Hide();
         _editProfilePanel?.Hide();
     }
@@ -389,4 +393,27 @@ public static class CoopMenuController
     /// <summary>Set by <c>CreateCharacterPanel</c> just before submitting so the
     /// post-handshake routing knows to land on the appearance panel.</summary>
     public static void RequestAppearanceAfterConnect() => _showAppearanceAfterConnect = true;
+
+    /// <summary>
+    /// Switch from the basic <see cref="AppearancePanel"/> to the deep
+    /// variant, preserving the user's in-flight tweaks and the current
+    /// edit mode (in-session vs profile-edit).
+    /// </summary>
+    public static void OpenAppearanceDeep(
+        SoDCoop.Player.AppearanceConfig current,
+        Panels.AppearancePanel.Mode mode,
+        System.Action<SoDCoop.Player.AppearanceConfig> onProfileConfirm,
+        System.Action onProfileCancel)
+    {
+        if (_root == null) BuildCanvas();
+        if (_deepAppearancePanel == null) return;
+
+        if (mode == Panels.AppearancePanel.Mode.ProfileEdit)
+            _deepAppearancePanel.ConfigureProfileEdit(current, onProfileConfirm, onProfileCancel);
+        else
+            _deepAppearancePanel.Configure(current, firstTimeFlow: false);
+
+        SetVisible(true);
+        ShowPanel(PanelKind.AppearanceDeep);
+    }
 }
