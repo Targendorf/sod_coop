@@ -31,6 +31,9 @@ public static class ZdoBootstrap
         // No resolver needed: ZdoEvents.OnCitizenAnimState applies directly to
         // the receiver's live citizen via SetIdleAnimationState + SetArmsBoolState.
         CitizenAnimationPoller.Register();
+        // Game-wide reputation (socialCredit). Host authoritative; receivers
+        // stamp into their own GameplayController via ZdoEvents.OnSocialCredit.
+        SocialCreditPoller.Register();
         ZdoResolverRegistry.Register(new PhoneCallResolver());
         PhoneCallPoller.Register();
 

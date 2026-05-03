@@ -63,6 +63,7 @@ public static class CitizenStatePoller
                 try { z.Set(ZdoKeys.InBed,    c.isInBed);    } catch { }
                 try { z.Set(ZdoKeys.Asleep,   c.isAsleep);   } catch { }
                 try { z.Set(ZdoKeys.Stunned,  c.isStunned);  } catch { }
+                try { z.Set(ZdoKeys.Crouched, c.isCrouched); } catch { }
 
                 // Visual-state floats — drunk staggers walk, bleeding drips
                 // blood. Both auto-drive SoD animation/spatter on the receiver
@@ -72,6 +73,20 @@ public static class CitizenStatePoller
                 // Citizen.
                 try { z.Set(ZdoKeys.Drunk,    c.drunk);     } catch { }
                 try { z.Set(ZdoKeys.Bleeding, c.bleeding);  } catch { }
+
+                // Vitals (food / water / HP). Host's gameplay tick drives
+                // these on every citizen — including each client's twin.
+                // Receivers apply via CitizenResolver, which also stamps
+                // Player.Instance.<field> when the citizen is the receiver's
+                // own twin so the receiver's HUD numbers stay in lockstep
+                // with what host sees for that player.
+                // Field discovery (Assembly-CSharp_Dump):
+                //   Human.nourishment    float (Human.cs:7808)
+                //   Human.hydration      float (Human.cs:7821)
+                //   Actor.currentHealth  float (Actor.cs:1701) — base class
+                try { z.Set(ZdoKeys.Nourishment,   c.nourishment);   } catch { }
+                try { z.Set(ZdoKeys.Hydration,     c.hydration);     } catch { }
+                try { z.Set(ZdoKeys.CurrentHealth, c.currentHealth); } catch { }
 
                 // Restrain state — on NewAIController.
                 try

@@ -70,6 +70,13 @@ public static class LocalPlayerPoller
             try { z.Set(ZdoKeys.Hydration,   p.hydration);   } catch { }
             try { z.Set(ZdoKeys.Energy,      p.energy);      } catch { }
             try { z.Set(ZdoKeys.Dead,        p.isDead);      } catch { }
+            try { z.Set(ZdoKeys.CurrentHealth, p.currentHealth); } catch { }
+
+            // Stance + KO — each peer authoritative for its own. Receivers
+            // mirror onto the matching twin citizen so other players see the
+            // crouched / unconscious state on the body in their world.
+            try { z.Set(ZdoKeys.Crouched, p.isCrouched);          } catch { }
+            try { z.Set(ZdoKeys.Ko,       p.playerKOInProgress);  } catch { }
 
             try { z.Set(ZdoKeys.Trespassing,         p.isTrespassing);          } catch { }
             try { z.Set(ZdoKeys.IllegalActionActive, p.illegalActionActive);    } catch { }

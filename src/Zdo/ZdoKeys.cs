@@ -23,6 +23,13 @@ public static class ZdoKeys
     public static readonly int Locked     = Hash32.Of("locked");
     public static readonly int PlaySound  = Hash32.Of("playSound");
     public static readonly int On         = Hash32.Of("on");
+    /// <summary>Auxiliary switch slots 1..3 (custom1 / custom2 / custom3 in
+    /// <c>InteractablePreset.Switch</c>). Most interactables only use sw0
+    /// (= <see cref="On"/>) but radios / TVs / containers often layer state
+    /// across multiple slots — e.g. sw0 = powered, sw1 = currently playing.</summary>
+    public static readonly int Sw1        = Hash32.Of("sw1");
+    public static readonly int Sw2        = Hash32.Of("sw2");
+    public static readonly int Sw3        = Hash32.Of("sw3");
 
     // ── Citizens / player ──
     public static readonly int OutfitCategory     = Hash32.Of("outfitCategory");
@@ -151,6 +158,15 @@ public static class ZdoKeys
     public static readonly int Raised          = Hash32.Of("raised");
     public static readonly int Flashlight      = Hash32.Of("flashlight");
     public static readonly int PresetName      = Hash32.Of("presetName");
+
+    // ── Player vitals + stance + KO (each peer authoritative for own,
+    //    written into LocalPlayer ZDO; receiver applies to twin citizen). ──
+    public static readonly int CurrentHealth   = Hash32.Of("currentHealth");
+    public static readonly int Crouched        = Hash32.Of("crouched");
+    public static readonly int Ko              = Hash32.Of("ko");
+
+    // ── Game-wide stats (host authoritative, written to a singleton ZDO). ──
+    public static readonly int SocialCredit    = Hash32.Of("socialCredit");
 
     // ── Computers ──
     public static readonly int LoggedInHumanId = Hash32.Of("loggedInHumanId");

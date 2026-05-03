@@ -278,6 +278,41 @@ public static class WorldStateSync
         ApplySwitchState(new SwitchStatePacket { InteractableId = interactableId, IsOn = isOn });
     }
 
+    /// <summary>Apply one of the custom1/2/3 switch slots on a remote-broadcast
+    /// interactable. Used by <c>SwitchResolver</c> to mirror sw1..sw3 changes
+    /// (TV / radio / music-player auxiliary state) — sw0 still flows via
+    /// <see cref="ApplySwitchStateBySodId"/>. No-op if the interactable
+    /// isn't found or is already at the target value (suppresses echo
+    /// broadcasts on the receiver).</summary>
+    public static void ApplyCustomSwitchStateBySodId(int interactableId,
+        global::InteractablePreset.Switch slot, bool val)
+    {
+        var inter = FindInteractableById(interactableId);
+        if (inter == null) return;
+
+        bool cur = false;
+        try
+        {
+            switch (slot)
+            {
+                case global::InteractablePreset.Switch.custom1: cur = inter.sw1; break;
+                case global::InteractablePreset.Switch.custom2: cur = inter.sw2; break;
+                case global::InteractablePreset.Switch.custom3: cur = inter.sw3; break;
+                default: return; // only custom1..3 supported here; sw0 has its own path
+            }
+        }
+        catch { return; }
+        if (cur == val) return;
+
+        IsApplyingRemote = true;
+        try { inter.SetSwtichByType(slot, val, null, true, true); }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"ApplyCustomSwitchStateBySodId({interactableId}, {slot}, {val}): {ex.Message}");
+        }
+        finally { IsApplyingRemote = false; }
+    }
+
     private static void ApplyDoorState(DoorStatePacket p)
     {
         var door = FindDoorByInteractableId(p.InteractableId);

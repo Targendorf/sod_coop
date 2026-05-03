@@ -74,8 +74,55 @@ public sealed class CitizenResolver : IZdoResolver
             {
                 try { c.bleeding = z.GetFloat(ZdoKeys.Bleeding, 0f); } catch { }
             }
+
+            // Stance — direct field write triggers SoD's animator transition.
+            if (z.HasKey(ZdoKeys.Crouched))
+            {
+                try { c.isCrouched = z.GetBool(ZdoKeys.Crouched, false); } catch { }
+            }
+
+            // Vitals (food / water / HP). Whether they actually need to be
+            // mirrored onto the local citizen is mostly cosmetic — SoD's own
+            // gameplay loop on the host drives the live values. We mirror so
+            // the receiver's view of NPC body anim (e.g. weak-from-hunger
+            // walk speed) matches host. The HUD-relevant stamp onto
+            // Player.Instance lives below for the player's own twin.
+            if (z.HasKey(ZdoKeys.Nourishment))
+            {
+                try { c.nourishment = z.GetFloat(ZdoKeys.Nourishment, c.nourishment); } catch { }
+            }
+            if (z.HasKey(ZdoKeys.Hydration))
+            {
+                try { c.hydration = z.GetFloat(ZdoKeys.Hydration, c.hydration); } catch { }
+            }
+            if (z.HasKey(ZdoKeys.CurrentHealth))
+            {
+                try { c.currentHealth = z.GetFloat(ZdoKeys.CurrentHealth, c.currentHealth); } catch { }
+            }
+
+            // If this citizen IS the local client's own twin, also stamp
+            // Player.Instance with the authoritative vitals so the HUD
+            // reflects what host sees. Without this, the client eats food
+            // on host's side (host's twin's nourishment goes up) but the
+            // client's HUD still shows the old value because Player.Instance
+            // ticks independently from the citizen.
+            int myTwinId = SoDCoop.Network.NetworkManager.MyTwinHumanID;
+            if (myTwinId > 0 && humanId == myTwinId)
+            {
+                try
+                {
+                    var p = global::Player.Instance;
+                    if (p != null)
+                    {
+                        if (z.HasKey(ZdoKeys.Nourishment))   { try { p.nourishment   = c.nourishment;   } catch { } }
+                        if (z.HasKey(ZdoKeys.Hydration))     { try { p.hydration     = c.hydration;     } catch { } }
+                        if (z.HasKey(ZdoKeys.CurrentHealth)) { try { p.currentHealth = c.currentHealth; } catch { } }
+                    }
+                }
+                catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenResolver] my-twin Player.Instance stamp: {ex.Message}"); }
+            }
         }
-        catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenResolver] drunk/bleeding apply: {ex.Message}"); }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenResolver] drunk/bleeding/vitals apply: {ex.Message}"); }
 
         // Murder state (Wave 2.3): the dead bool flip drives the receiver to
         // run Human.Murder with the carried killer/weapon. Idempotent —

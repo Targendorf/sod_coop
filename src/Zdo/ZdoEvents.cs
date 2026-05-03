@@ -118,6 +118,13 @@ public static class ZdoEvents
     /// every peer.</summary>
     public const string CITIZEN_ANIM_STATE   = "citizen-anim-state";
 
+    /// <summary>Social-credit (reputation) snapshot delta.
+    /// Payload: int newSocialCredit. Host-only sender (SocialCreditPoller);
+    /// receivers stamp <c>GameplayController.Instance.socialCredit</c> so
+    /// the wanted-level / district-restriction logic uses the host's
+    /// authoritative score everywhere.</summary>
+    public const string SOCIAL_CREDIT        = "social-credit";
+
     public static void RegisterAll()
     {
         ZdoEventDispatcher.Register(CHAT,             OnChat);
@@ -158,6 +165,7 @@ public static class ZdoEvents
         ZdoEventDispatcher.Register(CB_STRING,             OnCbString);
         ZdoEventDispatcher.Register(CB_STRING_REMOVE,      OnCbStringRemove);
         ZdoEventDispatcher.Register(CITIZEN_ANIM_STATE,    OnCitizenAnimState);
+        ZdoEventDispatcher.Register(SOCIAL_CREDIT,         OnSocialCredit);
     }
 
     private static readonly NetDataWriter _w = new();
@@ -214,6 +222,21 @@ public static class ZdoEvents
         _w.Put(armsState);
         // Sequenced: late frames can be dropped, the next state stomps anyway.
         ZdoEventDispatcher.Send(CITIZEN_ANIM_STATE, _w, DeliveryMethod.Sequenced);
+    }
+
+    /// <summary>Host-only. Broadcast the current social-credit (reputation)
+    /// score. Called from <c>SocialCreditPoller</c> on diff against the
+    /// previous tick's snapshot; receivers stamp
+    /// <c>GameplayController.Instance.socialCredit</c> so the wanted-level
+    /// / district-restriction logic uses host's authoritative score
+    /// everywhere.</summary>
+    public static void SendSocialCredit(int credit)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        if (!SoDCoop.Network.NetworkManager.IsHost) return;
+        _w.Reset();
+        _w.Put(credit);
+        ZdoEventDispatcher.Send(SOCIAL_CREDIT, _w, DeliveryMethod.ReliableOrdered);
     }
 
     public static void SendSideJobPlayerCall(int jobId)
@@ -815,6 +838,29 @@ public static class ZdoEvents
             catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCitizenAnimState] SetArmsBoolState({armsState}) on {humanId}: {ex.Message}"); }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCitizenAnimState] {ex.Message}"); }
+    }
+
+    /// <summary>Receiver-side. Stamp the host-broadcast social-credit score
+    /// onto the local GameplayController so wanted-level / restriction
+    /// checks use the authoritative number. Idempotent: same-value writes
+    /// are skipped to avoid retriggering any ChangedSocialCredit events.</summary>
+    private static void OnSocialCredit(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int credit = r.GetInt();
+            if (SoDCoop.Network.NetworkManager.IsHost) return;
+
+            var gc = global::GameplayController.Instance;
+            if (gc == null) return;
+
+            int cur = 0;
+            try { cur = gc.socialCredit; } catch { }
+            if (cur == credit) return;
+            try { gc.socialCredit = credit; }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnSocialCredit] set: {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnSocialCredit] {ex.Message}"); }
     }
 
     private static void OnItemThrow(NetDataReader r, int senderId)

@@ -56,5 +56,45 @@ public sealed class LocalPlayerResolver : IZdoResolver
             }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerResolver] flashlight: {ex.Message}"); }
+
+        // Host-only: a remote peer pushed its self-state — mirror crouch /
+        // KO / HP onto that peer's twin citizen in our world. Next tick
+        // CitizenStatePoller writes the same fields onto the twin's Citizen
+        // ZDO so every other peer also picks up the change. Without this
+        // mirror, a client crouching is invisible to anyone except the
+        // client themselves.
+        if (SoDCoop.Network.NetworkManager.IsHost)
+        {
+            try
+            {
+                int twinId = SoDCoop.Sync.TwinManager.GetTwinHumanIDForSender(playerId);
+                if (twinId > 0)
+                {
+                    var dict = global::CityData.Instance?.citizenDictionary;
+                    if (dict != null && dict.TryGetValue(twinId, out var twin) && twin != null)
+                    {
+                        if (z.HasKey(ZdoKeys.Crouched))
+                        {
+                            bool crouched = z.GetBool(ZdoKeys.Crouched, false);
+                            try { twin.isCrouched = crouched; } catch { }
+                        }
+                        if (z.HasKey(ZdoKeys.Ko))
+                        {
+                            bool ko = z.GetBool(ZdoKeys.Ko, false);
+                            // Map Player KO → citizen "stunned" state. Same
+                            // animator path SoD uses for being-knocked-out on
+                            // NPCs, so the visual matches.
+                            try { twin.isStunned = ko; } catch { }
+                        }
+                        if (z.HasKey(ZdoKeys.CurrentHealth))
+                        {
+                            float hp = z.GetFloat(ZdoKeys.CurrentHealth, twin.currentHealth);
+                            try { twin.currentHealth = hp; } catch { }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerResolver] host-twin mirror: {ex.Message}"); }
+        }
     }
 }

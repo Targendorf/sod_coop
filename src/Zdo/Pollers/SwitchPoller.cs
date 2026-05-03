@@ -25,10 +25,20 @@ public static class SwitchPoller
                 if (inter == null) continue;
                 if (SoDCoop.Sync.WorldStateSync.IsLightInteractable(inter)) continue;
 
+                bool s0 = false, s1 = false, s2 = false, s3 = false;
+                try { s0 = inter.sw0; s1 = inter.sw1; s2 = inter.sw2; s3 = inter.sw3; } catch { }
+
                 Zdo z = ZdoMan.FindBySodId(ZdoTypeTag.Switch, inter.id);
-                if (z == null && !inter.sw0) continue; // skip default-state switches to bound state size
+                // Bound state-table size: skip "all four switches in default
+                // state" interactables until at least one flips. An existing
+                // ZDO is always re-pushed (in case state went back to all-
+                // false, which the receiver still needs to know about).
+                if (z == null && !s0 && !s1 && !s2 && !s3) continue;
                 z ??= ZdoMan.GetOrCreateBySodId(ZdoTypeTag.Switch, inter.id, owner: ZdoMan.LocalPeerUid, persistent: true);
-                z.Set(ZdoKeys.On, inter.sw0);
+                z.Set(ZdoKeys.On,  s0);
+                z.Set(ZdoKeys.Sw1, s1);
+                z.Set(ZdoKeys.Sw2, s2);
+                z.Set(ZdoKeys.Sw3, s3);
             }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[SwitchPoller] tick: {ex.Message}"); }

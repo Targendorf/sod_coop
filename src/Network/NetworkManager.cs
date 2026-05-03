@@ -127,6 +127,20 @@ public static class NetworkManager
 
     public static string LastDisconnectReason { get; private set; } = "";
 
+    /// <summary>HumanID of the citizen the host has chosen as the local
+    /// player's twin in its world. Reads 0 pre-character-assignment.
+    /// Used by Zdo resolvers to mirror authoritative twin-vitals / crouch /
+    /// KO state onto Player.Instance so the local HUD matches the host's
+    /// truth (instead of drifting independently from the local Player tick).</summary>
+    public static int MyTwinHumanID
+    {
+        get
+        {
+            if (LocalPlayerId < 0) return 0;
+            return _players.TryGetValue(LocalPlayerId, out var info) ? info.TwinHumanID : 0;
+        }
+    }
+
     #endregion
 
     #region Events
@@ -312,6 +326,14 @@ public static class NetworkManager
         LocalSurname = hostSur;
         LocalPlayerName = string.IsNullOrEmpty(hostSur) ? hostFirst : $"{hostFirst} {hostSur}";
 
+        // Host's "twin" IS the host's own player citizen — Player.Instance.humanID
+        // (best-effort; Player.Instance may briefly be null on first frame
+        // post-load, in which case TwinHumanID stays 0 and the next handshake
+        // resend would carry it). Stored so clients see host's TwinHumanID
+        // alongside everyone else's via the standard packet path.
+        int hostTwin = 0;
+        try { hostTwin = global::Player.Instance?.humanID ?? 0; } catch { }
+
         _players[LocalPlayerId] = new PlayerNetInfo
         {
             PlayerId = LocalPlayerId,
@@ -319,6 +341,7 @@ public static class NetworkManager
             FirstName = LocalFirstName,
             Surname = LocalSurname,
             IsHost = true,
+            TwinHumanID = hostTwin,
             CharacterAssigned = true,
         };
 
@@ -815,6 +838,18 @@ public static class NetworkManager
         info.PlayerName = string.IsNullOrEmpty(info.Surname) ? info.FirstName : $"{info.FirstName} {info.Surname}";
         info.CharacterAssigned = true;
 
+        // Resolve the client's twin via TwinManager (host-only) so the
+        // Handshake / PlayerJoined writes below carry it. Receivers cache
+        // it per-player and use it for vitals / crouch / KO mirroring
+        // (see CitizenResolver "is this MY twin?" stamp path).
+        try
+        {
+            string seed = CharacterStore.CurrentSeed();
+            var rec = CharacterStore.TryGet(seed, info.ClientGuid);
+            if (rec != null && rec.HumanID > 0) info.TwinHumanID = rec.HumanID;
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[NetworkManager] resolve twin id for player {playerId}: {ex.Message}"); }
+
         if (!_clients.Contains(peer)) _clients.Add(peer);
 
         _writer.Reset();
@@ -827,6 +862,10 @@ public static class NetworkManager
             _writer.Put(p.IsHost);
             _writer.Put(p.FirstName ?? "");
             _writer.Put(p.Surname ?? "");
+            // Trailing field — receivers read with a HasMoreBytes guard so
+            // mixed-version peers stay compatible. Zero on host's own slot
+            // until ResolveHostOwnTwinId() catches Player.Instance.humanID.
+            _writer.Put(p.TwinHumanID);
         }
         SendTo(peer, PacketType.Handshake, _writer);
 
@@ -835,6 +874,7 @@ public static class NetworkManager
         _writer.Put(info.PlayerName);
         _writer.Put(info.FirstName ?? "");
         _writer.Put(info.Surname ?? "");
+        _writer.Put(info.TwinHumanID);
         for (int i = 0; i < _clients.Count; i++)
         {
             var client = _clients[i];
@@ -875,6 +915,9 @@ public static class NetworkManager
             bool isHost = reader.GetBool();
             string firstName = reader.GetString();
             string surName = reader.GetString();
+            // Optional trailing field — older host builds skip it; default 0
+            // means "twin not yet assigned" (vitals mirroring stays inactive).
+            int twinId = reader.AvailableBytes >= 4 ? reader.GetInt() : 0;
 
             _players[id] = new PlayerNetInfo
             {
@@ -883,6 +926,7 @@ public static class NetworkManager
                 FirstName = firstName,
                 Surname = surName,
                 IsHost = isHost,
+                TwinHumanID = twinId,
                 CharacterAssigned = true,
             };
 
@@ -894,7 +938,7 @@ public static class NetworkManager
             }
         }
 
-        Plugin.Log.LogInfo($"Handshake complete. Assigned ID: {LocalPlayerId}. Players online: {playerCount}. I am '{LocalPlayerName}'.");
+        Plugin.Log.LogInfo($"Handshake complete. Assigned ID: {LocalPlayerId}. Players online: {playerCount}. I am '{LocalPlayerName}'. MyTwin#={MyTwinHumanID}.");
         OnConnected?.Invoke();
     }
 
@@ -904,6 +948,7 @@ public static class NetworkManager
         string playerName = reader.GetString();
         string firstName = reader.GetString();
         string surName = reader.GetString();
+        int twinId = reader.AvailableBytes >= 4 ? reader.GetInt() : 0;
 
         _players[playerId] = new PlayerNetInfo
         {
@@ -912,6 +957,7 @@ public static class NetworkManager
             FirstName = firstName,
             Surname = surName,
             IsHost = false,
+            TwinHumanID = twinId,
             CharacterAssigned = true,
         };
 
@@ -989,6 +1035,7 @@ public static class NetworkManager
                     _writer.Put(p.IsHost);
                     _writer.Put(p.FirstName ?? "");
                     _writer.Put(p.Surname ?? "");
+                    _writer.Put(p.TwinHumanID);
                 }
                 SendTo(peer, PacketType.Handshake, _writer);
 
@@ -1172,6 +1219,14 @@ public class PlayerNetInfo
     public SteamPeer Peer { get; set; }
 
     public string ClientGuid { get; set; } = "";
+
+    /// <summary>Host-assigned humanID of the citizen acting as this player's
+    /// twin in the host's world. Pushed to every peer in the Handshake +
+    /// PlayerJoined packets so receivers can map peer-id ↔ citizen for
+    /// vitals / crouch / KO mirroring (CitizenResolver reads this to detect
+    /// "is this citizen MY twin? then also stamp Player.Instance vitals").
+    /// 0 = not yet assigned (pre-character-creation).</summary>
+    public int TwinHumanID { get; set; }
 
     public bool CharacterAssigned { get; set; }
     public float DisconnectedAt { get; set; }
