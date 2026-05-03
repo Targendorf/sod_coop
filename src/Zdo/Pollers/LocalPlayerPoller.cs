@@ -60,6 +60,28 @@ public static class LocalPlayerPoller
         _lastApartmentIds.Clear();
     }
 
+    /// <summary>Resolve the player's current coarse-grained activity from
+    /// the live <c>Player.Instance</c> field set. Priority is meaningful:
+    /// lockpicking wins over computer-use (you might briefly be at a
+    /// computer while picking its physical lock); hiding wins over
+    /// searching (hiding is rare + visually distinct). isLockpicking is
+    /// the explicit player bool (Player.cs:3040). The other states are
+    /// inferred from non-null Interactable references that SoD assigns
+    /// while the matching interaction is active.</summary>
+    private static SoDCoop.Player.PlayerActivity ResolvePlayerActivity(global::Player p)
+    {
+        try
+        {
+            try { if (p.isLockpicking) return SoDCoop.Player.PlayerActivity.Lockpicking; } catch { }
+            try { if (p.hidingInteractable   != null) return SoDCoop.Player.PlayerActivity.Hiding;       } catch { }
+            try { if (p.computerInteractable != null) return SoDCoop.Player.PlayerActivity.ComputerUse;  } catch { }
+            try { if (p.phoneInteractable    != null) return SoDCoop.Player.PlayerActivity.PhoneCall;    } catch { }
+            try { if (p.searchInteractable   != null) return SoDCoop.Player.PlayerActivity.Searching;    } catch { }
+        }
+        catch { }
+        return SoDCoop.Player.PlayerActivity.None;
+    }
+
     private static void Tick(float now)
     {
         if (!ZdoFeatureFlags.UseZdoForPlayerState) return;
@@ -87,6 +109,12 @@ public static class LocalPlayerPoller
             // crouched / unconscious state on the body in their world.
             try { z.Set(ZdoKeys.Crouched, p.isCrouched);          } catch { }
             try { z.Set(ZdoKeys.Ko,       p.playerKOInProgress);  } catch { }
+
+            // Coarse-grained activity tag — lockpicking / computer / phone /
+            // search / hide. Receiver maps onto the twin citizen's
+            // armsBoolAnimationState / idleAnimationState (NPC anim states
+            // ship in the base game and animate the twin appropriately).
+            try { z.Set(ZdoKeys.Activity, (byte)ResolvePlayerActivity(p)); } catch { }
 
             try { z.Set(ZdoKeys.Trespassing,         p.isTrespassing);          } catch { }
             try { z.Set(ZdoKeys.IllegalActionActive, p.illegalActionActive);    } catch { }

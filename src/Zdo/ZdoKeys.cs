@@ -169,6 +169,12 @@ public static class ZdoKeys
     public static readonly int CurrentHealth   = Hash32.Of("currentHealth");
     public static readonly int Crouched        = Hash32.Of("crouched");
     public static readonly int Ko              = Hash32.Of("ko");
+    /// <summary>Coarse-grained activity tag the local FPS player is engaged
+    /// in: lockpicking, computer use, on phone, searching a container,
+    /// hiding. Receiver maps onto the twin citizen's armsBoolAnimationState
+    /// + idleAnimationState (using NPC anim states already shipped with
+    /// the game). See <see cref="SoDCoop.Player.PlayerActivity"/>.</summary>
+    public static readonly int Activity        = Hash32.Of("activity");
 
     // ── Game-wide stats (host authoritative, written to a singleton ZDO). ──
     public static readonly int SocialCredit    = Hash32.Of("socialCredit");

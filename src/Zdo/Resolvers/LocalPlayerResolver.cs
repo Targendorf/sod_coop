@@ -91,10 +91,68 @@ public sealed class LocalPlayerResolver : IZdoResolver
                             float hp = z.GetFloat(ZdoKeys.CurrentHealth, twin.currentHealth);
                             try { twin.currentHealth = hp; } catch { }
                         }
+
+                        if (z.HasKey(ZdoKeys.Activity))
+                        {
+                            byte raw = z.GetByte(ZdoKeys.Activity, 0);
+                            ApplyActivityToTwin(twin, (SoDCoop.Player.PlayerActivity)raw);
+                        }
                     }
                 }
             }
             catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerResolver] host-twin mirror: {ex.Message}"); }
         }
+    }
+
+    /// <summary>Map a coarse-grained <see cref="SoDCoop.Player.PlayerActivity"/>
+    /// onto the twin citizen's NPC anim states. SetArmsBoolState +
+    /// SetIdleAnimationState are SoD's own setters — the same path the
+    /// game uses internally when a citizen does the same activity, so the
+    /// visual is identical to a normal NPC doing it. Once host writes
+    /// these onto the twin, CitizenAnimationPoller picks them up next
+    /// tick and replicates to every peer.</summary>
+    private static void ApplyActivityToTwin(global::Human twin, SoDCoop.Player.PlayerActivity activity)
+    {
+        if (twin == null) return;
+        var ac = twin.animationController;
+        if (ac == null) return;
+
+        global::CitizenAnimationController.ArmsBoolSate arms;
+        global::CitizenAnimationController.IdleAnimationState idle;
+        switch (activity)
+        {
+            case SoDCoop.Player.PlayerActivity.Lockpicking:
+                arms = global::CitizenAnimationController.ArmsBoolSate.armsLocking;
+                idle = global::CitizenAnimationController.IdleAnimationState.none;
+                break;
+            case SoDCoop.Player.PlayerActivity.ComputerUse:
+                arms = global::CitizenAnimationController.ArmsBoolSate.armsTyping;
+                idle = global::CitizenAnimationController.IdleAnimationState.none;
+                break;
+            case SoDCoop.Player.PlayerActivity.PhoneCall:
+                arms = global::CitizenAnimationController.ArmsBoolSate.none;
+                idle = global::CitizenAnimationController.IdleAnimationState.telephone;
+                break;
+            case SoDCoop.Player.PlayerActivity.Searching:
+                arms = global::CitizenAnimationController.ArmsBoolSate.armsUse;
+                idle = global::CitizenAnimationController.IdleAnimationState.none;
+                break;
+            case SoDCoop.Player.PlayerActivity.Hiding:
+                // No specific NPC anim — the hiding interactable handles
+                // visual itself once the twin is parented in. Tag still
+                // serves as a debug signal in CitizenAnimationPoller logs.
+                arms = global::CitizenAnimationController.ArmsBoolSate.none;
+                idle = global::CitizenAnimationController.IdleAnimationState.none;
+                break;
+            default:
+                arms = global::CitizenAnimationController.ArmsBoolSate.none;
+                idle = global::CitizenAnimationController.IdleAnimationState.none;
+                break;
+        }
+
+        try { ac.SetArmsBoolState(arms); }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerResolver] SetArmsBoolState({arms}): {ex.Message}"); }
+        try { ac.SetIdleAnimationState(idle); }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerResolver] SetIdleAnimationState({idle}): {ex.Message}"); }
     }
 }
