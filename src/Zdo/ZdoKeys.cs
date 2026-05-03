@@ -30,6 +30,11 @@ public static class ZdoKeys
     public static readonly int Sw1        = Hash32.Of("sw1");
     public static readonly int Sw2        = Hash32.Of("sw2");
     public static readonly int Sw3        = Hash32.Of("sw3");
+    /// <summary>Whether the interactable is visibly rendered. Default-true on
+    /// most things; flips false→true on container sub-spawn items revealed
+    /// when a player searches the container, and false on pickup. Synced so
+    /// receivers see the same items appear / disappear.</summary>
+    public static readonly int Display    = Hash32.Of("display");
 
     // ── Citizens / player ──
     public static readonly int OutfitCategory     = Hash32.Of("outfitCategory");

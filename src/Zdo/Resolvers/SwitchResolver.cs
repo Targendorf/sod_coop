@@ -28,6 +28,16 @@ public sealed class SwitchResolver : IZdoResolver
             ApplyCustomSwitchIfPresent(sodId, z, ZdoKeys.Sw1, global::InteractablePreset.Switch.custom1);
             ApplyCustomSwitchIfPresent(sodId, z, ZdoKeys.Sw2, global::InteractablePreset.Switch.custom2);
             ApplyCustomSwitchIfPresent(sodId, z, ZdoKeys.Sw3, global::InteractablePreset.Switch.custom3);
+
+            // Display flag — false on container sub-spawn items until the
+            // container is searched, then flips true. Mirrors the reveal so
+            // searched-container contents become visible on the receiver
+            // without needing a per-search broadcast.
+            if (z.HasKey(ZdoKeys.Display))
+            {
+                bool display = z.GetBool(ZdoKeys.Display, true);
+                WorldStateSync.ApplyInteractableDisplayBySodId(sodId, display);
+            }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[SwitchResolver] apply: {ex.Message}"); }
     }

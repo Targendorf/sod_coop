@@ -125,6 +125,13 @@ public static class ZdoEvents
     /// authoritative score everywhere.</summary>
     public const string SOCIAL_CREDIT        = "social-credit";
 
+    /// <summary>Player apartment-ownership add/remove delta.
+    /// Payload: int senderPlayerId, int addressId, byte op (1=add, 0=remove).
+    /// Each peer broadcasts its own diff against last tick. Receivers merge
+    /// into local <c>Player.Instance.apartmentsOwned</c> — coop treats
+    /// apartments as shared so any player can use any purchased address.</summary>
+    public const string APARTMENT_OWNED      = "apartment-owned";
+
     public static void RegisterAll()
     {
         ZdoEventDispatcher.Register(CHAT,             OnChat);
@@ -166,6 +173,7 @@ public static class ZdoEvents
         ZdoEventDispatcher.Register(CB_STRING_REMOVE,      OnCbStringRemove);
         ZdoEventDispatcher.Register(CITIZEN_ANIM_STATE,    OnCitizenAnimState);
         ZdoEventDispatcher.Register(SOCIAL_CREDIT,         OnSocialCredit);
+        ZdoEventDispatcher.Register(APARTMENT_OWNED,       OnApartmentOwned);
     }
 
     private static readonly NetDataWriter _w = new();
@@ -237,6 +245,20 @@ public static class ZdoEvents
         _w.Reset();
         _w.Put(credit);
         ZdoEventDispatcher.Send(SOCIAL_CREDIT, _w, DeliveryMethod.ReliableOrdered);
+    }
+
+    /// <summary>Broadcast a per-player apartment ownership add or remove.
+    /// Each peer sends its own diff every tick so the union ends up on
+    /// every receiver's Player.Instance.apartmentsOwned. Host included —
+    /// host's purchases reach clients via the same path.</summary>
+    public static void SendApartmentOwned(int addressId, bool added)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        _w.Reset();
+        _w.Put(SoDCoop.Network.NetworkManager.LocalPlayerId);
+        _w.Put(addressId);
+        _w.Put(added ? (byte)1 : (byte)0);
+        ZdoEventDispatcher.Send(APARTMENT_OWNED, _w, DeliveryMethod.ReliableOrdered);
     }
 
     public static void SendSideJobPlayerCall(int jobId)
@@ -838,6 +860,50 @@ public static class ZdoEvents
             catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCitizenAnimState] SetArmsBoolState({armsState}) on {humanId}: {ex.Message}"); }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCitizenAnimState] {ex.Message}"); }
+    }
+
+    /// <summary>Receiver-side. Merge the sender's apartment-ownership delta
+    /// into local <c>Player.Instance.apartmentsOwned</c>. Self-broadcasts
+    /// are skipped (sender is us). Looking up by addressID via
+    /// <c>CityData.Instance.addressDictionary</c>.</summary>
+    private static void OnApartmentOwned(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int senderPlayerId = r.GetInt();
+            int addressId      = r.GetInt();
+            byte op            = r.GetByte();
+
+            if (senderPlayerId == SoDCoop.Network.NetworkManager.LocalPlayerId) return;
+
+            var addrs = global::CityData.Instance?.addressDictionary;
+            if (addrs == null) return;
+            if (!addrs.TryGetValue(addressId, out var addr) || addr == null) return;
+
+            var p = global::Player.Instance;
+            if (p == null) return;
+            var owned = p.apartmentsOwned;
+            if (owned == null) return;
+
+            // List<NewAddress>.Contains uses reference equality which is
+            // what we want here — the receiver and sender resolve the same
+            // NewAddress object via the shared addressDictionary.
+            bool isAdd = op == 1;
+            bool already = owned.Contains(addr);
+            if (isAdd && !already)
+            {
+                try { owned.Add(addr); }
+                catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnApartmentOwned] add: {ex.Message}"); }
+                Plugin.Log.LogInfo($"[ZdoEvents.OnApartmentOwned] +addr#{addressId} from player {senderPlayerId}");
+            }
+            else if (!isAdd && already)
+            {
+                try { owned.Remove(addr); }
+                catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnApartmentOwned] remove: {ex.Message}"); }
+                Plugin.Log.LogInfo($"[ZdoEvents.OnApartmentOwned] -addr#{addressId} from player {senderPlayerId}");
+            }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnApartmentOwned] {ex.Message}"); }
     }
 
     /// <summary>Receiver-side. Stamp the host-broadcast social-credit score

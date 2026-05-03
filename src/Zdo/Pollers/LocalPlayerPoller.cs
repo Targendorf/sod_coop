@@ -43,11 +43,21 @@ public static class LocalPlayerPoller
     private static bool  _healthInitialized;
     private static float _lastHealth;
 
+    /// <summary>Last-tick set of address IDs the local player owned. Diff
+    /// against current tick → diff = (added → SendApartmentOwned add,
+    /// removed → SendApartmentOwned remove). Each peer broadcasts its own
+    /// diff so receivers can union-merge into their own
+    /// Player.Instance.apartmentsOwned.</summary>
+    private static readonly System.Collections.Generic.HashSet<int> _lastApartmentIds = new();
+    private static bool _apartmentsInitialized;
+
     public static void Register() => ZdoPollerHost.RegisterAnyPeer(NAME, 1f / TICK_HZ, Tick);
 
     public static void ResetBaseline()
     {
         _healthInitialized = false;
+        _apartmentsInitialized = false;
+        _lastApartmentIds.Clear();
     }
 
     private static void Tick(float now)
@@ -150,6 +160,54 @@ public static class LocalPlayerPoller
                 }
             }
             catch { /* currentHealth getter may throw mid-init */ }
+
+            // Apartment-ownership diff. Each peer broadcasts its own
+            // additions / removals so the union ends up on every peer's
+            // Player.Instance.apartmentsOwned (coop treats apartments as
+            // shared — anyone can use any owned address). On the very first
+            // tick we just baseline without broadcasting.
+            try
+            {
+                var owned = p.apartmentsOwned;
+                var curIds = new System.Collections.Generic.HashSet<int>();
+                if (owned != null)
+                {
+                    for (int i = 0; i < owned.Count; i++)
+                    {
+                        var a = owned[i];
+                        if (a == null) continue;
+                        try { if (a.id > 0) curIds.Add(a.id); } catch { }
+                    }
+                }
+
+                if (!_apartmentsInitialized)
+                {
+                    _apartmentsInitialized = true;
+                    _lastApartmentIds.Clear();
+                    foreach (var id in curIds) _lastApartmentIds.Add(id);
+                }
+                else
+                {
+                    // New entries — broadcast adds.
+                    foreach (var id in curIds)
+                    {
+                        if (_lastApartmentIds.Contains(id)) continue;
+                        try { ZdoEvents.SendApartmentOwned(id, added: true); }
+                        catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerPoller] apt add: {ex.Message}"); }
+                    }
+                    // Removed entries — broadcast removes.
+                    foreach (var id in _lastApartmentIds)
+                    {
+                        if (curIds.Contains(id)) continue;
+                        try { ZdoEvents.SendApartmentOwned(id, added: false); }
+                        catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerPoller] apt remove: {ex.Message}"); }
+                    }
+
+                    _lastApartmentIds.Clear();
+                    foreach (var id in curIds) _lastApartmentIds.Add(id);
+                }
+            }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerPoller] apartments diff: {ex.Message}"); }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerPoller] tick: {ex.Message}"); }
     }

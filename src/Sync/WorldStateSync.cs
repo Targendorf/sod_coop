@@ -278,6 +278,26 @@ public static class WorldStateSync
         ApplySwitchState(new SwitchStatePacket { InteractableId = interactableId, IsOn = isOn });
     }
 
+    /// <summary>Apply Interactable.display by id — used by SwitchResolver to
+    /// mirror container-sub-spawn-item reveal (display flips false→true
+    /// when the container is searched). Idempotent: same-value writes are
+    /// skipped.</summary>
+    public static void ApplyInteractableDisplayBySodId(int interactableId, bool display)
+    {
+        var inter = FindInteractableById(interactableId);
+        if (inter == null) return;
+        bool cur = true;
+        try { cur = inter.display; } catch { return; }
+        if (cur == display) return;
+        IsApplyingRemote = true;
+        try { inter.display = display; }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"ApplyInteractableDisplayBySodId({interactableId}={display}): {ex.Message}");
+        }
+        finally { IsApplyingRemote = false; }
+    }
+
     /// <summary>Apply one of the custom1/2/3 switch slots on a remote-broadcast
     /// interactable. Used by <c>SwitchResolver</c> to mirror sw1..sw3 changes
     /// (TV / radio / music-player auxiliary state) — sw0 still flows via
