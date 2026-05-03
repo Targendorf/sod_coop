@@ -34,6 +34,10 @@ public static class ZdoBootstrap
         // Game-wide reputation (socialCredit). Host authoritative; receivers
         // stamp into their own GameplayController via ZdoEvents.OnSocialCredit.
         SocialCreditPoller.Register();
+        // Speech bubbles — host broadcasts NPC bubbles; each peer broadcasts
+        // own player bubbles. Receivers replay locally via SpeechController.Speak
+        // so observers see what NPCs and other players are saying.
+        SpeechBubblePoller.Register();
         ZdoResolverRegistry.Register(new PhoneCallResolver());
         PhoneCallPoller.Register();
 

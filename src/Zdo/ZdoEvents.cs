@@ -132,6 +132,16 @@ public static class ZdoEvents
     /// apartments as shared so any player can use any purchased address.</summary>
     public const string APARTMENT_OWNED      = "apartment-owned";
 
+    /// <summary>One speech-bubble line spoken by an Actor (citizen OR player
+    /// twin). Payload: int speakerHumanId, string text, byte shout
+    /// (1 = shouting). Sent by <see cref="Pollers.SpeechBubblePoller"/>
+    /// when an Actor's active speech bubble transitions from "null /
+    /// typewriting" to "final text revealed". Receivers look up the Actor
+    /// by humanId and call <c>speechController.Speak(text, shout)</c> so
+    /// the same bubble appears over their head locally — sideline players
+    /// can read what NPCs and other players are saying to each other.</summary>
+    public const string SPEECH_BUBBLE        = "speech-bubble";
+
     public static void RegisterAll()
     {
         ZdoEventDispatcher.Register(CHAT,             OnChat);
@@ -174,6 +184,7 @@ public static class ZdoEvents
         ZdoEventDispatcher.Register(CITIZEN_ANIM_STATE,    OnCitizenAnimState);
         ZdoEventDispatcher.Register(SOCIAL_CREDIT,         OnSocialCredit);
         ZdoEventDispatcher.Register(APARTMENT_OWNED,       OnApartmentOwned);
+        ZdoEventDispatcher.Register(SPEECH_BUBBLE,         OnSpeechBubble);
     }
 
     private static readonly NetDataWriter _w = new();
@@ -245,6 +256,22 @@ public static class ZdoEvents
         _w.Reset();
         _w.Put(credit);
         ZdoEventDispatcher.Send(SOCIAL_CREDIT, _w, DeliveryMethod.ReliableOrdered);
+    }
+
+    /// <summary>Broadcast one speech bubble line for the given Actor (by
+    /// humanId). Host broadcasts NPC bubbles; each peer (including host)
+    /// broadcasts their own player's bubbles using their twin humanId so
+    /// the same Actor exists in every receiver's CityData. Sequenced —
+    /// late lines can be skipped, the next line stomps anyway.</summary>
+    public static void SendSpeechBubble(int speakerHumanId, string text, bool shout)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        if (string.IsNullOrEmpty(text)) return;
+        _w.Reset();
+        _w.Put(speakerHumanId);
+        _w.Put(text);
+        _w.Put(shout ? (byte)1 : (byte)0);
+        ZdoEventDispatcher.Send(SPEECH_BUBBLE, _w, DeliveryMethod.Sequenced);
     }
 
     /// <summary>Broadcast a per-player apartment ownership add or remove.
@@ -860,6 +887,59 @@ public static class ZdoEvents
             catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCitizenAnimState] SetArmsBoolState({armsState}) on {humanId}: {ex.Message}"); }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCitizenAnimState] {ex.Message}"); }
+    }
+
+    /// <summary>Receiver-side. Look up the Actor by humanId and replay the
+    /// speech bubble locally via SpeechController.Speak so observer peers
+    /// see "the NPC just said this". Self-broadcasts are skipped (the
+    /// Actor is already speaking on the sender's machine, nothing to do
+    /// there). Empty text is silently ignored.</summary>
+    private static void OnSpeechBubble(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int speakerHumanId = r.GetInt();
+            string text        = r.GetString();
+            bool shout         = r.GetByte() == 1;
+
+            if (string.IsNullOrEmpty(text)) return;
+
+            // Skip self-echoes. Two cases:
+            //   1. Host: speaker is host's own player citizen — Player.
+            //      Instance.humanID matches the broadcast humanId.
+            //   2. Client: speaker is client's twin citizen on the world —
+            //      MyTwinHumanID matches. The bubble already showed
+            //      locally on client's Player.Instance; replaying on the
+            //      twin citizen object would create a duplicate visual.
+            try
+            {
+                int myHuman = 0;
+                try { myHuman = global::Player.Instance?.humanID ?? 0; } catch { }
+                if (myHuman > 0 && speakerHumanId == myHuman) return;
+
+                int myTwin = SoDCoop.Network.NetworkManager.MyTwinHumanID;
+                if (myTwin > 0 && speakerHumanId == myTwin) return;
+            }
+            catch { }
+
+            var dict = global::CityData.Instance?.citizenDictionary;
+            if (dict == null) return;
+            if (!dict.TryGetValue(speakerHumanId, out var human) || human == null) return;
+            var sc = human.speechController;
+            if (sc == null) return;
+
+            try
+            {
+                // Simple-string Speak overload (SpeechController.cs:1045):
+                //   void Speak(string ddsMessage, bool shout, bool interupt,
+                //              Human speakAbout, SideJob sideJob,
+                //              Human.InteractionDialogInstance interactionInstance)
+                sc.Speak(text, shout, /*interupt:*/ false, /*speakAbout:*/ null,
+                         /*sideJob:*/ null, /*interactionInstance:*/ null);
+            }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnSpeechBubble] Speak({speakerHumanId}): {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnSpeechBubble] {ex.Message}"); }
     }
 
     /// <summary>Receiver-side. Merge the sender's apartment-ownership delta
