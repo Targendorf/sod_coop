@@ -993,6 +993,10 @@ public static class GamePatches
             try
             {
                 if (InventorySync.IsApplyingRemote) return;
+                // Stamp the debounce BEFORE broadcasting so PlayerInputPoller's
+                // rising-edge detector treats this swing as already-handled and
+                // doesn't double-broadcast on its next tick (~33ms later).
+                SoDCoop.Zdo.Pollers.PlayerInputPoller.MarkCombatBroadcasted(ItemActionKind.MeleeAttack);
                 InventorySync.BroadcastAction(ItemActionKind.MeleeAttack);
             }
             catch (System.Exception ex)
@@ -1012,6 +1016,7 @@ public static class GamePatches
             try
             {
                 if (InventorySync.IsApplyingRemote) return;
+                SoDCoop.Zdo.Pollers.PlayerInputPoller.MarkCombatBroadcasted(ItemActionKind.Block);
                 InventorySync.BroadcastAction(ItemActionKind.Block);
             }
             catch (System.Exception ex)
@@ -1031,6 +1036,7 @@ public static class GamePatches
             try
             {
                 if (InventorySync.IsApplyingRemote) return;
+                SoDCoop.Zdo.Pollers.PlayerInputPoller.MarkCombatBroadcasted(ItemActionKind.CounterAttack);
                 InventorySync.BroadcastAction(ItemActionKind.CounterAttack);
             }
             catch (System.Exception ex)

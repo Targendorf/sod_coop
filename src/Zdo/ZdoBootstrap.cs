@@ -27,6 +27,10 @@ public static class ZdoBootstrap
         SwitchPoller.Register();
         ZdoResolverRegistry.Register(new CitizenResolver());
         CitizenStatePoller.Register();
+        // Per-citizen idle/arms anim state (host → clients via ZdoEventRpc).
+        // No resolver needed: ZdoEvents.OnCitizenAnimState applies directly to
+        // the receiver's live citizen via SetIdleAnimationState + SetArmsBoolState.
+        CitizenAnimationPoller.Register();
         ZdoResolverRegistry.Register(new PhoneCallResolver());
         PhoneCallPoller.Register();
 

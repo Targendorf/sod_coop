@@ -37,6 +37,30 @@ public static class PlayerInputPoller
     private static bool _lastFlashlight;
     private static int  _lastInteractableCount = -1;
 
+    // ── Combat-action detection (post-patch-death fallback) ──────────────
+    /// <summary>Last-tick value of FirstPersonItemController.attackMainDelay.
+    /// A rising edge — value jumping from ~0 to a positive cooldown — signals
+    /// MeleeAttack just fired. Mirrors what the FPItemController.MeleeAttack
+    /// Harmony patch does, except this path keeps working after the
+    /// one-shot UnpatchSelf (see Plugin.PausePatchesForLoad).</summary>
+    private static float _lastAttackMainDelay;
+    /// <summary>Same idea for Block (secondary-attack delay rising edge).</summary>
+    private static float _lastAttackSecondaryDelay;
+    /// <summary>True when counterAttackActor was non-null on the previous
+    /// tick — used as the diff baseline for CounterAttack detection.</summary>
+    private static bool _lastCounterActive;
+    /// <summary>Wall-clock of the most recent broadcast for each combat
+    /// action. Used as a debounce so the patch (when alive) and this poller
+    /// don't double-broadcast the same swing — patch broadcasts first via
+    /// MarkBroadcasted, poller's rising edge then sees the recent timestamp
+    /// and silently skips.</summary>
+    private static readonly float[] _lastBroadcastAt = new float[3];
+    private const float COMBAT_DEBOUNCE_S = 0.30f;
+    /// <summary>Above this, attackMainDelay is considered "in cooldown" =
+    /// just got reset by an attack. Below it, the field has decayed back to
+    /// zero and the next reset will register as a rising edge.</summary>
+    private const float COMBAT_DELAY_THRESHOLD = 0.05f;
+
     /// <summary>Last-tick set of interactableIDs the local player held in any
     /// inventory slot. Diff against current tick → diff = (added → pickup,
     /// removed → drop). Lets us catch pick-up / drop without per-method
@@ -162,6 +186,30 @@ public static class PlayerInputPoller
             }
             catch (Exception ex) { Plugin.Log.LogWarning($"[PlayerInputPoller] slot diff: {ex.Message}"); }
 
+            // ── Combat-action edge detection ─────────────────────────────
+            // Read the FPC cooldown timers + counter-attack actor pointer.
+            // None of these throw if the underlying field is unassigned — IL2CPP
+            // returns the default value, and counterAttackActor is naturally
+            // null when there's no counter in flight.
+            float curMain = 0f, curSec = 0f;
+            bool curCounter = false;
+            try { curMain     = fpc.attackMainDelay;       } catch { }
+            try { curSec      = fpc.attackSecondaryDelay;  } catch { }
+            try { curCounter  = fpc.counterAttackActor != null; } catch { }
+
+            if (_initialized)
+            {
+                if (curMain > COMBAT_DELAY_THRESHOLD && _lastAttackMainDelay <= COMBAT_DELAY_THRESHOLD)
+                    TryBroadcastCombat(SoDCoop.Sync.ItemActionKind.MeleeAttack);
+                if (curSec  > COMBAT_DELAY_THRESHOLD && _lastAttackSecondaryDelay <= COMBAT_DELAY_THRESHOLD)
+                    TryBroadcastCombat(SoDCoop.Sync.ItemActionKind.Block);
+                if (curCounter && !_lastCounterActive)
+                    TryBroadcastCombat(SoDCoop.Sync.ItemActionKind.CounterAttack);
+            }
+            _lastAttackMainDelay      = curMain;
+            _lastAttackSecondaryDelay = curSec;
+            _lastCounterActive        = curCounter;
+
             if (!_initialized)
             {
                 _initialized = true;
@@ -189,5 +237,36 @@ public static class PlayerInputPoller
         _initialized = false;
         _lastInteractableCount = -1;
         _lastSlotIds.Clear();
+        _lastAttackMainDelay = 0f;
+        _lastAttackSecondaryDelay = 0f;
+        _lastCounterActive = false;
+    }
+
+    /// <summary>Called by the FPItemController combat patches AT broadcast
+    /// time so the poller's rising-edge detector treats the same swing as
+    /// already-handled. Without this, a fresh-session player would see
+    /// every attack broadcast TWICE — once via the patch postfix and once
+    /// via the poller catching the field reset on the next tick.</summary>
+    public static void MarkCombatBroadcasted(SoDCoop.Sync.ItemActionKind kind)
+    {
+        int idx = (int)kind;
+        if (idx < 0 || idx >= _lastBroadcastAt.Length) return;
+        _lastBroadcastAt[idx] = UnityEngine.Time.unscaledTime;
+    }
+
+    private static void TryBroadcastCombat(SoDCoop.Sync.ItemActionKind kind)
+    {
+        try
+        {
+            int idx = (int)kind;
+            if (idx >= 0 && idx < _lastBroadcastAt.Length)
+            {
+                float now = UnityEngine.Time.unscaledTime;
+                if (now - _lastBroadcastAt[idx] < COMBAT_DEBOUNCE_S) return; // patch already fired
+                _lastBroadcastAt[idx] = now;
+            }
+            SoDCoop.Sync.InventorySync.BroadcastAction(kind);
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[PlayerInputPoller] combat broadcast: {ex.Message}"); }
     }
 }

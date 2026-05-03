@@ -110,6 +110,14 @@ public static class ZdoEvents
     /// <summary>Case board string-link removed — payload matches CB_STRING minus colour.</summary>
     public const string CB_STRING_REMOVE     = "cb-string-remove";
 
+    /// <summary>Citizen idle / arms animation state delta.
+    /// Payload: int humanId, byte idleAnimationState, byte armsBoolAnimationState.
+    /// Host-only sender (CitizenAnimationPoller); receivers locally call
+    /// SetIdleAnimationState + SetArmsBoolState on the matching citizen so
+    /// dancers / sitters / phone-talkers / cooks animate identically on
+    /// every peer.</summary>
+    public const string CITIZEN_ANIM_STATE   = "citizen-anim-state";
+
     public static void RegisterAll()
     {
         ZdoEventDispatcher.Register(CHAT,             OnChat);
@@ -149,6 +157,7 @@ public static class ZdoEvents
         ZdoEventDispatcher.Register(CB_MOVE,               OnCbMove);
         ZdoEventDispatcher.Register(CB_STRING,             OnCbString);
         ZdoEventDispatcher.Register(CB_STRING_REMOVE,      OnCbStringRemove);
+        ZdoEventDispatcher.Register(CITIZEN_ANIM_STATE,    OnCitizenAnimState);
     }
 
     private static readonly NetDataWriter _w = new();
@@ -188,6 +197,23 @@ public static class ZdoEvents
         _w.Put(SoDCoop.Network.NetworkManager.LocalPlayerId);
         _w.Put(actionKind);
         ZdoEventDispatcher.Send(COMBAT_ACTION, _w, DeliveryMethod.Sequenced);
+    }
+
+    /// <summary>Host-only. Broadcast a single citizen's idle/arms animation
+    /// state. Called by <c>CitizenAnimationPoller</c> on diff against the
+    /// previous tick's snapshot; receivers locally apply via
+    /// <c>SetIdleAnimationState</c> + <c>SetArmsBoolState</c> so
+    /// dancers/sitters/cooks animate identically across peers.</summary>
+    public static void SendCitizenAnimState(int humanId, byte idleState, byte armsState)
+    {
+        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        if (!SoDCoop.Network.NetworkManager.IsHost) return;
+        _w.Reset();
+        _w.Put(humanId);
+        _w.Put(idleState);
+        _w.Put(armsState);
+        // Sequenced: late frames can be dropped, the next state stomps anyway.
+        ZdoEventDispatcher.Send(CITIZEN_ANIM_STATE, _w, DeliveryMethod.Sequenced);
     }
 
     public static void SendSideJobPlayerCall(int jobId)
@@ -756,6 +782,39 @@ public static class ZdoEvents
             catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCbStringRemove] apply: {ex.Message}"); }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCbStringRemove] {ex.Message}"); }
+    }
+
+    /// <summary>Receiver-side. Look up the citizen by humanID and call
+    /// SetIdleAnimationState + SetArmsBoolState locally so dancers /
+    /// sitters / cooks animate identically across peers. Host doesn't
+    /// process its own broadcasts (sender filter); clients apply
+    /// silently. Skips unknown humanIDs (citizen may have been despawned
+    /// after the snapshot was taken).</summary>
+    private static void OnCitizenAnimState(NetDataReader r, int senderId)
+    {
+        try
+        {
+            int  humanId   = r.GetInt();
+            byte idleState = r.GetByte();
+            byte armsState = r.GetByte();
+
+            // Host echoes its own broadcasts back to itself via the
+            // dispatcher fan-out; ignore — we already did the work locally.
+            if (SoDCoop.Network.NetworkManager.IsHost) return;
+
+            var dict = global::CityData.Instance?.citizenDictionary;
+            if (dict == null) return;
+            if (!dict.TryGetValue(humanId, out var human) || human == null) return;
+            var ac = human.animationController;
+            if (ac == null) return;
+
+            try { ac.SetIdleAnimationState((global::CitizenAnimationController.IdleAnimationState)idleState); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCitizenAnimState] SetIdleAnimationState({idleState}) on {humanId}: {ex.Message}"); }
+
+            try { ac.SetArmsBoolState((global::CitizenAnimationController.ArmsBoolSate)armsState); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCitizenAnimState] SetArmsBoolState({armsState}) on {humanId}: {ex.Message}"); }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnCitizenAnimState] {ex.Message}"); }
     }
 
     private static void OnItemThrow(NetDataReader r, int senderId)
