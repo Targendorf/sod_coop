@@ -554,23 +554,26 @@ public class AppearancePanel : CoopPanelBase
     //  Buttons
     // ─────────────────────────────────────────────────────────────────────
 
-    private void OnRandomize()
+    protected virtual void OnRandomize()
     {
         var rng = new System.Random();
-        _cfg = new AppearanceConfig
-        {
-            Gender     = (byte)rng.Next(0, 3),
-            Build      = (byte)rng.Next(0, 4),
-            HairStyle  = (byte)rng.Next(0, 3),
-            HairColour = (byte)rng.Next(0, AppearancePalette.HairPaletteSize),
-            EyeColour  = (byte)rng.Next(0, 4),
-            SkinIndex  = (byte)rng.Next(0, AppearancePalette.SkinPaletteSize),
-            Expression = (byte)global::CitizenOutfitController.Expression.neutral,
-            Lipstick   = (byte)rng.Next(0, 256),
-            Outfit     = (byte)rng.Next(0, OutfitCount),
-            WardrobeSourceHumanId = PickRandomWardrobeSource(rng),
-            IsCustomized = true,
-        };
+        // Start from Default so newly-added fields (ShoeType sentinel,
+        // per-slot sources, Grub) get sensible "no-override" defaults
+        // rather than zero-init garbage. Then override only what we
+        // intentionally randomize.
+        var cfg = AppearanceConfig.Default;
+        cfg.Gender     = (byte)rng.Next(0, 3);
+        cfg.Build      = (byte)rng.Next(0, 4);
+        cfg.HairStyle  = (byte)rng.Next(0, 3);
+        cfg.HairColour = (byte)rng.Next(0, AppearancePalette.HairPaletteSize);
+        cfg.EyeColour  = (byte)rng.Next(0, 4);
+        cfg.SkinIndex  = (byte)rng.Next(0, AppearancePalette.SkinPaletteSize);
+        cfg.Expression = (byte)global::CitizenOutfitController.Expression.neutral;
+        cfg.Lipstick   = (byte)rng.Next(0, 256);
+        cfg.Outfit     = (byte)rng.Next(0, OutfitCount);
+        cfg.WardrobeSourceHumanId = PickRandomWardrobeSource(rng);
+        cfg.IsCustomized = true;
+        _cfg = cfg;
         RefreshAllValues();
         PushPreview();
     }

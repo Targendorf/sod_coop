@@ -37,6 +37,14 @@ public class DeepAppearancePanel : AppearancePanel
     private Text _shoeTypeValue;
     private Text _grubValue;
 
+    // Per-slot wardrobe cycle rows (one Text per slot for the value label).
+    private Text _slotHatValue;
+    private Text _slotTopValue;
+    private Text _slotBottomValue;
+    private Text _slotShoesValue;
+    private Text _slotGlassesValue;
+    private Text _slotHandsValue;
+
     // Wardrobe browser state.
     private GameObject _wardrobeListGo;
     private readonly List<(int humanId, Text label, Image marker)> _wardrobeRows = new();
@@ -53,6 +61,23 @@ public class DeepAppearancePanel : AppearancePanel
         _grubValue     = AddCycleRow(L.Get("appearanceDeep.row.grub"),     OnGrubDec,     OnGrubInc);
 
         Spacer(8f);
+        BodyLabel(L.Get("appearanceDeep.section.slots"),
+            CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelTitle, TextAnchor.MiddleLeft, FontStyle.Bold);
+        BodyLabel(L.Get("appearanceDeep.slots.hint"),
+            CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted, TextAnchor.MiddleLeft, FontStyle.Italic);
+
+        // Per-slot wardrobe cycle rows: each picks a different source citizen
+        // for one anchor group. Click arrows to cycle through "(use own)" +
+        // every loaded citizen. Apply / preview happens immediately via
+        // Mutate → PushPreview path inherited from the base panel.
+        _slotHatValue     = AddCycleRow(L.Get("appearanceDeep.slot.hat"),     () => StepSlot(WardrobeSlot.Hat,     -1), () => StepSlot(WardrobeSlot.Hat,     +1));
+        _slotTopValue     = AddCycleRow(L.Get("appearanceDeep.slot.top"),     () => StepSlot(WardrobeSlot.Top,     -1), () => StepSlot(WardrobeSlot.Top,     +1));
+        _slotBottomValue  = AddCycleRow(L.Get("appearanceDeep.slot.bottom"),  () => StepSlot(WardrobeSlot.Bottom,  -1), () => StepSlot(WardrobeSlot.Bottom,  +1));
+        _slotShoesValue   = AddCycleRow(L.Get("appearanceDeep.slot.shoes"),   () => StepSlot(WardrobeSlot.Shoes,   -1), () => StepSlot(WardrobeSlot.Shoes,   +1));
+        _slotGlassesValue = AddCycleRow(L.Get("appearanceDeep.slot.glasses"), () => StepSlot(WardrobeSlot.Glasses, -1), () => StepSlot(WardrobeSlot.Glasses, +1));
+        _slotHandsValue   = AddCycleRow(L.Get("appearanceDeep.slot.hands"),   () => StepSlot(WardrobeSlot.Hands,   -1), () => StepSlot(WardrobeSlot.Hands,   +1));
+
+        Spacer(8f);
         BodyLabel(L.Get("appearanceDeep.section.wardrobe"),
             CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelTitle, TextAnchor.MiddleLeft, FontStyle.Bold);
         BodyLabel(L.Get("appearanceDeep.wardrobe.hint"),
@@ -62,6 +87,60 @@ public class DeepAppearancePanel : AppearancePanel
 
         // Refresh extra-row labels with the initial config.
         RefreshExtraValues();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Per-slot cycle
+    // ─────────────────────────────────────────────────────────────────────
+
+    private void StepSlot(WardrobeSlot slot, int delta)
+    {
+        Mutate(() =>
+        {
+            int total = CitizenWardrobeBrowser.Count;
+            int current = GetSlotSource(slot);
+            int currentVirtual = current == 0
+                ? 0
+                : 1 + System.Math.Max(0, CitizenWardrobeBrowser.IndexOfHumanId(current));
+
+            int next = Wrap(currentVirtual + delta, total + 1);
+            int newId = next == 0 ? 0 : (CitizenWardrobeBrowser.GetByIndex(next - 1)?.HumanID ?? 0);
+            SetSlotSource(slot, newId);
+        });
+    }
+
+    private int GetSlotSource(WardrobeSlot slot) => slot switch
+    {
+        WardrobeSlot.Hat     => _cfg.HatSourceHumanId,
+        WardrobeSlot.Top     => _cfg.TopSourceHumanId,
+        WardrobeSlot.Bottom  => _cfg.BottomSourceHumanId,
+        WardrobeSlot.Shoes   => _cfg.ShoesSourceHumanId,
+        WardrobeSlot.Glasses => _cfg.GlassesSourceHumanId,
+        WardrobeSlot.Hands   => _cfg.HandsSourceHumanId,
+        _ => 0,
+    };
+
+    private void SetSlotSource(WardrobeSlot slot, int humanId)
+    {
+        switch (slot)
+        {
+            case WardrobeSlot.Hat:     _cfg.HatSourceHumanId     = humanId; break;
+            case WardrobeSlot.Top:     _cfg.TopSourceHumanId     = humanId; break;
+            case WardrobeSlot.Bottom:  _cfg.BottomSourceHumanId  = humanId; break;
+            case WardrobeSlot.Shoes:   _cfg.ShoesSourceHumanId   = humanId; break;
+            case WardrobeSlot.Glasses: _cfg.GlassesSourceHumanId = humanId; break;
+            case WardrobeSlot.Hands:   _cfg.HandsSourceHumanId   = humanId; break;
+        }
+    }
+
+    private string DescribeSlotSource(int humanId)
+    {
+        if (humanId == 0) return L.Get("appearance.wardrobe.own");
+        var entry = CitizenWardrobeBrowser.GetByHumanId(humanId);
+        if (entry == null) return L.Get("appearance.wardrobe.unknown", humanId);
+        return string.IsNullOrEmpty(entry.Subtitle)
+            ? entry.DisplayName
+            : $"{entry.DisplayName}  <i>({entry.Subtitle})</i>";
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -275,6 +354,12 @@ public class DeepAppearancePanel : AppearancePanel
             int step = _cfg.Grub * (GRUB_STOPS - 1) / 255;
             _grubValue.text = L.Get("appearanceDeep.grub.value", step, GRUB_STOPS - 1);
         }
+        if (_slotHatValue     != null) _slotHatValue    .text = DescribeSlotSource(_cfg.HatSourceHumanId);
+        if (_slotTopValue     != null) _slotTopValue    .text = DescribeSlotSource(_cfg.TopSourceHumanId);
+        if (_slotBottomValue  != null) _slotBottomValue .text = DescribeSlotSource(_cfg.BottomSourceHumanId);
+        if (_slotShoesValue   != null) _slotShoesValue  .text = DescribeSlotSource(_cfg.ShoesSourceHumanId);
+        if (_slotGlassesValue != null) _slotGlassesValue.text = DescribeSlotSource(_cfg.GlassesSourceHumanId);
+        if (_slotHandsValue   != null) _slotHandsValue  .text = DescribeSlotSource(_cfg.HandsSourceHumanId);
         RefreshWardrobeMarkers();
     }
 

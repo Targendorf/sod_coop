@@ -138,8 +138,10 @@ public static class Translations
         // Deep appearance panel — extra rows on top of the basic panel.
         ["appearanceDeep.title"]                = "Deep customization",
         ["appearanceDeep.section.body"]         = "Body & wear",
-        ["appearanceDeep.section.wardrobe"]     = "Wardrobe — borrow from a citizen",
-        ["appearanceDeep.wardrobe.hint"]        = "Click any citizen to copy their clothes for the current outfit category. \"(use own outfit)\" returns to your twin's procedural wardrobe.",
+        ["appearanceDeep.section.slots"]        = "Outfit slots — pick a different citizen per slot",
+        ["appearanceDeep.slots.hint"]           = "Each slot pulls clothing covering that body part from the picked citizen, layered on top of the whole-outfit wardrobe pick below.",
+        ["appearanceDeep.section.wardrobe"]     = "Whole outfit — borrow from a citizen",
+        ["appearanceDeep.wardrobe.hint"]        = "Click any citizen to copy their full clothes list for the current outfit category. \"(use own outfit)\" returns to your twin's procedural wardrobe. Per-slot picks above still apply on top.",
         ["appearanceDeep.row.shoeType"]         = "Shoe type",
         ["appearanceDeep.row.grub"]             = "Grime",
         ["appearanceDeep.shoeType.default"]    = "(citizen default)",
@@ -148,6 +150,12 @@ public static class Translations
         ["appearanceDeep.shoeType.heel"]        = "Heels",
         ["appearanceDeep.shoeType.barefoot"]    = "Barefoot",
         ["appearanceDeep.grub.value"]           = "{0} / {1}",
+        ["appearanceDeep.slot.hat"]             = "Hat",
+        ["appearanceDeep.slot.top"]             = "Top (shirt/jacket)",
+        ["appearanceDeep.slot.bottom"]          = "Bottom (pants/skirt)",
+        ["appearanceDeep.slot.shoes"]           = "Shoes",
+        ["appearanceDeep.slot.glasses"]         = "Glasses",
+        ["appearanceDeep.slot.hands"]           = "Hands (gloves/watch)",
 
         // Profile management
         ["main.btn.profiles"]      = "👤  Manage profiles",

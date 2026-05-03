@@ -45,14 +45,33 @@ public struct AppearanceConfig
     /// wardrobe combinations baked at city-gen time. By pointing here at
     /// any citizen by humanID, the twin renders that citizen's clothes
     /// list for the chosen category — which gives massive visual variety
-    /// without requiring a per-mesh editor.</para></summary>
+    /// without requiring a per-mesh editor.</para>
+    ///
+    /// <para>Applied as the FIRST step in <see cref="ApplyTo"/>; the per-slot
+    /// source fields below then surgically override individual anchor groups
+    /// on top of that base. Both can be used together: legacy field picks
+    /// the broad outfit, per-slot fields swap out specific items.</para></summary>
     public int WardrobeSourceHumanId;
+
+    /// <summary>Per-slot wardrobe sources — each picks a citizen whose
+    /// clothing item(s) covering that slot's <see cref="WardrobeSlot"/>
+    /// anchor group are spliced into the twin's outfit on top of the
+    /// legacy whole-outfit borrow. Zero = no override for this slot
+    /// (whatever is already there from the twin's own outfit / legacy
+    /// borrow stays). Resolved by <see cref="ApplyTo"/> via the global
+    /// <c>Toolbox.Instance.clothesDictionary</c>.</summary>
+    public int HatSourceHumanId;
+    public int TopSourceHumanId;
+    public int BottomSourceHumanId;
+    public int ShoesSourceHumanId;
+    public int GlassesSourceHumanId;
+    public int HandsSourceHumanId;
 
     public bool IsCustomized;
 
     /// <summary>Bytes written by <see cref="Write"/>. Receivers tolerate
     /// shorter payloads (legacy records) by defaulting trailing fields.</summary>
-    public const int WireSize = 1 /*flag*/ + 9 + 4 /*WardrobeSourceHumanId*/ + 2 /*ShoeType+Grub*/;
+    public const int WireSize = 1 /*flag*/ + 9 + 4 /*WardrobeSourceHumanId*/ + 2 /*ShoeType+Grub*/ + 24 /*6 per-slot ints*/;
     public const int LegacyMinWireSize = 1 /*flag*/ + 8;
 
     /// <summary>Sentinel for <see cref="ShoeType"/> meaning "do not override
@@ -95,6 +114,12 @@ public struct AppearanceConfig
         w.Put(WardrobeSourceHumanId);
         w.Put(ShoeType);
         w.Put(Grub);
+        w.Put(HatSourceHumanId);
+        w.Put(TopSourceHumanId);
+        w.Put(BottomSourceHumanId);
+        w.Put(ShoesSourceHumanId);
+        w.Put(GlassesSourceHumanId);
+        w.Put(HandsSourceHumanId);
     }
 
     public void Read(NetDataReader r)
@@ -113,6 +138,13 @@ public struct AppearanceConfig
         WardrobeSourceHumanId  = r.AvailableBytes >= 4 ? r.GetInt()  : 0;
         ShoeType               = r.AvailableBytes > 0 ? r.GetByte() : ShoeType_NoOverride;
         Grub                   = r.AvailableBytes > 0 ? r.GetByte() : (byte)0;
+        // Per-slot source citizens (6 × int, all default 0).
+        HatSourceHumanId       = r.AvailableBytes >= 4 ? r.GetInt() : 0;
+        TopSourceHumanId       = r.AvailableBytes >= 4 ? r.GetInt() : 0;
+        BottomSourceHumanId    = r.AvailableBytes >= 4 ? r.GetInt() : 0;
+        ShoesSourceHumanId     = r.AvailableBytes >= 4 ? r.GetInt() : 0;
+        GlassesSourceHumanId   = r.AvailableBytes >= 4 ? r.GetInt() : 0;
+        HandsSourceHumanId     = r.AvailableBytes >= 4 ? r.GetInt() : 0;
     }
 
     public byte[] ToBytes()
@@ -183,6 +215,19 @@ public struct AppearanceConfig
             // citizens is safe; visuals spawn on whoever calls LoadCurrentOutfit.
             if (WardrobeSourceHumanId > 0)
                 TryBorrowWardrobe(ctrl, category, WardrobeSourceHumanId);
+
+            // Per-slot wardrobe overrides — applied AFTER the legacy whole-
+            // outfit borrow so the player can pick a base outfit and then
+            // surgically swap individual items (e.g. "borrow Sarah's coat
+            // but use John's hat"). Each slot resolves its source citizen's
+            // clothing items covering that anchor group and splices them
+            // onto the twin's outfit; details in WardrobeSlots.ApplySlotBorrow.
+            WardrobeSlots.ApplySlotBorrow(ctrl, category, WardrobeSlot.Hat,     HatSourceHumanId);
+            WardrobeSlots.ApplySlotBorrow(ctrl, category, WardrobeSlot.Top,     TopSourceHumanId);
+            WardrobeSlots.ApplySlotBorrow(ctrl, category, WardrobeSlot.Bottom,  BottomSourceHumanId);
+            WardrobeSlots.ApplySlotBorrow(ctrl, category, WardrobeSlot.Shoes,   ShoesSourceHumanId);
+            WardrobeSlots.ApplySlotBorrow(ctrl, category, WardrobeSlot.Glasses, GlassesSourceHumanId);
+            WardrobeSlots.ApplySlotBorrow(ctrl, category, WardrobeSlot.Hands,   HandsSourceHumanId);
 
             ctrl.SetCurrentOutfit(category, /*forceLoad:*/ true, /*forceReload:*/ true, /*ignoreIfDead:*/ true);
         }
