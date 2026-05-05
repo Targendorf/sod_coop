@@ -89,7 +89,7 @@ public static class ElevatorPoller
         catch (Exception ex) { Plugin.Log.LogWarning($"[ElevatorPoller] tick: {ex.Message}"); }
     }
 
-    private static int SumCalls(Il2CppSystem.Collections.Generic.Dictionary<int, Il2CppSystem.Collections.Generic.List<ElevatorCall>> calls)
+    private static int SumCalls(Il2CppSystem.Collections.Generic.Dictionary<int, Il2CppSystem.Collections.Generic.List<Elevator.ElevatorCall>> calls)
     {
         int total = 0;
         try
@@ -119,7 +119,7 @@ public static class ElevatorPoller
                 var last = l[l.Count - 1];
                 if (last == null) continue;
                 newestFloor = kv.Key;
-                newestUp    = last.upButton;
+                newestUp    = last.callUp;
             }
 
             if (newestFloor < 0) return;

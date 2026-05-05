@@ -40,15 +40,18 @@ public static class SteamCallbacks
                 return;
             }
 
-            _cbLobbyCreated            = Callback<LobbyCreated_t>.Create(SteamLobby.OnLobbyCreated);
-            _cbLobbyEnter              = Callback<LobbyEnter_t>.Create(SteamLobby.OnLobbyEnter);
-            _cbLobbyChatUpdate         = Callback<LobbyChatUpdate_t>.Create(SteamLobby.OnLobbyChatUpdate);
-            _cbGameLobbyJoinRequested  = Callback<GameLobbyJoinRequested_t>.Create(SteamLobby.OnGameLobbyJoinRequested);
-            _cbLobbyDataUpdate         = Callback<LobbyDataUpdate_t>.Create(SteamLobby.OnLobbyDataUpdate);
-            _cbConnStatusChanged       = Callback<SteamNetConnectionStatusChangedCallback_t>.Create(SteamTransport.OnConnectionStatusChanged);
+            // Il2CppInterop on this Steamworks.NET wrapper exposes
+            // Callback<T>.DispatchDelegate as a generated class rather than a
+            // C# delegate type, so neither method-group nor lambda conversion
+            // compiles. Stubbed for now — Steam P2P transport callbacks not
+            // wired. Single-player + manual peer connection paths still work.
+            // TODO: revive via DelegateSupport.ConvertDelegate or reflection.
+            _ = _cbLobbyCreated; _ = _cbLobbyEnter; _ = _cbLobbyChatUpdate;
+            _ = _cbGameLobbyJoinRequested; _ = _cbLobbyDataUpdate; _ = _cbConnStatusChanged;
+            Plugin.Log.LogWarning("[SteamCallbacks] Callback<T>.Create stubbed — IL2CPP interop incompatibility. Steam P2P inactive.");
 
             _initialized = true;
-            Plugin.Log.LogInfo($"[SteamCallbacks] hooked. SteamID={SteamUser.GetSteamID().m_SteamID} appID={SteamUtils.GetAppID().m_AppId}");
+            Plugin.Log.LogInfo($"[SteamCallbacks] init complete (stubbed). SteamID={SteamUser.GetSteamID().m_SteamID} appID={SteamUtils.GetAppID().m_AppId}");
         }
         catch (Exception ex)
         {

@@ -6,7 +6,7 @@ using Il2CppList = Il2CppSystem.Collections.Generic.List<Evidence.DataKey>;
 namespace SoDCoop.Zdo.Pollers;
 
 /// <summary>
-/// Host-side case-board state diff: 2 Hz over <c>Toolbox.Instance.allCases</c>.
+/// Host-side case-board state diff: 2 Hz over <c>CasePanelController.Instance.activeCases</c>.
 /// Per case, snapshot the <c>caseElements</c> (pinned cards) and
 /// <c>stringColours</c> (links between cards) lists. Diff against the
 /// previous tick:
@@ -108,7 +108,7 @@ public static class CaseBoardPoller
         if (!ZdoFeatureFlags.UseZdoForCaseBoard) return;
         try
         {
-            var allCases = Toolbox.Instance?.allCases;
+            var allCases = CasePanelController.Instance?.activeCases;
             if (allCases == null) return;
 
             var seenPins    = new HashSet<PinId>();
@@ -217,14 +217,17 @@ public static class CaseBoardPoller
                 foreach (var kv in _lastStrings)
                 {
                     if (seenStrings.Contains(kv.Key)) continue;
-                    var fromKs = UnpackKeys(kv.Key.FromKeys);
-                    var toKs   = UnpackKeys(kv.Key.ToKeys);
+                    // BroadcastStringRemoveById expects byte[] for keys (its
+                    // ZDO RPC payload is byte[]). Convert from packed string
+                    // directly without going through Il2CppList.
+                    var fromKsBytes = UnpackKeysToBytes(kv.Key.FromKeys);
+                    var toKsBytes   = UnpackKeysToBytes(kv.Key.ToKeys);
                     try
                     {
                         Sync.CaseBoardSync.BroadcastStringRemoveById(
                             kv.Key.CaseId,
-                            kv.Key.FromEv, fromKs,
-                            kv.Key.ToEv,   toKs);
+                            kv.Key.FromEv, fromKsBytes,
+                            kv.Key.ToEv,   toKsBytes);
                     }
                     catch (Exception ex) { Plugin.Log.LogWarning($"[CaseBoardPoller] string-remove: {ex.Message}"); }
                 }
@@ -275,5 +278,19 @@ public static class CaseBoardPoller
                 l.Add((Evidence.DataKey)b);
         }
         return l;
+    }
+
+    /// <summary>Direct byte[] variant — saves an Il2CppList allocation when
+    /// the consumer (ZDO RPC) wants raw bytes.</summary>
+    private static byte[] UnpackKeysToBytes(string packed)
+    {
+        if (string.IsNullOrEmpty(packed)) return System.Array.Empty<byte>();
+        var parts = packed.Split(',');
+        var bs = new System.Collections.Generic.List<byte>(parts.Length);
+        for (int i = 0; i < parts.Length; i++)
+        {
+            if (byte.TryParse(parts[i], out byte b)) bs.Add(b);
+        }
+        return bs.ToArray();
     }
 }

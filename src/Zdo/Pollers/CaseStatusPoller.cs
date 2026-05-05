@@ -4,7 +4,7 @@ using System.Collections.Generic;
 namespace SoDCoop.Zdo.Pollers;
 
 /// <summary>
-/// Host-side per-case status diff: 1 Hz over <c>Toolbox.Instance.allCases</c>.
+/// Host-side per-case status diff: 1 Hz over <c>CasePanelController.Instance.activeCases</c>.
 /// Tracks <c>(caseID → caseStatus byte)</c>; on flip re-broadcasts via the
 /// existing <see cref="Sync.CaseBoardSync.BroadcastStatus"/> path.
 ///
@@ -39,7 +39,7 @@ public static class CaseStatusPoller
         if (!ZdoFeatureFlags.UseZdoForCaseStatus) return;
         try
         {
-            var list = Toolbox.Instance?.allCases;
+            var list = CasePanelController.Instance?.activeCases;
             if (list == null) return;
 
             // Baseline pass — record but don't broadcast.

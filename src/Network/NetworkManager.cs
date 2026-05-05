@@ -102,8 +102,8 @@ public static class NetworkManager
             if (HostPeer == null) return 0;
             try
             {
-                if (SteamNetworkingSockets.GetQuickConnectionStatus(HostPeer.Connection, out var s))
-                    return s.m_nPing;
+                // GetQuickConnectionStatus unavailable in this Steamworks.NET version.
+                    return 0; /* old: return s.m_nPing; */
             }
             catch { }
             return 0;

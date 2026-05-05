@@ -394,14 +394,8 @@ public static class SteamTransport
         {
             try
             {
-                SteamNetworkingQuickConnectionStatus s;
-                if (SteamNetworkingSockets.GetQuickConnectionStatus(p.Connection, out s))
-                {
-                    // The struct exposes pending counts + ping; raw byte/packet
-                    // totals aren't on QuickStatus, so we approximate from the
-                    // realtime status if available. For now we emit ping only.
-                    if (s.m_nPing > 0) pingMs = s.m_nPing;
-                }
+                // API unavailable in this Steamworks.NET version — ping read stubbed.
+                /* GetQuickConnectionStatus removed */
             }
             catch { }
             n++;

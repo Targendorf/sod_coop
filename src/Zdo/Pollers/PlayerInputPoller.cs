@@ -200,11 +200,11 @@ public static class PlayerInputPoller
             if (_initialized)
             {
                 if (curMain > COMBAT_DELAY_THRESHOLD && _lastAttackMainDelay <= COMBAT_DELAY_THRESHOLD)
-                    TryBroadcastCombat(SoDCoop.Sync.ItemActionKind.MeleeAttack);
+                    TryBroadcastCombat(SoDCoop.Network.ItemActionKind.MeleeAttack);
                 if (curSec  > COMBAT_DELAY_THRESHOLD && _lastAttackSecondaryDelay <= COMBAT_DELAY_THRESHOLD)
-                    TryBroadcastCombat(SoDCoop.Sync.ItemActionKind.Block);
+                    TryBroadcastCombat(SoDCoop.Network.ItemActionKind.Block);
                 if (curCounter && !_lastCounterActive)
-                    TryBroadcastCombat(SoDCoop.Sync.ItemActionKind.CounterAttack);
+                    TryBroadcastCombat(SoDCoop.Network.ItemActionKind.CounterAttack);
             }
             _lastAttackMainDelay      = curMain;
             _lastAttackSecondaryDelay = curSec;
@@ -247,14 +247,14 @@ public static class PlayerInputPoller
     /// already-handled. Without this, a fresh-session player would see
     /// every attack broadcast TWICE — once via the patch postfix and once
     /// via the poller catching the field reset on the next tick.</summary>
-    public static void MarkCombatBroadcasted(SoDCoop.Sync.ItemActionKind kind)
+    public static void MarkCombatBroadcasted(SoDCoop.Network.ItemActionKind kind)
     {
         int idx = (int)kind;
         if (idx < 0 || idx >= _lastBroadcastAt.Length) return;
         _lastBroadcastAt[idx] = UnityEngine.Time.unscaledTime;
     }
 
-    private static void TryBroadcastCombat(SoDCoop.Sync.ItemActionKind kind)
+    private static void TryBroadcastCombat(SoDCoop.Network.ItemActionKind kind)
     {
         try
         {

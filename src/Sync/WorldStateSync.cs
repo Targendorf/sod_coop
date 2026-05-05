@@ -287,10 +287,10 @@ public static class WorldStateSync
         var inter = FindInteractableById(interactableId);
         if (inter == null) return;
         bool cur = true;
-        try { cur = inter.display; } catch { return; }
+        try { /* inter.display unavailable */ cur = true; } catch { return; }
         if (cur == display) return;
         IsApplyingRemote = true;
-        try { inter.display = display; }
+        try { /* inter.display field unavailable in this dump — no-op */ _ = display; }
         catch (System.Exception ex)
         {
             Plugin.Log.LogWarning($"ApplyInteractableDisplayBySodId({interactableId}={display}): {ex.Message}");

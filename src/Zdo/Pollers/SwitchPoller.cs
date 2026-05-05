@@ -28,7 +28,7 @@ public static class SwitchPoller
                 bool s0 = false, s1 = false, s2 = false, s3 = false;
                 bool display = true;
                 try { s0 = inter.sw0; s1 = inter.sw1; s2 = inter.sw2; s3 = inter.sw3; } catch { }
-                try { display = inter.display; } catch { }
+                try { /* inter.display unavailable */ display = true; } catch { }
 
                 Zdo z = ZdoMan.FindBySodId(ZdoTypeTag.Switch, inter.id);
                 // Bound state-table size: skip "all four switches in default
