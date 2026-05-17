@@ -130,41 +130,19 @@ public static class WorldAutoLoad
         }
 
         // ── Step 2.5: suppress ChapterIntro / tutorial ───────────────────
-        // SoD's first-run flow plays ChapterIntro on a fresh city — that's
-        // what the player sees as "tutorial" (cinematic + scripted clue
-        // spawns + scripted mission setup). For a coop joiner we never want
-        // this: the host has already played through (or is sandbox), so the
-        // intro on the joiner just blocks input and shuffles cameras while
-        // the ZDO snapshot streams in. Worse, the intro's scripted spawns
-        // (kidnapper / notewriter / killer clues) compete with the host's
-        // already-spawned versions arriving through EvidenceSync.
+        // First attempt (regression in commit 8ff87c7) set both
+        // Game.skipIntro=true AND Game.loadChapter=-1 here. The latter
+        // crashed CityConstructor.StartLoading with
+        // ArgumentOutOfRangeException — SoD uses loadChapter as a direct
+        // index into a chapter list, and -1 is not a valid sentinel at
+        // that code path. The intro-skip is now handled by a Harmony
+        // Prefix on ChapterController.LoadChapter (see
+        // Patches.GamePatches.Patch_ChapterController_LoadChapter), gated
+        // on IsBootstrappingWorld so host playthrough is untouched.
         //
-        // Force Game.skipIntro=true and Game.loadChapter=-1 BEFORE
-        // ConfirmCityGeneration so SoD's chapter selector picks "no chapter"
-        // when the city loads. ChapterController will short-circuit and the
-        // player drops straight into sandbox-style play. The host-driven
-        // world state then arrives via ZDOs and is applied on top.
-        try
-        {
-            var game = global::Game.Instance;
-            if (game != null)
-            {
-                game.skipIntro = true;
-                game.loadChapter = -1;
-                Plugin.Log.LogInfo(
-                    "[WorldAutoLoad] forced Game.skipIntro=true, Game.loadChapter=-1 (suppress tutorial intro for coop joiner).");
-            }
-            else
-            {
-                Plugin.Log.LogWarning(
-                    "[WorldAutoLoad] Game.Instance was null while preparing intro-skip — tutorial may still play.");
-            }
-        }
-        catch (Exception ex)
-        {
-            Plugin.Log.LogWarning(
-                $"[WorldAutoLoad] failed to set Game.skipIntro / loadChapter: {ex.Message} — tutorial may still play.");
-        }
+        // We deliberately do NOT touch Game.Instance fields here anymore:
+        // SoD's own loader knows how to pick the chapter, and our patch
+        // intercepts ChapterController.LoadChapter on the joiner-only path.
 
         // ── Step 3: kick off generation ──────────────────────────────────
         // SoD's normal flow is: user clicks Generate → OnContinueCityGeneration

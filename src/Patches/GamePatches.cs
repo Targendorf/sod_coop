@@ -2304,4 +2304,48 @@ public static class GamePatches
         }
     }
     */
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  ChapterIntro.OnGameStart — suppress tutorial cinematic on coop joiners.
+    // ─────────────────────────────────────────────────────────────────────────
+    //
+    // ChapterIntro is SoD's first-run story chapter. Its OnGameStart runs the
+    // tutorial cinematic, places the player in the starting apartment, spawns
+    // the kidnapper/notewriter/killer scripted clues, and primes the case
+    // board with the first mission. For a coop client auto-loading off the
+    // host's seed we want NONE of that — the host has already run it (or is
+    // sandbox), and the case state arrives through EvidenceSync / ZdoMan.
+    //
+    // The earlier attempt (commit 8ff87c7) tried to do this from outside
+    // SoD by setting Game.skipIntro = true and Game.loadChapter = -1 before
+    // ConfirmCityGeneration. That crashed CityConstructor.StartLoading with
+    // ArgumentOutOfRangeException — loadChapter is used as a direct array
+    // index inside the loader, not a "no chapter" sentinel.
+    //
+    // This narrow Prefix is the safer mechanism: chapter still loads
+    // normally (so ChapterController.loadedChapter, chapterScript, etc. are
+    // all wired up — no downstream NREs), only the OnGameStart cinematic is
+    // skipped, and only when WorldAutoLoad is in the middle of a coop-
+    // joiner bootstrap. Host playthrough and solo play are untouched.
+    [HarmonyPatch(typeof(global::ChapterIntro), nameof(global::ChapterIntro.OnGameStart))]
+    public static class ChapterIntro_OnGameStart_Patch
+    {
+        [HarmonyPrefix]
+        public static bool Prefix()
+        {
+            try
+            {
+                if (!WorldAutoLoad.IsBootstrappingWorld) return true; // host / solo / re-load — normal flow
+                Plugin.Log.LogInfo(
+                    "[Patch.ChapterIntro] coop joiner — suppressing ChapterIntro.OnGameStart " +
+                    "(no tutorial cinematic; case state will arrive via EvidenceSync).");
+                return false; // skip original
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"ChapterIntro.OnGameStart patch: {ex.Message}");
+                return true; // on any error, let the original run so we don't half-start
+            }
+        }
+    }
 }
