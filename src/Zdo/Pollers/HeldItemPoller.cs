@@ -30,6 +30,10 @@ public static class HeldItemPoller
     /// next tick to re-baseline.</summary>
     public static void ResetBaseline() => SoDCoop.Sync.InventorySync.ResetHeldItemBaseline();
 
+    /// <summary>Probe-time entry point used by <see cref="PollerHealthCheck"/>.
+    /// This poller has no bypass-able gates, so probe just forwards to Tick.</summary>
+    internal static void ProbeBody(float now) => Tick(now);
+
     private static void Tick(float now)
     {
         // Phase G.5 (Wave 1.3): no-op. LocalPlayerPoller now writes

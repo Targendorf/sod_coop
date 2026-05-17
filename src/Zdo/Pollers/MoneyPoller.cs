@@ -27,6 +27,10 @@ public static class MoneyPoller
 
     public static void Register() => ZdoPollerHost.RegisterAnyPeer(NAME, 1f / TICK_HZ, Tick);
 
+    /// <summary>Probe-time entry point used by <see cref="PollerHealthCheck"/>.
+    /// This poller has no bypass-able gates, so probe just forwards to Tick.</summary>
+    internal static void ProbeBody(float now) => Tick(now);
+
     private static void Tick(float now)
     {
         try

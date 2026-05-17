@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using SoDCoop.Player;
 using SoDCoop.Sync;
 using UnityEngine;
+using UnityEngine.Rendering.HighDefinition;
 
 namespace SoDCoop.UI.Coop;
 
@@ -122,6 +123,30 @@ public static class AppearancePreviewStage
             _camera.allowMSAA      = false;
             _camera.enabled        = false;
 
+            // HDRP companion: a plain UnityEngine.Camera renders NOTHING in
+            // HDRP — every HDRP/Lit material in the scene is invisible to it.
+            // HDAdditionalCameraData wires the camera into the HDRenderPipeline
+            // dispatch, after which all the citizen MeshRenderers (which use
+            // HDRP/Lit) actually rasterise. Default values are fine; we just
+            // need the component to exist on the same GameObject.
+            try
+            {
+                var hdCam = camGo.AddComponent<HDAdditionalCameraData>();
+                // Solid-colour clear is what we configured on the Camera; let
+                // HDRP honor it instead of running an expensive sky/volumetric
+                // pass for an offscreen preview.
+                try { hdCam.clearColorMode = HDAdditionalCameraData.ClearColorMode.Color; } catch { }
+                try { hdCam.backgroundColorHDR = _camera.backgroundColor; } catch { }
+                try { hdCam.clearDepth = true; } catch { }
+                // Skip volumetric clouds / fog / the bulk of post-processing —
+                // we want a clean lit pawn portrait, not a scene shot.
+                try { hdCam.volumeLayerMask = 0; } catch { }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[AppearancePreviewStage] HDAdditionalCameraData attach failed: {ex.Message}");
+            }
+
             RenderTex = new RenderTexture(360, 480, 16, RenderTextureFormat.ARGB32)
             {
                 name = "SoDCoop_AppearancePreviewRT",
@@ -143,6 +168,25 @@ public static class AppearancePreviewStage
             _keyLight.intensity = 1.1f;
             _keyLight.shadows   = LightShadows.None;
             _keyLight.cullingMask = ~0;
+
+            // HDRP companion for the light. Without HDAdditionalLightData,
+            // HDRP ignores the light entirely and the pawn renders unlit
+            // (i.e. nearly black). Default values yield a sane directional
+            // sun-style light.
+            try
+            {
+                var hdLight = lightGo.AddComponent<HDAdditionalLightData>();
+                // HDRP uses physical-light units; bump the lux value so the
+                // pawn isn't washed out OR underlit. ~10000 lux ≈ overcast sky.
+                try { hdLight.intensity = 10000f; } catch { }
+                try { hdLight.lightUnit = LightUnit.Lux; } catch { }
+                try { hdLight.affectDiffuse  = true; } catch { }
+                try { hdLight.affectSpecular = true; } catch { }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[AppearancePreviewStage] HDAdditionalLightData attach failed: {ex.Message}");
+            }
 
             Plugin.Log.LogInfo("[AppearancePreviewStage] stage built (RT=360x480, persistent).");
         }
@@ -358,6 +402,19 @@ public static class AppearancePreviewStage
             _yaw = 0f;
             ApplyPawnRotation();
 
+            // Try to (re)build body / outfit geometry now that the clone is
+            // active. Citizen bodies in SoD are rigid MeshRenderers parented
+            // to anim bones; LoadCurrentOutfit forces a refresh so any
+            // missing parts re-spawn under the live (now-activated) hierarchy.
+            try
+            {
+                if (_pawnCtrl != null) _pawnCtrl.LoadCurrentOutfit(forceLoad: true, forceReload: true);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[AppearancePreviewStage] LoadCurrentOutfit: {ex.Message}");
+            }
+
             _currentCfg = cfg;
             _currentCfg.IsCustomized = true;
             ApplyToPawn(_currentCfg);
@@ -370,11 +427,78 @@ public static class AppearancePreviewStage
 
             Plugin.Log.LogInfo($"[AppearancePreviewStage] Begin OK — pawn at {_pawnGo.transform.position}, camera at {_camera.transform.position}, RT={(RenderTex != null ? $"{RenderTex.width}x{RenderTex.height}" : "null")}.");
 
+            DumpRendererDiagnostics();
+
             IsActive = true;
         }
         catch (Exception ex)
         {
             Plugin.Log.LogError($"AppearancePreviewStage.Begin: {ex}");
+        }
+    }
+
+    /// <summary>
+    /// Walk the clone's hierarchy after activation and log every MeshRenderer
+    /// + MeshFilter pair with its enabled / activeInHierarchy / mesh / shader
+    /// state. Diagnostic only — used when the preview shows an empty frame
+    /// to isolate whether geometry, materials, layering, or the camera is at
+    /// fault.
+    /// </summary>
+    private static void DumpRendererDiagnostics()
+    {
+        try
+        {
+            if (_pawnGo == null) return;
+            int total = 0, withMesh = 0, enabledCnt = 0, activeCnt = 0;
+            int sample = 0;
+            foreach (var mr in _pawnGo.GetComponentsInChildren<MeshRenderer>(true))
+            {
+                if (mr == null) continue;
+                total++;
+                bool en = mr.enabled;
+                bool act = mr.gameObject.activeInHierarchy;
+                if (en) enabledCnt++;
+                if (act) activeCnt++;
+                MeshFilter mf = null;
+                try { mf = mr.GetComponent<MeshFilter>(); } catch { }
+                bool hasMesh = mf != null && mf.sharedMesh != null;
+                if (hasMesh) withMesh++;
+
+                if (sample < 6)
+                {
+                    string path = "";
+                    try
+                    {
+                        var t = mr.transform;
+                        var stack = new System.Collections.Generic.List<string>();
+                        while (t != null && t != _pawnGo.transform) { stack.Add(t.name); t = t.parent; }
+                        stack.Reverse();
+                        path = string.Join("/", stack);
+                    }
+                    catch { }
+                    string shader = "?";
+                    try { shader = mr.sharedMaterial?.shader?.name ?? "<no mat>"; } catch { }
+                    var c = mr.bounds.center;
+                    var e = mr.bounds.extents;
+                    Plugin.Log.LogInfo($"[AppearancePreviewStage]   MR[{sample}] {path}: en={en} act={act} mesh={hasMesh} shader='{shader}' center=({c.x:F1},{c.y:F1},{c.z:F1}) ext=({e.x:F2},{e.y:F2},{e.z:F2}) layer={mr.gameObject.layer}");
+                    sample++;
+                }
+            }
+            Plugin.Log.LogInfo($"[AppearancePreviewStage] dump: {total} MRs, {enabledCnt} enabled, {activeCnt} active-in-hierarchy, {withMesh} with-mesh.");
+
+            // Also report camera + RT state for quick triage.
+            if (_camera != null)
+            {
+                Plugin.Log.LogInfo($"[AppearancePreviewStage] camera: enabled={_camera.enabled} cullingMask=0x{_camera.cullingMask:X} layer={_camera.gameObject.layer} target={_camera.targetTexture?.name ?? "<none>"}");
+            }
+            if (RenderTex != null)
+            {
+                Plugin.Log.LogInfo($"[AppearancePreviewStage] RT: created={RenderTex.IsCreated()} {RenderTex.width}x{RenderTex.height} format={RenderTex.format} depth={RenderTex.depth}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"[AppearancePreviewStage] DumpRendererDiagnostics: {ex.Message}");
         }
     }
 

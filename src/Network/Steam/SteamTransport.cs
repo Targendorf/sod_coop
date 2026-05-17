@@ -23,10 +23,15 @@ namespace SoDCoop.Network.Steam;
 /// </summary>
 public static class SteamTransport
 {
-    /// <summary>Virtual port: an arbitrary u16 the lobby agrees on so multiple
-    /// SDK products in the same process don't cross-deliver. SoD uses 0
-    /// internally for its own networking; we pick 4242 to avoid collision.</summary>
-    public const int VIRTUAL_PORT = 4242;
+    /// <summary>Virtual port: u16 both peers agree on. Valheim, Risk of Rain
+    /// 2, and most other Steam-P2P-using games use 0. SoD is single-player,
+    /// no cross-talk risk. The previous value 4242 was untested folklore —
+    /// the field accepts any u16 but Steam relays sanity-check the listen
+    /// socket presence per-vport, and a non-default vport on a vanilla SoD
+    /// install (with no listener at vport 4242 in the relay's view of this
+    /// SteamID) causes the routing pass to fall back to slower paths and
+    /// eventually time out at FindingRoute. Match the world.</summary>
+    public const int VIRTUAL_PORT = 0;
 
     private const int RECV_BATCH = 64;
     private const int MAX_PEERS  = 4;
@@ -58,6 +63,26 @@ public static class SteamTransport
     private static HSteamListenSocket _listenSocket = HSteamListenSocket.Invalid;
     private static HSteamNetPollGroup _pollGroup    = HSteamNetPollGroup.Invalid;
 
+    /// <summary>Captured at plugin init (Unity main thread). Used by
+    /// <see cref="OnConnectionStatusChanged"/> and <see cref="Pump"/> to
+    /// assert they're not being driven off a worker thread — under IL2CPP
+    /// some Steam SDK builds historically dispatched callbacks off the
+    /// thread that called RunCallbacks. We funnel via SteamCallbacks.RunCallbacks
+    /// which runs from NetworkManager.Update() (Unity main thread), so any
+    /// other observed thread id means the SDK invariant we rely on for
+    /// non-locked dictionary access has been violated.</summary>
+    private static int _mainThreadId;
+
+    /// <summary>Capture the current thread id as the "main thread" baseline
+    /// for later assertion logging. Idempotent — last call wins, but in
+    /// practice it's invoked exactly once from <see cref="NetworkManager.Initialize"/>
+    /// on plugin load.</summary>
+    public static void RememberMainThread()
+    {
+        _mainThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
+        Plugin.Log.LogInfo($"[SteamTransport] main thread id remembered: {_mainThreadId}");
+    }
+
     /// <summary>Active peers keyed by underlying connection handle.</summary>
     private static readonly Dictionary<HSteamNetConnection, SteamPeer> _peers = new();
 
@@ -76,19 +101,35 @@ public static class SteamTransport
 
         try
         {
-            // Listen on the virtual port for ALL P2P connections; no IP/port
-            // matters here because SDR routes by SteamID.
-            _listenSocket = SteamNetworkingSockets.CreateListenSocketP2P(VIRTUAL_PORT, 0, null);
-            _pollGroup    = SteamNetworkingSockets.CreatePollGroup();
+            // Force the SDR auth-cert request before opening the listen
+            // socket. Without an issued cert the relay layer will accept
+            // inbound rendezvous packets but can't validate them, leaving
+            // the connection stuck in FindingRoute until the 10 s default
+            // timeout fires. InitAuthentication is async — by the time the
+            // first peer dials in (typically several seconds later) the
+            // cert is in hand.
+            int authRc = SteamSocketsNative.InitAuthentication();
+            Plugin.Log.LogInfo($"[SteamTransport] InitAuthentication kicked off, rc={authRc}");
 
-            if (_listenSocket == HSteamListenSocket.Invalid)
+            // Bypass managed SteamNetworkingSockets.CreateListenSocketP2P /
+            // CreatePollGroup — those silently return fake handles under
+            // IL2CPP interop. Listen socket "exists" managed-side but Steam
+            // runtime never registered it, so inbound P2P never lands. Native
+            // P/Invoke goes straight to steam_api64.dll.
+            uint hSocket = SteamSocketsNative.CreateListenSocketP2P(VIRTUAL_PORT);
+            uint hPoll   = SteamSocketsNative.CreatePollGroup();
+
+            if (hSocket == 0)
             {
-                Plugin.Log.LogError("[SteamTransport] CreateListenSocketP2P returned Invalid.");
+                Plugin.Log.LogError("[SteamTransport] CreateListenSocketP2P (native) returned Invalid.");
                 _pollGroup = HSteamNetPollGroup.Invalid;
                 return false;
             }
 
-            Plugin.Log.LogInfo($"[SteamTransport] listening on virtual port {VIRTUAL_PORT}.");
+            _listenSocket = new HSteamListenSocket(hSocket);
+            _pollGroup    = hPoll == 0 ? HSteamNetPollGroup.Invalid : new HSteamNetPollGroup(hPoll);
+
+            Plugin.Log.LogInfo($"[SteamTransport] listening on virtual port {VIRTUAL_PORT} (native, hSocket={hSocket}, hPollGroup={hPoll}).");
             return true;
         }
         catch (Exception ex)
@@ -108,26 +149,37 @@ public static class SteamTransport
             // prior failed attempt.
             CloseAllPeers("client reconnect");
 
+            // Force the SDR auth-cert request on the joiner side too, before
+            // dialing. Same reason as the host: without a cert the relay
+            // can't validate routing and FindingRoute times out.
+            int authRc = SteamSocketsNative.InitAuthentication();
+            Plugin.Log.LogInfo($"[SteamTransport] InitAuthentication (joiner) kicked off, rc={authRc}");
+
             if (_pollGroup == HSteamNetPollGroup.Invalid)
-                _pollGroup = SteamNetworkingSockets.CreatePollGroup();
-
-            var ident = new SteamNetworkingIdentity();
-            ident.SetSteamID(hostSteamId);
-
-            var conn = SteamNetworkingSockets.ConnectP2P(ref ident, VIRTUAL_PORT, 0, null);
-            if (conn == HSteamNetConnection.Invalid)
             {
-                Plugin.Log.LogError($"[SteamTransport] ConnectP2P → invalid handle for host {hostSteamId.m_SteamID}");
+                uint hPoll = SteamSocketsNative.CreatePollGroup();
+                if (hPoll != 0) _pollGroup = new HSteamNetPollGroup(hPoll);
+            }
+
+            // Bypass managed ConnectP2P (same IL2CPP wrapper issue as
+            // CreateListenSocketP2P — silently returns a fake handle that
+            // doesn't actually correspond to a Steam-registered connection).
+            uint hConn = SteamSocketsNative.ConnectP2P(hostSteamId.m_SteamID, VIRTUAL_PORT);
+            if (hConn == 0)
+            {
+                Plugin.Log.LogError($"[SteamTransport] ConnectP2P (native) → invalid handle for host {hostSteamId.m_SteamID}");
                 try { OnConnectFailed?.Invoke("Steam returned invalid connection handle"); } catch { }
                 return false;
             }
 
-            SteamNetworkingSockets.SetConnectionPollGroup(conn, _pollGroup);
+            var conn = new HSteamNetConnection(hConn);
+            if (_pollGroup != HSteamNetPollGroup.Invalid)
+                SteamSocketsNative.SetConnectionPollGroup(hConn, _pollGroup.m_HSteamNetPollGroup);
 
             var peer = new SteamPeer(conn, hostSteamId);
             _peers[conn] = peer;
 
-            Plugin.Log.LogInfo($"[SteamTransport] dialing host {hostSteamId.m_SteamID} on virtual port {VIRTUAL_PORT}.");
+            Plugin.Log.LogInfo($"[SteamTransport] dialing host {hostSteamId.m_SteamID} on virtual port {VIRTUAL_PORT} (native, hConn={hConn}).");
             return true;
         }
         catch (Exception ex)
@@ -158,12 +210,13 @@ public static class SteamTransport
             IntPtr basePtr = pinned.AddrOfPinnedObject();
             IntPtr ptr = offset == 0 ? basePtr : new IntPtr(basePtr.ToInt64() + offset);
             long outMsgNumber;
-            var result = SteamNetworkingSockets.SendMessageToConnection(
-                peer.Connection, ptr, (uint)length, flags, out outMsgNumber);
+            int result = SteamSocketsNative.SendMessageToConnection(
+                peer.Connection.m_HSteamNetConnection, ptr, (uint)length, flags, out outMsgNumber);
 
-            if (result != EResult.k_EResultOK)
+            // Steam EResult: 1 = OK
+            if (result != 1)
             {
-                Plugin.Log.LogWarning($"[SteamTransport] Send → {result} (peer={peer.DisplayName} len={length})");
+                Plugin.Log.LogWarning($"[SteamTransport] Send → EResult={result} (peer={peer.DisplayName} len={length})");
                 return false;
             }
             return true;
@@ -207,43 +260,79 @@ public static class SteamTransport
 
     public static void Pump()
     {
-        if (_pollGroup == HSteamNetPollGroup.Invalid) return;
-
-        IntPtr[] msgs = new IntPtr[RECV_BATCH];
-        int got;
-        try { got = SteamNetworkingSockets.ReceiveMessagesOnPollGroup(_pollGroup, msgs, RECV_BATCH); }
-        catch (Exception ex)
+        if (_mainThreadId != 0 && System.Threading.Thread.CurrentThread.ManagedThreadId != _mainThreadId)
         {
-            Plugin.Log.LogWarning($"[SteamTransport] ReceiveMessagesOnPollGroup: {ex.Message}");
-            return;
+            Plugin.Log.LogError($"[SteamTransport] Pump fired on thread {System.Threading.Thread.CurrentThread.ManagedThreadId}, expected main {_mainThreadId} — driving native receive off-main is unsupported.");
+            // Don't bail — log loud, continue. Better to corrupt state visibly than to silently drop the callback.
         }
 
-        for (int i = 0; i < got; i++)
+        if (_pollGroup == HSteamNetPollGroup.Invalid) return;
+
+        // Allocate one unmanaged buffer of IntPtr[RECV_BATCH] that the native
+        // ReceiveMessagesOnPollGroup fills in. Reusing it across calls would
+        // be marginally faster but per-frame allocation is fine — only
+        // RECV_BATCH=64 IntPtrs per frame.
+        IntPtr msgPtrsBuf = Marshal.AllocHGlobal(IntPtr.Size * RECV_BATCH);
+        try
         {
-            IntPtr msgPtr = msgs[i];
-            if (msgPtr == IntPtr.Zero) continue;
-            try
+            int got = SteamSocketsNative.ReceiveMessagesOnPollGroup(
+                _pollGroup.m_HSteamNetPollGroup, msgPtrsBuf, RECV_BATCH);
+            if (got <= 0) return;
+
+            for (int i = 0; i < got; i++)
             {
-                var msg = Marshal.PtrToStructure<SteamNetworkingMessage_t>(msgPtr);
-                var peer = LookupPeer(msg.m_conn);
-                int len = msg.m_cbSize;
-                if (peer != null && len > 0 && msg.m_pData != IntPtr.Zero)
+                IntPtr msgPtr = Marshal.ReadIntPtr(msgPtrsBuf, i * IntPtr.Size);
+                if (msgPtr == IntPtr.Zero) continue;
+                try
                 {
-                    byte[] buf = new byte[len];
-                    Marshal.Copy(msg.m_pData, buf, 0, len);
-                    try { OnMessage?.Invoke(peer, buf, len); }
-                    catch (Exception ex) { Plugin.Log.LogError($"[SteamTransport] OnMessage handler threw: {ex}"); }
+                    // SteamNetworkingMessage_t native layout (Pack=8, from
+                    // steamnetworkingtypes.h):
+                    //   offset 0    void* m_pData              (8 B)
+                    //   offset 8    int   m_cbSize             (4 B)
+                    //   offset 12   HSteamNetConnection m_conn (uint32, 4 B)
+                    //   offset 16   SteamNetworkingIdentity m_identityPeer (136 B)
+                    //   offset 152  int64 m_nConnUserData
+                    //   ... (rest ignored for receive)
+                    //
+                    // BUG fix: previously we read hConn from offset 16 — that's
+                    // the start of m_identityPeer (m_eType = 16 for SteamID).
+                    // LookupPeer(new HSteamNetConnection(16)) always returned
+                    // null, so every inbound message was silently dropped.
+                    // This is why Steam connect succeeded (FindingRoute →
+                    // Connected) but the bootstrap handshake never advanced —
+                    // host saw the peer, accepted, then never received any
+                    // packets from it.
+                    IntPtr pData = Marshal.ReadIntPtr(msgPtr, 0);
+                    int    cbSize = Marshal.ReadInt32(msgPtr, 8);
+                    uint   hConn = (uint)Marshal.ReadInt32(msgPtr, 12);
+
+                    var peer = LookupPeer(new HSteamNetConnection(hConn));
+                    if (peer != null && cbSize > 0 && pData != IntPtr.Zero)
+                    {
+                        byte[] buf = new byte[cbSize];
+                        Marshal.Copy(pData, buf, 0, cbSize);
+                        try { OnMessage?.Invoke(peer, buf, cbSize); }
+                        catch (Exception ex) { Plugin.Log.LogError($"[SteamTransport] OnMessage handler threw: {ex}"); }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Log.LogWarning($"[SteamTransport] message dispatch: {ex.Message}");
+                }
+                finally
+                {
+                    // Steam manages the message buffer; we must release it.
+                    SteamSocketsNative.ReleaseMessage(msgPtr);
                 }
             }
-            catch (Exception ex)
-            {
-                Plugin.Log.LogWarning($"[SteamTransport] message dispatch: {ex.Message}");
-            }
-            finally
-            {
-                // Steam manages the message buffer; we must release it.
-                try { SteamNetworkingMessage_t.Release(msgPtr); } catch { }
-            }
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"[SteamTransport] Pump: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(msgPtrsBuf);
         }
     }
 
@@ -254,24 +343,60 @@ public static class SteamTransport
 
     // ─── Connection-status callback (Steam → us) ───────────────────────────
 
-    public static void OnConnectionStatusChanged(SteamNetConnectionStatusChangedCallback_t cb)
+    /// <summary>
+    /// Connection-status callback handler. Takes primitives instead of the
+    /// IL2Cpp <c>SteamNetConnectionStatusChangedCallback_t</c> shim — that
+    /// type isn't blittable / lacks layout metadata under IL2Cpp interop, so
+    /// <see cref="System.Runtime.InteropServices.Marshal.PtrToStructure"/>
+    /// can't decode it. Caller (SteamCallbacks) reads the bytes from the raw
+    /// pointer and passes the few fields we actually use.
+    ///
+    /// <para><paramref name="hListenSocket"/> is <c>m_info.m_hListenSocket</c>
+    /// — non-zero iff this connection arrived on one of our listen sockets,
+    /// i.e. it's INBOUND. Zero/invalid means we created this connection
+    /// ourselves via <c>ConnectP2P</c> and it's OUTBOUND. State alone can't
+    /// tell us — both inbound-just-arrived and outbound-just-dialled appear
+    /// as None→Connecting.</para>
+    /// </summary>
+    public static void OnConnectionStatusChanged(uint hConn, ulong remoteSteamId64, uint hListenSocket, int oldStateRaw, int newStateRaw, string endDebug)
     {
-        var conn   = cb.m_hConn;
-        var info   = cb.m_info;
-        var oldSt  = cb.m_eOldState;
-        var newSt  = info.m_eState;
-        var remote = new CSteamID(info.m_identityRemote.GetSteamID64());
+        if (_mainThreadId != 0 && System.Threading.Thread.CurrentThread.ManagedThreadId != _mainThreadId)
+        {
+            Plugin.Log.LogError($"[SteamTransport] OnConnectionStatusChanged fired on thread {System.Threading.Thread.CurrentThread.ManagedThreadId}, expected main {_mainThreadId} — Steam SDK threading invariant violated. Subsequent dictionary access may corrupt state.");
+            // Don't bail — log loud, continue. Better to corrupt state visibly than to silently drop the callback.
+        }
+
+        var conn   = new HSteamNetConnection(hConn);
+        var oldSt  = (ESteamNetworkingConnectionState)oldStateRaw;
+        var newSt  = (ESteamNetworkingConnectionState)newStateRaw;
+        var remote = new CSteamID(remoteSteamId64);
+        bool isInbound = hListenSocket != 0;
+
+        // Diagnostic: trace every state transition so we can verify the
+        // manual byte decode is producing sane values. Drop once stable.
+        try { Plugin.Log.LogInfo($"[SteamTransport] OnConnStatus: conn={hConn} remote={remoteSteamId64} inbound={isInbound} {oldSt}→{newSt}"); } catch { }
 
         try
         {
-            // Inbound connection request — host side.
+            // None→Connecting: connection just appeared. Two cases:
+            //   • inbound (m_hListenSocket != 0): a remote dialed our listen
+            //     socket — host side, must AcceptConnection.
+            //   • outbound (m_hListenSocket == 0): we just called ConnectP2P
+            //     ourselves — client side, nothing to do, wait for Connected.
             if (newSt == ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_Connecting
                 && oldSt == ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_None)
             {
+                if (!isInbound)
+                {
+                    // Our own outbound dial. Steam reports it; nothing to do.
+                    return;
+                }
                 if (_listenSocket == HSteamListenSocket.Invalid)
                 {
-                    // We're a client and got an unsolicited inbound — close.
-                    SteamNetworkingSockets.CloseConnection(conn, 0, "client refused inbound", false);
+                    // We're a client and somehow got an inbound connection
+                    // (unexpected — listen socket must already exist for an
+                    // inbound to arrive). Close it.
+                    SteamSocketsNative.CloseConnection(hConn, 0, "client refused inbound", false);
                     return;
                 }
 
@@ -279,27 +404,28 @@ public static class SteamTransport
                 if (!IsLobbyMember(remote))
                 {
                     Plugin.Log.LogWarning($"[SteamTransport] reject {remote.m_SteamID} — not a member of lobby {SteamLobby.CurrentLobby.m_SteamID}");
-                    SteamNetworkingSockets.CloseConnection(conn, 0, "not in lobby", false);
+                    SteamSocketsNative.CloseConnection(hConn, 0, "not in lobby", false);
                     return;
                 }
 
                 if (_peers.Count >= MAX_PEERS)
                 {
                     Plugin.Log.LogWarning($"[SteamTransport] reject {remote.m_SteamID} — server full ({_peers.Count}/{MAX_PEERS})");
-                    SteamNetworkingSockets.CloseConnection(conn, 0, "server full", false);
+                    SteamSocketsNative.CloseConnection(hConn, 0, "server full", false);
                     return;
                 }
 
-                var accept = SteamNetworkingSockets.AcceptConnection(conn);
-                if (accept != EResult.k_EResultOK)
+                int acceptRc = SteamSocketsNative.AcceptConnection(hConn);
+                Plugin.Log.LogInfo($"[SteamTransport] AcceptConnection (native) {remote.m_SteamID}: EResult={acceptRc}");
+                if (acceptRc != 1)
                 {
-                    Plugin.Log.LogWarning($"[SteamTransport] AcceptConnection {remote.m_SteamID}: {accept}");
-                    SteamNetworkingSockets.CloseConnection(conn, 0, $"accept failed {accept}", false);
+                    Plugin.Log.LogWarning($"[SteamTransport] AcceptConnection failed for {remote.m_SteamID}: EResult={acceptRc}");
+                    SteamSocketsNative.CloseConnection(hConn, 0, $"accept failed {acceptRc}", false);
                     return;
                 }
 
                 if (_pollGroup != HSteamNetPollGroup.Invalid)
-                    SteamNetworkingSockets.SetConnectionPollGroup(conn, _pollGroup);
+                    SteamSocketsNative.SetConnectionPollGroup(hConn, _pollGroup.m_HSteamNetPollGroup);
 
                 var peer = new SteamPeer(conn, remote);
                 _peers[conn] = peer;
@@ -340,7 +466,7 @@ public static class SteamTransport
                 || newSt == ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_ProblemDetectedLocally)
             {
                 var peer = LookupPeer(conn);
-                string reason = info.m_szEndDebug ?? newSt.ToString();
+                string reason = string.IsNullOrEmpty(endDebug) ? newSt.ToString() : endDebug;
                 if (peer != null)
                 {
                     Plugin.Log.LogInfo($"[SteamTransport] peer disconnected: {peer.SteamId.m_SteamID} reason='{reason}'");
@@ -357,7 +483,7 @@ public static class SteamTransport
                         try { OnConnectFailed?.Invoke(reason); } catch { }
                     }
                 }
-                try { SteamNetworkingSockets.CloseConnection(conn, 0, "ack close", false); } catch { }
+                try { SteamSocketsNative.CloseConnection(hConn, 0, "ack close", false); } catch { }
             }
         }
         catch (Exception ex)
@@ -411,7 +537,7 @@ public static class SteamTransport
         var snapshot = new List<HSteamNetConnection>(_peers.Keys);
         foreach (var c in snapshot)
         {
-            try { SteamNetworkingSockets.CloseConnection(c, 0, reason ?? "shutdown", false); } catch { }
+            try { SteamSocketsNative.CloseConnection(c.m_HSteamNetConnection, 0, reason ?? "shutdown", false); } catch { }
         }
         _peers.Clear();
     }
@@ -422,13 +548,13 @@ public static class SteamTransport
 
         if (_listenSocket != HSteamListenSocket.Invalid)
         {
-            try { SteamNetworkingSockets.CloseListenSocket(_listenSocket); } catch { }
+            try { SteamSocketsNative.CloseListenSocket(_listenSocket.m_HSteamListenSocket); } catch { }
             _listenSocket = HSteamListenSocket.Invalid;
         }
 
         if (_pollGroup != HSteamNetPollGroup.Invalid)
         {
-            try { SteamNetworkingSockets.DestroyPollGroup(_pollGroup); } catch { }
+            try { SteamSocketsNative.DestroyPollGroup(_pollGroup.m_HSteamNetPollGroup); } catch { }
             _pollGroup = HSteamNetPollGroup.Invalid;
         }
     }
@@ -438,7 +564,7 @@ public static class SteamTransport
     public static void CloseConnection(SteamPeer peer, string reason)
     {
         if (peer == null) return;
-        try { SteamNetworkingSockets.CloseConnection(peer.Connection, 0, reason ?? "closed", false); } catch { }
+        try { SteamSocketsNative.CloseConnection(peer.Connection.m_HSteamNetConnection, 0, reason ?? "closed", false); } catch { }
         _peers.Remove(peer.Connection);
     }
 }

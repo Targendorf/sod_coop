@@ -29,6 +29,10 @@ public static class MurderPoller
 
     public static void ResetBaseline() => _knownDead.Clear();
 
+    /// <summary>Probe-time entry point used by <see cref="PollerHealthCheck"/>.
+    /// This poller has no bypass-able gates, so probe just forwards to Tick.</summary>
+    internal static void ProbeBody(float now) => Tick(now);
+
     private static void Tick(float now)
     {
         try

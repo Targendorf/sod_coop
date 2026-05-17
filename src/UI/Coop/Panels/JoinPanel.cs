@@ -18,9 +18,12 @@ public class JoinPanel : CoopPanelBase
 {
     protected override string Title => L.Get("join.title");
 
-    private Text   _statusLabel;
-    private Text   _gameStateLabel;
-    private Button _openFriendsBtn;
+    private Text       _statusLabel;
+    private Text       _gameStateLabel;
+    private Button     _openFriendsBtn;
+    private InputField _ipField;
+    private InputField _portField;
+    private Button     _connectIpBtn;
 
     protected override void BuildBody()
     {
@@ -39,6 +42,14 @@ public class JoinPanel : CoopPanelBase
 
         _openFriendsBtn = CoopMenuFactory.MenuButton("Friends", Body, L.Get("join.btn.openFriends"), OnOpenFriendsClick);
 
+        Spacer(12f);
+
+        // ── Direct IP fallback ──────────────────────────────────────────
+        BodyLabel("Direct IP (alt.)", CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
+        _ipField   = CoopMenuFactory.TextInput("Ip",   Body, "",     "Host IP",   320f);
+        _portField = CoopMenuFactory.TextInput("Port", Body, "7777", "Port",      320f);
+        _connectIpBtn = CoopMenuFactory.MenuButton("ConnectIP", Body, "Connect to IP", OnConnectIpClick);
+
         _statusLabel = WrappedBodyLabel("",
             CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
 
@@ -46,6 +57,54 @@ public class JoinPanel : CoopPanelBase
 
         CoopMenuFactory.MenuButton("Back", Body, L.Get("join.btn.back"),
             () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Main));
+    }
+
+    private void OnConnectIpClick()
+    {
+        try
+        {
+            if (WorldReadyGate.IsWorldReady)
+            {
+                if (_statusLabel != null)
+                {
+                    _statusLabel.text = L.Get("join.warn.haveSave");
+                    _statusLabel.color = CoopMenuTheme.LabelWarn;
+                }
+                return;
+            }
+            string ip = _ipField?.text?.Trim() ?? "";
+            int port = 7777;
+            if (_portField != null && !string.IsNullOrEmpty(_portField.text))
+            {
+                if (!int.TryParse(_portField.text.Trim(), out port) || port <= 0 || port > 65535) port = 7777;
+            }
+            if (string.IsNullOrEmpty(ip))
+            {
+                if (_statusLabel != null)
+                {
+                    _statusLabel.text = "Enter the host's IP address.";
+                    _statusLabel.color = CoopMenuTheme.LabelWarn;
+                }
+                return;
+            }
+            if (NetworkManager.ConnectIP(ip, port))
+            {
+                if (_statusLabel != null)
+                {
+                    _statusLabel.text = $"Dialing {ip}:{port}...";
+                    _statusLabel.color = CoopMenuTheme.LabelOk;
+                }
+            }
+            else if (_statusLabel != null)
+            {
+                _statusLabel.text = $"Failed to dial {ip}:{port}.";
+                _statusLabel.color = CoopMenuTheme.LabelError;
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"JoinPanel.OnConnectIpClick: {ex}");
+        }
     }
 
     private void OnOpenFriendsClick()

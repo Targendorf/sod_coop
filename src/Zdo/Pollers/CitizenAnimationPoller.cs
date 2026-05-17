@@ -36,14 +36,58 @@ public static class CitizenAnimationPoller
     /// tick → only changed pairs hit the wire.</summary>
     private static readonly Dictionary<int, (byte idle, byte arms)> _last = new();
 
-    public static void Register() => ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick);
+    public static void Register() => ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick, WarmupBaseline);
+
+    /// <summary>Pre-seed <see cref="_last"/> with every citizen's current
+    /// (idle, arms) state without broadcasting. Called by
+    /// <see cref="ZdoPollerHost"/> on the first tick after a peer connects
+    /// so the post-warmup tick sees a stable baseline and only emits
+    /// genuine post-connect transitions. Without this, the first real tick
+    /// would treat all 300+ citizens as "everything looks new" and flood
+    /// the event channel with state the snapshot already delivered.</summary>
+    public static void WarmupBaseline()
+    {
+        try
+        {
+            var dict = CityData.Instance?.citizenDictionary;
+            if (dict == null) return;
+            int count = 0;
+            foreach (var kv in dict)
+            {
+                var c = kv.Value;
+                if (c == null) continue;
+                int id = c.humanID;
+                if (id == 0) continue;
+                global::CitizenAnimationController ac;
+                try { ac = c.animationController; } catch { continue; }
+                if (ac == null) continue;
+                byte idle, arms;
+                try { idle = (byte)ac.idleAnimationState; }     catch { continue; }
+                try { arms = (byte)ac.armsBoolAnimationState; } catch { continue; }
+                _last[id] = (idle, arms);
+                count++;
+            }
+            if (count > 0)
+                Plugin.Log.LogInfo($"[CitizenAnimationPoller] warmup: pre-seeded {count} citizen anim baselines (no broadcast)");
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenAnimationPoller] warmup: {ex.Message}"); }
+    }
 
     private static void Tick(float now)
     {
         if (!ZdoFeatureFlags.UseZdoForEvents) return;
         if (!SoDCoop.Network.NetworkManager.IsHost) return;
         if (!SoDCoop.Network.NetworkManager.HasPeers) return;
+        TickInner(now);
+    }
 
+    /// <summary>Probe-time entry point used by <see cref="PollerHealthCheck"/>.
+    /// Bypasses the feature-flag / IsHost / HasPeers gates so the field-drift
+    /// probe exercises the real SoD-field-deref path even on a solo host.</summary>
+    internal static void ProbeBody(float now) => TickInner(now);
+
+    private static void TickInner(float now)
+    {
         try
         {
             var dict = CityData.Instance?.citizenDictionary;

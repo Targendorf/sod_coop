@@ -18,11 +18,13 @@ public class HostPanel : CoopPanelBase
 {
     protected override string Title => L.Get("host.title");
 
-    private Text   _identityLabel;
-    private Text   _statusLabel;
-    private Button _startBtn;
-    private Button _stopBtn;
-    private Button _inviteBtn;
+    private Text       _identityLabel;
+    private Text       _statusLabel;
+    private Button     _startBtn;
+    private Button     _stopBtn;
+    private Button     _inviteBtn;
+    private InputField _portField;
+    private Button     _startIPBtn;
 
     protected override void BuildBody()
     {
@@ -42,6 +44,16 @@ public class HostPanel : CoopPanelBase
 
         _inviteBtn = CoopMenuFactory.MenuButton("Invite", Body, L.Get("host.btn.invite"), OnInviteClick);
         _inviteBtn.gameObject.SetActive(false);
+
+        Spacer(12f);
+
+        // ── Direct IP fallback ──────────────────────────────────────────
+        // Steam's SDR routing fails for some peer combinations (FindingRoute
+        // → ClosedByPeer timeout). Direct UDP via LiteNetLib is the
+        // alternative — host opens a port, friend types in IP:port.
+        BodyLabel("Direct IP (alt.)", CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
+        _portField = CoopMenuFactory.TextInput("Port", Body, "7777", "Port", 320f);
+        _startIPBtn = CoopMenuFactory.MenuButton("StartIP", Body, "Host on port", OnStartIPClick);
 
         Spacer(8f);
 
@@ -157,6 +169,46 @@ public class HostPanel : CoopPanelBase
     private void OnStopClick()
     {
         try { NetworkManager.Disconnect(); } catch { }
+        Refresh();
+    }
+
+    private void OnStartIPClick()
+    {
+        try
+        {
+            if (!WorldReadyGate.IsWorldReady)
+            {
+                if (_statusLabel != null)
+                {
+                    _statusLabel.text = L.Get("host.warn.noSave");
+                    _statusLabel.color = CoopMenuTheme.LabelWarn;
+                }
+                return;
+            }
+            int port = 7777;
+            if (_portField != null && !string.IsNullOrEmpty(_portField.text))
+            {
+                if (!int.TryParse(_portField.text.Trim(), out port) || port <= 0 || port > 65535) port = 7777;
+            }
+            if (NetworkManager.StartHostIP(port))
+            {
+                Plugin.Log.LogInfo($"[CoopMenu] hosting via direct IP on port {port}");
+                if (_statusLabel != null)
+                {
+                    _statusLabel.text = $"Hosting on UDP {port}. Friends connect to your-ip:{port}.";
+                    _statusLabel.color = CoopMenuTheme.LabelOk;
+                }
+            }
+            else if (_statusLabel != null)
+            {
+                _statusLabel.text = $"Failed to bind UDP port {port} (in use?).";
+                _statusLabel.color = CoopMenuTheme.LabelError;
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"HostPanel.OnStartIPClick: {ex}");
+        }
         Refresh();
     }
 

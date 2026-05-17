@@ -48,7 +48,7 @@ public static class NpcDamagePoller
     private static readonly Dictionary<int, float> _last = new();
     private static bool _initialized;
 
-    public static void Register() => ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick);
+    public static void Register() => ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick, WarmupBaseline);
 
     public static void ResetBaseline()
     {
@@ -56,9 +56,26 @@ public static class NpcDamagePoller
         _last.Clear();
     }
 
+    /// <summary>Force the next real tick to re-snapshot health without
+    /// broadcasting. Wired through <see cref="ZdoPollerHost"/> on every
+    /// HasPeers gain so a reconnecting joiner doesn't trigger phantom
+    /// damage events for any health drift since the prior session's
+    /// baseline.</summary>
+    public static void WarmupBaseline() => ResetBaseline();
+
     private static void Tick(float now)
     {
         if (!ZdoFeatureFlags.UseZdoForNpcDamage) return;
+        TickInner(now);
+    }
+
+    /// <summary>Probe-time entry point used by <see cref="PollerHealthCheck"/>.
+    /// Bypasses the feature-flag gate so the field-drift probe exercises the
+    /// real SoD-field-deref path.</summary>
+    internal static void ProbeBody(float now) => TickInner(now);
+
+    private static void TickInner(float now)
+    {
         try
         {
             var dict = CityData.Instance?.citizenDictionary;

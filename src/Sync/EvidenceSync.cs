@@ -33,6 +33,9 @@ public static class EvidenceSync
 
     private static readonly NetDataWriter _writer = new();
 
+    /// <summary>Per-preset throttle on ApplyCreate NRE warnings — see use site.</summary>
+    private static readonly HashSet<string> _loggedApplyCreateFailures = new();
+
     /// <summary>Lazy <c>EvidencePreset.name</c> → preset registry.</summary>
     private static Dictionary<string, EvidencePreset> _presetByName;
 
@@ -113,7 +116,10 @@ public static class EvidenceSync
             {
                 try { SoDCoop.Zdo.ZdoEvents.SendEvidenceCreate(ev.evID, preset.name, parentId, ownerId, writerId, receiverId, true); }
                 catch (System.Exception ex) { Plugin.Log.LogWarning($"EvidenceSync.BroadcastEvidence (zdo): {ex.Message}"); }
-                Plugin.Log.LogInfo($"[EvidenceSync] zdo create evID=\"{ev.evID}\" preset=\"{preset.name}\"");
+                // Per-create LogInfo dropped — was hitting ~78 writes/sec
+                // under busy detective-sim ticks (11 760 entries in a
+                // single 30 s session) and stalling the main thread on
+                // BepInEx's synchronous logger.
                 return;
             }
 
@@ -131,7 +137,7 @@ public static class EvidenceSync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.EvidenceCreate, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[EvidenceSync] broadcast evID=\"{ev.evID}\" preset=\"{preset.name}\" parent=\"{parentId}\"");
+            // Per-create LogInfo dropped — see comment in the zdo branch above.
         }
         catch (System.Exception ex)
         {
@@ -569,7 +575,9 @@ public static class EvidenceSync
                 EvidenceCreator.Instance.CreateEvidence(
                     preset, evId, null, owner, writer, receiver,
                     parent, forceDiscovery, null);
-                Plugin.Log.LogInfo($"[EvidenceSync] applied evidence evID=\"{evId}\" preset=\"{presetName}\"");
+                // Per-apply LogInfo dropped — same hot-path reason as the
+                // broadcast side (~80 calls/sec on a busy detective sim
+                // session, each a synchronous BepInEx disk write).
             }
             finally
             {
@@ -578,7 +586,12 @@ public static class EvidenceSync
         }
         catch (System.Exception ex)
         {
-            Plugin.Log.LogError($"EvidenceSync.ApplyCreate failed: {ex.Message}");
+            // Throttle NRE noise: SoD's EvidenceCreator.CreateEvidence
+            // dereferences refs that may not exist on the joiner yet
+            // (Human/Interactable still loading). 55+ NRE stack traces
+            // per session before this throttle.
+            if (_loggedApplyCreateFailures.Add(presetName ?? ""))
+                Plugin.Log.LogWarning($"[EvidenceSync] ApplyCreate failed for preset \"{presetName}\": {ex.Message} (subsequent occurrences for same preset suppressed).");
         }
     }
 

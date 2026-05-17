@@ -49,6 +49,11 @@ public static class FootprintSync
 
     private static readonly NetDataWriter _writer = new();
 
+    /// <summary>Log throttle — first NRE per missing humanID logs once at
+    /// Debug, the rest are silent. Was producing ~120 multi-line NRE stack
+    /// traces per session before this throttle.</summary>
+    private static readonly System.Collections.Generic.HashSet<int> _loggedMissingHumanIds = new();
+
     // ─────────────────────────────────────────────────────────────────────────
     //  Outbound
     // ─────────────────────────────────────────────────────────────────────────
@@ -224,10 +229,22 @@ public static class FootprintSync
             int twin = TwinManager.GetTwinHumanIDForSender(senderId);
             if (twin > 0) humanId = twin;
 
-            // Resolve owner Human. May be null for host-originated host-player
-            // prints applied on a client (their citizenDictionary won't have
-            // the host's player citizen) — Footprint ctor accepts null.
+            // Resolve owner Human. The previous-comment claim that
+            // `Footprint` ctor accepts null was wrong — SoD's constructor
+            // dereferences `human.???` internally and throws NRE. Skip the
+            // apply (and silently drop the footprint) when we can't map
+            // the humanID to a live Human on this machine. Joiner-side
+            // citizenDictionary lags behind the host's during early
+            // post-load ticks; host-originated prints for citizens that
+            // haven't materialised yet would otherwise spam the log
+            // (~120 NREs in a typical session).
             Human human = ResolveHuman(humanId);
+            if (human == null)
+            {
+                if (_loggedMissingHumanIds.Add(humanId))
+                    Plugin.Log.LogDebug($"[FootprintSync] ApplyAdd: humanID={humanId} not yet present locally — dropping print (subsequent occurrences for same id silenced).");
+                return;
+            }
 
             // Resolve room (may be null — Footprint ctor accepts null forceRoom
             // and falls back to runtime detection).

@@ -33,6 +33,26 @@ public static class InventorySync
 {
     public static bool IsApplyingRemote { get; private set; }
 
+    static InventorySync()
+    {
+        // Drop session-scoped placement bookkeeping when the world unloads
+        // so a fresh session doesn't inherit dangling Interactable refs or
+        // stale per-preset NRE-warning throttle entries from a prior run.
+        try { WorldReadyGate.OnWorldUnready += ResetSessionState; }
+        catch { /* WorldReadyGate may not be initialised yet; safe to ignore. */ }
+    }
+
+    /// <summary>Drop all session-scoped placement bookkeeping. Called on
+    /// world unload / disconnect so a fresh session doesn't inherit stale
+    /// references to destroyed Interactable instances or carry over the
+    /// per-preset NRE-warning throttle from the previous run.</summary>
+    public static void ResetSessionState()
+    {
+        _remotePlacements.Clear();
+        _myPlacements.Clear();
+        _loggedCreateFailurePresets.Clear();
+    }
+
     private static readonly NetDataWriter _writer = new();
 
     // Last-broadcast state — only emit on actual change.
@@ -204,6 +224,12 @@ public static class InventorySync
     /// </summary>
     private static readonly HashSet<int> _myPlacements = new();
 
+    /// <summary>Per-preset throttle for the CreateWorldInteractable failure
+    /// warning. Without this throttle, presets like SecurityCamera that
+    /// always NRE inside SoD's Interactable.UpdateSpecialCaseReferences
+    /// flood the log with hundreds of identical stack traces per session.</summary>
+    private static readonly HashSet<string> _loggedCreateFailurePresets = new();
+
     public static bool IsLocalPlacement(int interactableId)
         => _myPlacements.Contains(interactableId);
 
@@ -228,6 +254,8 @@ public static class InventorySync
     /// <summary>
     /// Walk all interactables added to the directory after <paramref name="snapshotCount"/>
     /// and broadcast a placement-visual packet for each.
+    /// Filters by <c>belongsTo == Player.Instance.human</c>; see
+    /// <see cref="BroadcastNewItemsSince"/> for rationale.
     /// </summary>
     public static void BroadcastPlacedSince(int snapshotCount)
     {
@@ -240,10 +268,20 @@ public static class InventorySync
             if (dir == null) return;
             if (dir.Count <= snapshotCount) return;
 
+            // Player extends Human, so the singleton itself doubles as the
+            // local human reference. (`Player.Instance.human` doesn't exist
+            // — there's no field, the class IS the Human.)
+            global::Human me = null;
+            try { me = global::Player.Instance; } catch { }
+            if (me == null) return;
+
             for (int i = snapshotCount; i < dir.Count; i++)
             {
                 var item = dir[i];
                 if (item == null) continue;
+                global::Human owner = null;
+                try { owner = item.belongsTo; } catch { continue; }
+                if (owner == null || owner != me) continue;
                 BroadcastPlace(item);
             }
         }
@@ -266,6 +304,16 @@ public static class InventorySync
     /// energy (linear velocity &gt; 0.05 m/s within the first poll tick).
     /// 30 Hz polling reliably catches the burst before air drag dampens
     /// the throw's velocity below threshold.</para>
+    ///
+    /// <para><b>Filter</b>: ONLY items where <c>belongsTo == Player.Instance.human</c>
+    /// are eligible for broadcast. SoD's NPC AI churns
+    /// <c>interactableDirectory</c> at hundreds of items/sec (writing notes,
+    /// dropping garbage, placing coffee, generating evidence) and most of
+    /// these are deterministic per-seed — the joiner regenerates the same
+    /// world from the same share-code and gets identical NPC interactables.
+    /// Without this filter the host emits ~1.4K reliable-ordered packets/sec
+    /// to the joiner (40K+ packets in a 30s session in real testing) and
+    /// blows the LiteNetLib send queue.</para>
     /// </summary>
     public static void BroadcastNewItemsSince(int snapshotCount)
     {
@@ -278,10 +326,29 @@ public static class InventorySync
             if (dir == null) return;
             if (dir.Count <= snapshotCount) return;
 
+            // Player extends Human, so the singleton itself doubles as the
+            // local human reference. (`Player.Instance.human` doesn't exist
+            // — there's no field, the class IS the Human.)
+            global::Human me = null;
+            try { me = global::Player.Instance; } catch { }
+            if (me == null) return; // No local human yet — skip until ready.
+
             for (int i = snapshotCount; i < dir.Count; i++)
             {
                 var item = dir[i];
                 if (item == null) continue;
+
+                // Only broadcast if the local player actually owns this
+                // freshly-created interactable. SoD sets `belongsTo` on
+                // PlaceCodebreaker / PlaceTracker / PlaceGrenade / PlaceDoorWedge
+                // / Throw* paths to `Player.Instance.human` before the
+                // directory grows. AI-spawned items have a different (or
+                // null) owner and are filtered out here — joiner re-derives
+                // them from the seed.
+                global::Human owner = null;
+                try { owner = item.belongsTo; } catch { continue; }
+                if (owner == null || owner != me) continue;
+
                 if (IsLikelyThrown(item)) BroadcastThrow(item);
                 else                      BroadcastPlace(item);
             }
@@ -356,7 +423,11 @@ public static class InventorySync
             // Remember we placed this so a future pickup/destruction can
             // emit a paired ItemPlaceRemovePacket.
             _myPlacements.Add(item.id);
-            Plugin.Log.LogInfo($"[InventorySync] place broadcast preset=\"{preset.name}\" id={item.id} pos={pos}");
+            // Per-broadcast LogInfo intentionally dropped — was hitting
+            // 1.4K writes/sec under busy AI before the belongsTo filter
+            // was added; even after, a chatty placement session would
+            // still flood the BepInEx logger (synchronous disk write per
+            // call). Use LogDebug for diagnostic builds if needed.
         }
         catch (System.Exception ex)
         {
@@ -432,7 +503,14 @@ public static class InventorySync
             }
             catch (System.Exception ex)
             {
-                Plugin.Log.LogWarning($"[InventorySync] CreateWorldInteractable failed for \"{presetName}\": {ex.Message} — falling back to visual mock");
+                // Throttle the log — SecurityCamera placements without
+                // a writer/recevier consistently NRE inside SoD's
+                // Interactable.UpdateSpecialCaseReferences. Logging
+                // every occurrence flooded ~660 stack-traces per session
+                // (each one a multi-line entry) into the host log. Keep
+                // the first warning per preset name, silence the rest.
+                if (_loggedCreateFailurePresets.Add(presetName ?? ""))
+                    Plugin.Log.LogWarning($"[InventorySync] CreateWorldInteractable failed for \"{presetName}\": {ex.Message} — falling back to visual mock (subsequent occurrences for same preset suppressed).");
             }
 
             if (created == null)
@@ -444,12 +522,12 @@ public static class InventorySync
                 go.transform.position    = position;
                 go.transform.eulerAngles = eulerRotation;
                 StripPlacementMockComponents(go);
-                Plugin.Log.LogInfo($"[InventorySync] applied place (mock fallback) preset=\"{presetName}\" pos={position}");
+                // LogInfo dropped — same reason as the broadcast side: hot path.
                 return;
             }
 
             _remotePlacements[key] = created;
-            Plugin.Log.LogInfo($"[InventorySync] applied place (real Interactable id={created.id}) preset=\"{presetName}\" pos={position}");
+            // LogInfo dropped — see comment above.
         }
         catch (System.Exception ex)
         {

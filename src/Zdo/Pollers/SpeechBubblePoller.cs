@@ -54,15 +54,65 @@ public static class SpeechBubblePoller
     /// typewriting (the only valid moment to broadcast).</summary>
     private static readonly Dictionary<int, bool> _finalSeen = new();
 
-    public static void Register() => ZdoPollerHost.RegisterAnyPeer(NAME, 1f / TICK_HZ, Tick);
+    public static void Register() => ZdoPollerHost.RegisterAnyPeer(NAME, 1f / TICK_HZ, Tick, WarmupBaseline);
 
     public static void ResetBaseline() { _last.Clear(); _finalSeen.Clear(); }
+
+    /// <summary>Pre-seed <see cref="_finalSeen"/> for every actor whose
+    /// bubble is currently in the final-text state, treating those bubbles
+    /// as "already broadcast" so the first post-connect tick doesn't
+    /// re-emit a wave of in-flight speech that the joiner can't visually
+    /// observe anyway (loading screen still up). Stamps <see cref="_last"/>
+    /// with the current text so the same actor saying the same line again
+    /// dedups correctly.</summary>
+    public static void WarmupBaseline()
+    {
+        try
+        {
+            var dict = CityData.Instance?.citizenDictionary;
+            if (dict == null) return;
+            int count = 0;
+            foreach (var kv in dict)
+            {
+                var c = kv.Value;
+                if (c == null) continue;
+                int id = c.humanID;
+                if (id == 0) continue;
+                global::SpeechController sc;
+                try { sc = c.speechController; } catch { continue; }
+                if (sc == null) continue;
+                global::SpeechBubbleController sb;
+                try { sb = sc.activeSpeechBubble; } catch { continue; }
+                if (sb == null) { _finalSeen[id] = false; continue; }
+                bool isFinal = false;
+                try { isFinal = sb.setFinalText; } catch { }
+                if (!isFinal) { _finalSeen[id] = false; continue; }
+                string text = null;
+                try { text = sb.actualString; } catch { }
+                _finalSeen[id] = true;
+                if (!string.IsNullOrEmpty(text)) _last[id] = text;
+                count++;
+            }
+            if (count > 0)
+                Plugin.Log.LogInfo($"[SpeechBubblePoller] warmup: marked {count} active bubble(s) as already-broadcast");
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[SpeechBubblePoller] warmup: {ex.Message}"); }
+    }
 
     private static void Tick(float now)
     {
         if (!ZdoFeatureFlags.UseZdoForEvents) return;
         if (!SoDCoop.Network.NetworkManager.HasPeers) return;
+        TickInner(now);
+    }
 
+    /// <summary>Probe-time entry point used by <see cref="PollerHealthCheck"/>.
+    /// Bypasses the feature-flag / HasPeers gates so the field-drift probe
+    /// exercises the real SoD-field-deref path even on a solo host.</summary>
+    internal static void ProbeBody(float now) => TickInner(now);
+
+    private static void TickInner(float now)
+    {
         try
         {
             // 1. Local Player.Instance — every peer broadcasts its own.

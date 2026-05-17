@@ -29,11 +29,51 @@ public static class EvidenceNotePoller
     /// entry idempotently.</summary>
     private static readonly Dictionary<string, int> _baseline = new();
 
-    public static void Register() => ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick);
+    public static void Register() => ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick, WarmupBaseline);
+
+    /// <summary>Pre-seed <see cref="_baseline"/> with the current note hash
+    /// for every evidence so the first real tick sees a clean baseline and
+    /// only broadcasts notes that change AFTER a peer connected. Without
+    /// this, the first post-connect tick would re-broadcast every seeded
+    /// evidence's full notes set (snapshot already delivered them).</summary>
+    public static void WarmupBaseline()
+    {
+        try
+        {
+            var gc = GameplayController.Instance;
+            if (gc == null) return;
+            var dict = gc.evidenceDictionary;
+            if (dict == null) return;
+            int count = 0;
+            foreach (var kv in dict)
+            {
+                string evId = kv.Key;
+                var ev = kv.Value;
+                if (ev == null || string.IsNullOrEmpty(evId)) continue;
+                var notes = ev.notes;
+                if (notes == null || notes.Count == 0) { _baseline[evId] = 0; continue; }
+                _baseline[evId] = HashNotes(notes);
+                count++;
+            }
+            if (count > 0)
+                Plugin.Log.LogInfo($"[EvidenceNotePoller] warmup: pre-seeded {count} evidence-note baseline(s) (no broadcast)");
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[EvidenceNotePoller] warmup: {ex.Message}"); }
+    }
 
     private static void Tick(float now)
     {
         if (!ZdoFeatureFlags.UseZdoForEvidenceNote) return;
+        TickInner(now);
+    }
+
+    /// <summary>Probe-time entry point used by <see cref="PollerHealthCheck"/>.
+    /// Bypasses the feature-flag gate so the field-drift probe exercises the
+    /// real SoD-field-deref path.</summary>
+    internal static void ProbeBody(float now) => TickInner(now);
+
+    private static void TickInner(float now)
+    {
         try
         {
             var gc = GameplayController.Instance;

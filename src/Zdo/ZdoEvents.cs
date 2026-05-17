@@ -239,8 +239,27 @@ public static class ZdoEvents
         _w.Put(humanId);
         _w.Put(idleState);
         _w.Put(armsState);
+
+        // Spatial cull: anim state is purely visual — peer in another
+        // district doesn't need a 5 Hz × N citizens stream they can't see.
+        // Pull citizen position from CityData; if unresolvable we fall
+        // through to a broadcast (better than dropping the event).
+        UnityEngine.Vector3? originPos = null;
+        try
+        {
+            var dict = global::CityData.Instance?.citizenDictionary;
+            if (dict != null
+                && dict.TryGetValue(humanId, out var c)
+                && c != null
+                && c.transform != null)
+            {
+                originPos = c.transform.position;
+            }
+        }
+        catch { }
+
         // Sequenced: late frames can be dropped, the next state stomps anyway.
-        ZdoEventDispatcher.Send(CITIZEN_ANIM_STATE, _w, DeliveryMethod.Sequenced);
+        ZdoEventDispatcher.Send(CITIZEN_ANIM_STATE, _w, DeliveryMethod.Sequenced, originPos);
     }
 
     /// <summary>Host-only. Broadcast the current social-credit (reputation)
@@ -271,7 +290,26 @@ public static class ZdoEvents
         _w.Put(speakerHumanId);
         _w.Put(text);
         _w.Put(shout ? (byte)1 : (byte)0);
-        ZdoEventDispatcher.Send(SPEECH_BUBBLE, _w, DeliveryMethod.Sequenced);
+
+        // Spatial cull: bubbles are head-attached visuals. A peer 400 m
+        // across the city won't see the bubble even if they receive the
+        // packet (Actor isn't in their camera frustum, and chat already
+        // covers cross-district communication anyway).
+        UnityEngine.Vector3? originPos = null;
+        try
+        {
+            var dict = global::CityData.Instance?.citizenDictionary;
+            if (dict != null
+                && dict.TryGetValue(speakerHumanId, out var c)
+                && c != null
+                && c.transform != null)
+            {
+                originPos = c.transform.position;
+            }
+        }
+        catch { }
+
+        ZdoEventDispatcher.Send(SPEECH_BUBBLE, _w, DeliveryMethod.Sequenced, originPos);
     }
 
     /// <summary>Broadcast a per-player apartment ownership add or remove.
@@ -373,7 +411,10 @@ public static class ZdoEvents
         _w.Put(hitPos.x); _w.Put(hitPos.y); _w.Put(hitPos.z);
         _w.Put(hitDir.x); _w.Put(hitDir.y); _w.Put(hitDir.z);
         _w.Put(enableKill);
-        ZdoEventDispatcher.Send(NPC_DAMAGE_RICH, _w);
+        // Spatial: a hit on an NPC across the city has no observable
+        // effect for distant peers (vitals + animations replicate via
+        // ZDO state which is already sector-culled).
+        ZdoEventDispatcher.Send(NPC_DAMAGE_RICH, _w, DeliveryMethod.ReliableOrdered, hitPos);
     }
 
     public static void SendElevatorCall(int buildingId, UnityEngine.Vector3Int btm,

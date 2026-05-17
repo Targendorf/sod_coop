@@ -33,6 +33,16 @@ public static class CitizenStatePoller
     private static void Tick(float now)
     {
         if (!ZdoFeatureFlags.UseZdoForCitizens) return;
+        TickInner(now);
+    }
+
+    /// <summary>Probe-time entry point used by <see cref="PollerHealthCheck"/>.
+    /// Bypasses the feature-flag gate so the field-drift probe exercises the
+    /// real SoD-field-deref path.</summary>
+    internal static void ProbeBody(float now) => TickInner(now);
+
+    private static void TickInner(float now)
+    {
         try
         {
             var dict = CityData.Instance?.citizenDictionary;
@@ -48,6 +58,17 @@ public static class CitizenStatePoller
                 if (id == 0) continue;
 
                 Zdo z = ZdoMan.GetOrCreateBySodId(ZdoTypeTag.Citizen, id, owner: ZdoMan.LocalPeerUid, persistent: true);
+
+                // Stamp the citizen's current world position onto the ZDO
+                // so per-peer dispatch can sector-cull it. Citizens move
+                // continuously, so we update every tick — cost is one
+                // Vector3 assignment + bool write, no dirty marking.
+                try
+                {
+                    var t = c.transform;
+                    if (t != null) ZdoMan.NotifyZdoPosition(z, t.position);
+                }
+                catch { }
 
                 // Outfit category — read via outfitController.currentOutfit.
                 try

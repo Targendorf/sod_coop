@@ -481,14 +481,23 @@ public static class WorldStateSync
     /// True if this Interactable's spawnedObject carries a LightController — used
     /// by the SetSwitchState patch to avoid double-broadcasting (lights have their
     /// own dedicated LightState channel).
+    ///
+    /// <para>Hot-path: this used to do a fresh
+    /// <c>GetComponentInChildren&lt;LightController&gt;(true)</c> on every
+    /// call (a Unity tree-walk through the entire transform hierarchy of
+    /// the interactable's spawned object). At 10 Hz × ~10 000 interactables
+    /// from <see cref="Zdo.Pollers.SwitchPoller"/> alone that was the
+    /// dominant cause of host-side lag. Now defers to
+    /// <see cref="Zdo.Pollers.LightPoller.IsKnownLight"/>, which serves
+    /// the same predicate from a HashSet populated as a side-effect of
+    /// the LightPoller's incremental directory scan. O(1) per call.</para>
     /// </summary>
     public static bool IsLightInteractable(Interactable inter)
     {
+        if (inter == null) return false;
         try
         {
-            var go = inter?.spawnedObject;
-            if (go == null) return false;
-            return go.GetComponentInChildren<LightController>(true) != null;
+            return SoDCoop.Zdo.Pollers.LightPoller.IsKnownLight(inter.id);
         }
         catch { return false; }
     }

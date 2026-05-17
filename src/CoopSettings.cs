@@ -49,6 +49,25 @@ public static class CoopSettings
     /// </summary>
     public static ConfigEntry<bool> SkipHarmonyPatches;
 
+    /// <summary>
+    /// Pre-2026-05-08 behaviour: <c>UnpatchSelf</c> at first SOD.Common
+    /// <c>OnBeforeLoad</c>, never re-patch. This sped up the very first
+    /// save-load (41 s instead of 229 s) when the mod had 30+ active
+    /// Harmony patches, many of which fired heavily during entity
+    /// reconstruction (Evidence/Case/Fact/Vmail).
+    ///
+    /// <para>Today only ~10 Harmony patches remain active — all of them
+    /// player-input or rare-event paths (MeleeAttack, OpenMap, AddMoney,
+    /// SetWeather, side-job hooks, etc.) which fire 0–1 times during a
+    /// save-load. Keeping them attached should be free, and gets us back
+    /// the Valheim-style "real-time write hooks" that UnpatchSelf killed.
+    /// Default <c>false</c> — patches stay alive across save-load. Flip
+    /// to <c>true</c> only if a future patch-set regression makes save-
+    /// load slow again, in which case UnpatchSelf reverts to the safe
+    /// fallback. Setting takes effect on the NEXT save-load.</para>
+    /// </summary>
+    public static ConfigEntry<bool> UnpatchAtSaveLoad;
+
     public static void Initialize(ConfigFile config)
     {
         ShowStatusHUD = config.Bind(
@@ -77,5 +96,14 @@ public static class CoopSettings
             "DIAGNOSTIC ONLY: skip Harmony PatchAll at plugin load to measure how much save-load " +
             "slowness comes from patches vs SoD itself. With this on, no coop sync features work " +
             "(no broadcast detection) — for testing load speed only. Restart game after toggling.");
+
+        UnpatchAtSaveLoad = config.Bind(
+            "Diagnostics", "UnpatchAtSaveLoad", false,
+            "Legacy behaviour: UnpatchSelf at first save-load to speed it up. With the current " +
+            "small patch set (~10 event-only patches) this is no longer needed; keeping patches " +
+            "alive gives real-time write hooks (Valheim-style) for the entire session instead of " +
+            "polling fallbacks after the first load. Set this to true only if save-load becomes " +
+            "noticeably slow after a future patch-set expansion. Restart not required — takes " +
+            "effect on the next save-load event.");
     }
 }

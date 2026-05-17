@@ -199,12 +199,36 @@ public class Plugin : BasePlugin
 
         SoDCoop.Sync.WorldReadyGate.OnWorldReady += OnWorldReadyForResume;
         SoDCoop.Sync.WorldReadyGate.OnWorldUnready += OnWorldUnreadyForRePause;
+
+        // Defensive maintenance: probe every poller once on first world-ready
+        // so a renamed SoD field (after a major patch) surfaces as a loud
+        // "FIELD DRIFT" error instead of a silent sync regression.
+        SoDCoop.Sync.WorldReadyGate.OnWorldReady += OnWorldReadyForPollerProbe;
+    }
+
+    private static bool _pollerProbeRan;
+    private static void OnWorldReadyForPollerProbe()
+    {
+        if (_pollerProbeRan) return;
+        _pollerProbeRan = true;
+        try { SoDCoop.Zdo.Pollers.PollerHealthCheck.RunProbe(); }
+        catch (System.Exception ex) { Log.LogError($"[PollerHealthCheck] probe itself crashed: {ex}"); }
     }
 
     private static void OnWorldReadyForResume()
     {
         try
         {
+            // Bug #5: load persisted ZDOs after the world is ready (so
+            // resolvers can deref Human/Interactable refs cleanly). Host-only
+            // — joiners always receive state via the host's snapshot push.
+            // Order matters: load AFTER world is ready, BEFORE pollers fire.
+            if (SoDCoop.Network.NetworkManager.IsHost)
+            {
+                try { SoDCoop.Zdo.ZdoMan.LoadFromDisk(); }
+                catch (System.Exception ex) { Log.LogWarning($"ZdoMan.LoadFromDisk failed: {ex.Message}"); }
+            }
+
             if (!IsPatchPaused) return;
             Log.LogInfo("[Resume] WorldReady observed — scheduling Resume.");
             SchedulePatchResume();
@@ -216,6 +240,16 @@ public class Plugin : BasePlugin
     {
         try
         {
+            // Bug #5: persist ZDOs to disk BEFORE the unready cascade clears
+            // the registry. Host-only; SaveToDisk is a no-op when there's
+            // nothing to save. Wrapped separately so a save failure doesn't
+            // skip the patch re-pause below.
+            if (SoDCoop.Network.NetworkManager.IsHost)
+            {
+                try { SoDCoop.Zdo.ZdoMan.SaveToDisk(); }
+                catch (System.Exception ex) { Log.LogWarning($"ZdoMan.SaveToDisk failed: {ex.Message}"); }
+            }
+
             if (IsPatchPaused) return;
             Log.LogInfo("[Resume] WorldUnready observed — re-pausing patches for next load.");
             PausePatchesForLoad();
@@ -249,21 +283,53 @@ public class Plugin : BasePlugin
 
     public static bool IsPatchPaused { get; private set; }
 
-    /// <summary>One-shot UnpatchSelf. Called from SodCommonBridge.OnBeforeLoad
-    /// and from WorldReadyGate.OnWorldUnready. Idempotent — once paused,
-    /// stays paused for the session.</summary>
+    /// <summary>Save-load handler. Behaviour controlled by
+    /// <see cref="CoopSettings.UnpatchAtSaveLoad"/>:
+    /// <list type="bullet">
+    ///   <item><b>false (default)</b> — keep all Harmony patches attached.
+    ///       Real-time write hooks survive across save-load (Valheim-style),
+    ///       no polling fallback needed for the patches that ARE installed.
+    ///       Safe with the current ~10 event-only patch set; previous
+    ///       30+ load-heavy patch set required UnpatchSelf because patches
+    ///       like Evidence.AddDiscovery / Case.SetStatus fired thousands
+    ///       of times per save-load.</item>
+    ///   <item><b>true</b> — legacy: UnpatchSelf on first save-load, dead
+    ///       for session. Use only if a future regression slows save-load
+    ///       and we can't immediately identify the culprit patch.</item>
+    /// </list>
+    /// Idempotent — once paused (legacy mode), stays paused for the session.</summary>
     public static void PausePatchesForLoad()
     {
         if (IsPatchPaused) return;
         var inst = Instance;
         if (inst?._harmony == null) return;
+
+        // New default: keep patches alive across save-load. Only strip
+        // them if the user explicitly opts back into the legacy fast-load
+        // path via CoopSettings.UnpatchAtSaveLoad.
+        bool stripPatches = CoopSettings.UnpatchAtSaveLoad?.Value == true;
+        if (!stripPatches)
+        {
+            // Mark as "paused" semantically so SyncGate stays closed
+            // through the load even though patches remain attached. The
+            // body-bail check inside each patch (`if (!SyncGate.IsOpen)
+            // return;`) makes attached-but-paused patches near-zero-cost
+            // for invocations during the load. SyncGate re-opens at
+            // init-grace close, same as before.
+            IsPatchPaused = true;
+            Log.LogInfo("Harmony patches KEPT ATTACHED through save-load — body-bail via SyncGate. " +
+                        "Real-time write hooks remain live for the session (no UnpatchSelf). " +
+                        "(Toggle CoopSettings.UnpatchAtSaveLoad=true to revert to legacy fast-load behaviour.)");
+            return;
+        }
+
         try
         {
             var sw = System.Diagnostics.Stopwatch.StartNew();
             inst._harmony.UnpatchSelf();
             sw.Stop();
             IsPatchPaused = true;
-            Log.LogInfo($"Harmony patches PAUSED (one-shot, no resume) — UnpatchSelf in {sw.Elapsed.TotalSeconds:F2}s. " +
+            Log.LogInfo($"Harmony patches PAUSED (legacy one-shot, no resume) — UnpatchSelf in {sw.Elapsed.TotalSeconds:F2}s. " +
                         $"Player-input event broadcasts deactivated until game restart. " +
                         $"ZDO pollers and ZdoEvents continue to operate.");
         }

@@ -2078,6 +2078,56 @@ public static class GamePatches
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    //  SideJob.SetJobState exception swallow (client-only).
+    //
+    //  On joiners, the SideJob in allJobsDictionary is the reflection-
+    //  built skeleton from SideJobSync.ReconstructOrUpdateSkeleton — it
+    //  has scalar fields stamped but most internal refs are still null
+    //  (poster GameObjects, dialog tree, lead lists, etc.). When SoD's
+    //  ActionController.PostJob calls SetJobState on it from the AI tick,
+    //  the original method walks those refs and NREs:
+    //    [Error :Il2CppInterop] During invoking native->managed trampoline
+    //    NullReferenceException at SideJob.SetJobState
+    //      at ActionController.PostJob (...)
+    //
+    //  A Harmony finalizer catches the exception thrown from the original
+    //  method body, logs it (throttled), and replaces the thrown exception
+    //  with null so the il2cpp trampoline sees a clean return. Host gets
+    //  the real method untouched — only joiners are protected.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [HarmonyPatch(typeof(SideJob), nameof(SideJob.SetJobState))]
+    public static class SideJob_SetJobState_Finalizer_Patch
+    {
+        private static float _lastWarnAt;
+        private const float WARN_THROTTLE_S = 5f;
+
+        [HarmonyFinalizer]
+        public static System.Exception Finalizer(System.Exception __exception, SideJob __instance)
+        {
+            if (__exception == null) return null;
+            // Host: never swallow — surfaces real bugs.
+            if (NetworkManager.IsHost) return __exception;
+            // Pre-connect / single-player: leave vanilla behaviour intact.
+            if (!NetworkManager.IsConnected) return __exception;
+
+            int jobID = -1;
+            try { if (__instance != null) jobID = __instance.jobID; } catch { }
+
+            float now = UnityEngine.Time.unscaledTime;
+            if (now - _lastWarnAt > WARN_THROTTLE_S)
+            {
+                _lastWarnAt = now;
+                Plugin.Log.LogWarning(
+                    $"[SideJob.SetJobState] swallowed exception on client skeleton jobID={jobID}: " +
+                    $"{__exception.GetType().Name}: {__exception.Message} — " +
+                    $"state authority is host-side; client skeleton refs aren't fully initialised.");
+            }
+            return null; // suppress
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     //  Phase 3b — NPC state mutations & player-to-NPC item transfers.
     //
     //  We patch the LEAF state-changers (Human.TryGiveItem,

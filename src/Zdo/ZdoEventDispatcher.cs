@@ -44,12 +44,90 @@ public static class ZdoEventDispatcher
     private const int COMPRESSION_THRESHOLD = 100;
 
     /// <summary>Build and broadcast a <c>ZdoEventRpc</c> with payload from
-    /// <paramref name="payload"/> (already populated; do not include the name).</summary>
-    public static void Send(string name, NetDataWriter payload, DeliveryMethod delivery = DeliveryMethod.ReliableOrdered)
+    /// <paramref name="payload"/> (already populated; do not include the name).
+    ///
+    /// <para>If <paramref name="originPos"/> is non-null AND we're host, the
+    /// dispatch culls per-peer using the same <see cref="ZdoMan.CULL_RADIUS_M"/>
+    /// budget ZDO state replication uses. This is the right behaviour for
+    /// high-frequency spatial events (citizen anim state at 5 Hz × N
+    /// citizens, speech bubbles, combat hits) where peers far from the
+    /// origin cannot visually observe the event anyway and shouldn't pay
+    /// the bandwidth. Non-spatial events (chat, map ping, side-job, money,
+    /// evidence facts, case board, banners) pass <c>null</c> and broadcast
+    /// to every peer like before.</para>
+    ///
+    /// <para>Joiner-side (non-host) always broadcasts — we only have one
+    /// peer (the host) and the host re-broadcasts to others via the
+    /// generic packet relay (see <see cref="NetworkManager"/>). Even if a
+    /// joiner had multiple peers, it doesn't track peer positions, so
+    /// per-peer culling isn't possible there.</para>
+    ///
+    /// <para>If a peer hasn't reported a position yet (just connected,
+    /// pre-PlayerSync), it's treated as <b>out-of-range</b> and the spatial
+    /// event is skipped. Without this guard, a fresh joiner whose first
+    /// PlayerPosition packet hasn't arrived yet would receive every spatial
+    /// event in the world (animations, speech bubbles, damage) for the
+    /// first 1–2 s while their LastKnownPosition is unset — burst of 20k+
+    /// events, hard host-side stutter. Snapshot already carries the
+    /// authoritative initial state; the small handful of transient events
+    /// (a sweeping animation flip, an in-flight speech bubble) that the
+    /// joiner misses during that window aren't observable anyway because
+    /// the loading screen is still up.</para>
+    /// </summary>
+    public static void Send(string name, NetDataWriter payload, DeliveryMethod delivery = DeliveryMethod.ReliableOrdered, UnityEngine.Vector3? originPos = null)
     {
         if (!NetworkManager.HasPeers) return;
         BuildFrame(name, payload);
+
+        // Per-peer cull on the host for spatial events. We deliberately
+        // mirror ZdoMan's per-peer dispatch loop (Clients × Players) so
+        // visibility stays consistent: if a peer can't see ZDO state at
+        // this position, they shouldn't receive an RPC tagged with it.
+        if (originPos.HasValue && NetworkManager.IsHost)
+        {
+            var pos = originPos.Value;
+            float radiusSq = ZdoMan.CULL_RADIUS_M * ZdoMan.CULL_RADIUS_M;
+            var clients = NetworkManager.Clients;
+            int frameLen = _scratchOut.Length;
+            for (int i = 0; i < clients.Count; i++)
+            {
+                var peer = clients[i];
+                if (peer == null) continue;
+                int peerId = NetworkManager.GetPlayerIdByPeer(peer);
+                if (peerId < 0) continue;
+
+                // No position → treat as out-of-range. Joiner without a
+                // confirmed position skips the spatial event entirely;
+                // snapshot will deliver authoritative state regardless.
+                if (NetworkManager.Players == null
+                    || !NetworkManager.Players.TryGetValue(peerId, out var info)
+                    || info == null
+                    || !info.HasKnownPosition)
+                {
+                    _eventCullSkip++;
+                    continue;
+                }
+
+                float dx = pos.x - info.LastKnownPosition.x;
+                float dz = pos.z - info.LastKnownPosition.z;
+                if (dx * dx + dz * dz > radiusSq)
+                {
+                    _eventCullSkip++;
+                    continue;
+                }
+
+                NetworkManager.SendTo(peer, PacketType.ZdoEventRpc, _scratchOut, delivery);
+                _eventSent++;
+                _eventSentBytes += frameLen;
+            }
+            return;
+        }
+
+        // Non-spatial event OR joiner-side: broadcast to all peers.
+        int peerCount = NetworkManager.IsHost ? NetworkManager.Clients.Count : 1;
         NetworkManager.SendToAll(PacketType.ZdoEventRpc, _scratchOut, delivery);
+        _eventSent     += peerCount;
+        _eventSentBytes += (long)_scratchOut.Length * peerCount;
     }
 
     public static void SendTo(SteamPeer peer, string name, NetDataWriter payload, DeliveryMethod delivery = DeliveryMethod.ReliableOrdered)
@@ -130,4 +208,30 @@ public static class ZdoEventDispatcher
 
     private static readonly NetDataWriter _scratchOut   = new();
     private static readonly NetDataWriter _innerScratch = new();
+
+    // ── Bandwidth stats (rolling 5 s window, sampled by ZdoMan's stats tick) ─
+    // _eventSent      = total per-peer SendTo / SendToAll fan-out count
+    // _eventCullSkip  = per-peer skips due to spatial cull
+    // _eventSentBytes = total bytes shipped (frame length × peers reached)
+    //
+    // ZdoMan reads + resets these in its 5 s [ZdoStats] tick (see
+    // SampleStatsAndReset) so the event channel rolls into the same log
+    // line that already shows ZDO dirty/pending/culled traffic.
+    private static long _eventSent;
+    private static long _eventCullSkip;
+    private static long _eventSentBytes;
+
+    /// <summary>Atomically read + reset the rolling event-bandwidth
+    /// counters. Called by <see cref="ZdoMan"/>'s 5 s stats tick so RPC
+    /// traffic shows up alongside ZDO traffic in the same log line.
+    /// Returns 0/0/0 if no events were sent in the window.</summary>
+    public static void SampleStatsAndReset(out long sent, out long cullSkip, out long sentBytes)
+    {
+        sent      = _eventSent;
+        cullSkip  = _eventCullSkip;
+        sentBytes = _eventSentBytes;
+        _eventSent      = 0;
+        _eventCullSkip  = 0;
+        _eventSentBytes = 0;
+    }
 }

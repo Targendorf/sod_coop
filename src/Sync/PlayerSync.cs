@@ -59,8 +59,33 @@ public class PlayerSync
         var player = GetLocalPlayer();
         if (player == null) return;
 
-        var pos = player.transform.position;
-        var rot = player.transform.rotation;
+        // Use Player.playerContainer for the world-space anchor, NOT
+        // Player.Instance.transform.
+        //
+        // Player extends Human, but the Player MonoBehaviour itself sits
+        // on a child GO of the first-person rig — typically the camera-
+        // height parent (head level, ~1.6 m above the feet). SoD exposes
+        // a separate `playerContainer : Transform` field on Player that
+        // points at the actual world-space body root (at foot level on
+        // the ground).
+        //
+        // Symptom of using `.transform`: peers see the host's body
+        // floating ~1.6 m above the ground, because we'd be writing the
+        // camera-level position into RemotePlayer.transform, then the
+        // citizen-clone visual (whose mesh anchor is at the feet) ends
+        // up offset upward by exactly the camera height. Reported by
+        // user; matches the visible artefact.
+        Transform anchor = null;
+        try { anchor = global::Player.Instance?.playerContainer; } catch { }
+        if (anchor == null)
+        {
+            // Fallback to the Player MonoBehaviour's own transform — better
+            // than nothing if the field is unset (very early load tick).
+            anchor = player.transform;
+        }
+
+        var pos = anchor.position;
+        var rot = anchor.rotation;
 
         // Estimate velocity from frame delta (Rigidbody.velocity isn't reliable on SoD's controller).
         Vector3 velocity = Vector3.zero;
@@ -218,6 +243,28 @@ public class PlayerSync
     {
         if (packet.PlayerId < 0) return;
         if (packet.PlayerId == NetworkManager.LocalPlayerId) return;
+
+        // Stamp the peer's broadcast position onto its PlayerNetInfo so the
+        // host's ZDO sender can filter dirty ZDOs by distance from THIS
+        // peer (Valheim-style sector culling). Done unconditionally even
+        // for non-host receivers — costs nothing and keeps the field
+        // accurate everywhere should we ever federate sender duties.
+        if (NetworkManager.Players != null
+            && NetworkManager.Players.TryGetValue(packet.PlayerId, out var info)
+            && info != null)
+        {
+            info.LastKnownPosition = packet.Position;
+            info.HasKnownPosition = true;
+
+            // Re-evaluate sector catch-up: ZDOs that were out-of-cull-range
+            // when their state last changed, but are now in range because
+            // this peer walked closer. Debounced internally to avoid
+            // recomputing on every 30 Hz position packet — only fires when
+            // peer has moved enough to possibly cross a cull boundary.
+            // Host-only; no-op on joiner side.
+            try { SoDCoop.Zdo.ZdoMan.EvaluatePeerCatchup(packet.PlayerId, packet.Position); }
+            catch (System.Exception ex) { Plugin.Log.LogWarning($"EvaluatePeerCatchup: {ex.Message}"); }
+        }
 
         var rp = RemotePlayerManager.GetPlayer(packet.PlayerId);
         if (rp == null)

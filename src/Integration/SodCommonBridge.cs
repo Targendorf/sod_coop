@@ -81,6 +81,15 @@ public static class SodCommonBridge
                     SoDCoop.Zdo.Pollers.MurderPoller.ResetBaseline();
                     SoDCoop.Zdo.Pollers.MurderDiscoveryPoller.ResetBaseline();
                     SoDCoop.Zdo.Pollers.HeldItemPoller.ResetBaseline();
+                    // Round 8 (2026-05-08): scan caches for the heavy
+                    // GetComponentInChildren-based pollers. Without these
+                    // resets, save-load would leave the caches pointing at
+                    // destroyed Unity components → silent dropouts on the
+                    // next tick. Cache rebuild on first post-load tick.
+                    SoDCoop.Zdo.Pollers.LightPoller.ResetBaseline();
+                    SoDCoop.Zdo.Pollers.ComputerStatePoller.ResetBaseline();
+                    SoDCoop.Zdo.Pollers.SwitchPoller.ResetBaseline();
+                    SoDCoop.Zdo.Pollers.FingerprintPoller.ResetBaseline();
                     // UnpatchSelf so SoD's save-load runs without IL2CPP wrapper
                     // trampoline marshalling cost on patched methods. Empirically
                     // this brought save-load from 200s+ → ~50s in Phase 1 logs.

@@ -74,7 +74,12 @@ public enum PacketType : byte
     /// readable reason string the client surfaces in the creation panel.
     /// The panel stays open so the user can correct and re-submit.
     /// </summary>
-    CharacterRejected = 10,
+    // NOTE: This value MUST stay outside the Player Sync block (10-29).
+    // Original `= 10` collided with PlayerPosition = 10, causing every 20Hz
+    // PlayerPosition packet to dispatch into HandleCharacterRejected on the
+    // host (and spam "host rejected our character" warnings). Bumped to
+    // 199 (in the unused 115-199 gap) so the value is provably unique.
+    CharacterRejected = 199,
 
     #endregion
     
@@ -282,79 +287,87 @@ public enum PacketType : byte
 
     #endregion
     
-    #region World Sync Packets (30-59)
-    
+    #region World Sync Packets (84-96)
+    //
+    // NOTE: original numbering started at 30 and collided wholesale with
+    // the SoD Player/Item block 30-41 (e.g. TimeSync=32 == ElevatorCall=32,
+    // WeatherSync=34 == ComputerLogin=34, etc.). On the wire each side's
+    // switch dispatched to the wrong handler, producing the
+    // "Destination array is not long enough" deserialisation crashes seen
+    // on TimeSync/ElevatorSync. Block re-homed to 84-96 (free range
+    // between PauseState=83 and CitizenDeath=100).
+
     /// <summary>
     /// Citizen/NPC state update.
     /// </summary>
-    CitizenState = 30,
-    
+    CitizenState = 84,
+
     /// <summary>
     /// Batch citizen state update (multiple NPCs).
     /// </summary>
-    CitizenStateBatch = 31,
-    
+    CitizenStateBatch = 85,
+
     /// <summary>
     /// Game time synchronization.
     /// </summary>
-    TimeSync = 32,
-    
+    TimeSync = 86,
+
     /// <summary>
     /// Interactable object state (doors, containers, etc.).
     /// </summary>
-    ObjectState = 33,
-    
+    ObjectState = 87,
+
     /// <summary>
     /// Weather state change.
     /// </summary>
-    WeatherSync = 34,
-    
+    WeatherSync = 88,
+
     /// <summary>
     /// Request full world state snapshot.
     /// </summary>
-    WorldSnapshotRequest = 35,
-    
+    WorldSnapshotRequest = 89,
+
     /// <summary>
     /// Full world state snapshot response.
     /// </summary>
-    WorldSnapshot = 36,
-    
+    WorldSnapshot = 90,
+
     /// <summary>
     /// Delta world state update.
     /// </summary>
-    WorldDelta = 37,
-    
+    WorldDelta = 91,
+
     /// <summary>
     /// World state checksum for validation.
     /// </summary>
-    WorldChecksum = 38,
+    WorldChecksum = 92,
 
     /// <summary>
     /// AI command batch: NavMeshAgent destination + behaviour state per citizen.
     /// Sent when a citizen's destination or behaviour changes.
     /// Client re-runs NavMeshAgent locally — no position lerp needed.
     /// </summary>
-    CitizenCommandBatch = 39,
+    CitizenCommandBatch = 93,
 
     /// <summary>
     /// Authoritative position correction batch.
     /// Sent every CORRECTION_INTERVAL seconds for moving citizens
     /// to fix floating-point drift accumulated from independent NavMesh runs.
     /// </summary>
-    CitizenCorrectionBatch = 40,
+    CitizenCorrectionBatch = 94,
 
     /// <summary>
     /// Client → Host: "I am taking ownership of citizen #N for local interaction
     /// (dialog, combat, etc.)". Host pauses its own AI for this citizen and stops
     /// sending sync commands for it. Other clients also stop receiving updates.
     /// </summary>
-    CitizenOwnershipClaim = 41,
+    CitizenOwnershipClaim = 95,
 
     /// <summary>
     /// Client → Host: "I'm done with citizen #N; resume normal sync."
     /// Host re-enables its NewAIController and resumes broadcasting.
     /// </summary>
-    CitizenOwnershipRelease = 42,
+    CitizenOwnershipRelease = 96,
 
     /// <summary>
     /// Door open/close state — uses Interactable.id as the network identifier.
@@ -673,6 +686,23 @@ public enum PacketType : byte
 
     /// <summary>Host → client: protocol/wire version mismatch on handshake.</summary>
     ZdoVersionMismatch   = 204,
+
+    /// <summary>
+    /// Host → joining client: full description of the world the host is in
+    /// (seed, share-code, cityName, citySize). Sent during the post-handshake
+    /// flow. The joiner's mod uses this to programmatically trigger SoD's
+    /// "Generate City from Share Code" pipeline so the joiner builds an
+    /// identical city locally before applying the host's ZDO snapshot.
+    /// </summary>
+    WorldDescriptor      = 205,
+
+    /// <summary>
+    /// Client → host: "my world is generated and ready, please send the ZDO
+    /// snapshot now". Decouples handshake-completion from snapshot-send so
+    /// the host doesn't fire snapshot bytes into a peer that's still on the
+    /// loading screen.
+    /// </summary>
+    ClientWorldReady     = 206,
 
     #endregion
 }

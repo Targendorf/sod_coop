@@ -29,7 +29,7 @@ public static class EvidenceCreationPoller
     private static readonly HashSet<string> _last = new();
     private static bool _initialized;
 
-    public static void Register() => ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick);
+    public static void Register() => ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick, WarmupBaseline);
 
     public static void ResetBaseline()
     {
@@ -37,9 +37,24 @@ public static class EvidenceCreationPoller
         _last.Clear();
     }
 
+    /// <summary>Force the next real tick to re-snapshot the evidence keyset
+    /// without broadcasting. Wired through <see cref="ZdoPollerHost"/> on
+    /// every HasPeers gain.</summary>
+    public static void WarmupBaseline() => ResetBaseline();
+
     private static void Tick(float now)
     {
         if (!ZdoFeatureFlags.UseZdoForEvidenceCreation) return;
+        TickInner(now);
+    }
+
+    /// <summary>Probe-time entry point used by <see cref="PollerHealthCheck"/>.
+    /// Bypasses the feature-flag gate so the field-drift probe exercises the
+    /// real SoD-field-deref path.</summary>
+    internal static void ProbeBody(float now) => TickInner(now);
+
+    private static void TickInner(float now)
+    {
         try
         {
             var dict = GameplayController.Instance?.evidenceDictionary;

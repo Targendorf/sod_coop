@@ -119,6 +119,22 @@
       <HintPath>$(BepInExPath)\interop\UnityEngine.UIModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!--
+      HDRP runtime — SoD uses High Definition Render Pipeline. Plain
+      UnityEngine.Camera / UnityEngine.Light render nothing on HDRP/Lit
+      shaders unless paired with HDAdditionalCameraData /
+      HDAdditionalLightData siblings. Used by the appearance preview
+      stage so its offscreen camera actually rasterises the citizen
+      clone into the RenderTexture.
+    -->
+    <Reference Include="Unity.RenderPipelines.HighDefinition.Runtime">
+      <HintPath>$(BepInExPath)\interop\Unity.RenderPipelines.HighDefinition.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.RenderPipelines.Core.Runtime">
+      <HintPath>$(BepInExPath)\interop\Unity.RenderPipelines.Core.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <!-- Community helper library (Venomaus). Loaded by Gale, do not copy. -->
     <Reference Include="SOD.Common">
       <HintPath>$(BepInExPath)\plugins\Venomaus-SODCommon\SOD.Common.dll</HintPath>

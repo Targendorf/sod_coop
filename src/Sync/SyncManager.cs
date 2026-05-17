@@ -116,7 +116,10 @@ public static class SyncManager
             //    in the wrong handler.
             if (type == PacketType.ZdoDeltaBatch)
             {
-                SoDCoop.Zdo.ZdoMan.ApplyDeltaBatch(reader);
+                // Pass senderId so host-side ApplyDeltaBatch can validate
+                // that each ZDO delta came from its OwnerPeer (anti-mutation
+                // by joiners on ZDOs they don't own).
+                SoDCoop.Zdo.ZdoMan.ApplyDeltaBatch(reader, senderId);
                 return;
             }
             if (type == PacketType.ZdoSnapshot)

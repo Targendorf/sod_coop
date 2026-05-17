@@ -37,6 +37,16 @@ public static class CaseStatusPoller
     private static void Tick(float now)
     {
         if (!ZdoFeatureFlags.UseZdoForCaseStatus) return;
+        TickInner(now);
+    }
+
+    /// <summary>Probe-time entry point used by <see cref="PollerHealthCheck"/>.
+    /// Bypasses the feature-flag gate so the field-drift probe exercises the
+    /// real SoD-field-deref path.</summary>
+    internal static void ProbeBody(float now) => TickInner(now);
+
+    private static void TickInner(float now)
+    {
         try
         {
             var list = CasePanelController.Instance?.activeCases;

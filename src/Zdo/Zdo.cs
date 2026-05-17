@@ -81,9 +81,18 @@ public sealed class Zdo
     public void Set(int key, string v)     { (_strings  ??= new()).TryGetValue(key, out var p); if (p == v && _strings.ContainsKey(key)) return; _strings[key] = v ?? ""; MarkDirty(key, ZdoValueType.String); }
     public void Set(int key, Vector3 v)    { (_vector3s ??= new()).TryGetValue(key, out var p); if (p == v && _vector3s.ContainsKey(key)) return; _vector3s[key] = v; MarkDirty(key, ZdoValueType.Vector3); }
     public void Set(int key, Quaternion v) { (_quats    ??= new()).TryGetValue(key, out var p); if (p == v && _quats.ContainsKey(key)) return; _quats[key] = v; MarkDirty(key, ZdoValueType.Quaternion); }
-    public void Set(int key, byte[] v)     { (_blobs    ??= new())[key] = v ?? System.Array.Empty<byte>(); MarkDirty(key, ZdoValueType.Blob); }
+    public void Set(int key, byte[] v)     { var nv = v ?? System.Array.Empty<byte>(); _blobs ??= new(); if (_blobs.TryGetValue(key, out var pb) && BlobEquals(pb, nv)) return; _blobs[key] = nv; MarkDirty(key, ZdoValueType.Blob); }
     public void Set(int key, ulong v)      { (_ulongs   ??= new()).TryGetValue(key, out var p); if (p == v && _ulongs.ContainsKey(key)) return; _ulongs [key] = v; MarkDirty(key, ZdoValueType.ULong); }
-    public void Set(int key, ZDOID v)      { (_zdoids   ??= new())[key] = v; MarkDirty(key, ZdoValueType.Zdoid); }
+    public void Set(int key, ZDOID v)      { _zdoids ??= new(); if (_zdoids.TryGetValue(key, out var pz) && pz == v) return; _zdoids[key] = v; MarkDirty(key, ZdoValueType.Zdoid); }
+
+    private static bool BlobEquals(byte[] a, byte[] b)
+    {
+        if (ReferenceEquals(a, b)) return true;
+        if (a == null || b == null) return false;
+        if (a.Length != b.Length) return false;
+        for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
+        return true;
+    }
 
     public bool HasKey(int key)
     {
@@ -137,8 +146,30 @@ public sealed class Zdo
         _dirtyKeys[key] = (byte)vt;
         _deletedKeys.Remove(key);
         DataRevision++;
-        IsDirty = true;
+        // Was: IsDirty = true; — left set for backwards compat callers.
+        // New: also push self into the central dirty-set so ZdoMan's flush
+        // doesn't have to scan all ~19 K ZDOs every 100 ms looking for the
+        // few that actually changed (Valheim's ZDOMan keeps a `m_changed`
+        // collection and feeds straight from it; we now do the same).
+        if (!IsDirty)
+        {
+            IsDirty = true;
+            ZdoMan.NotifyZdoDirty(this);
+        }
     }
+
+    // ── Host-only spatial index (Nebula-style tile culling) ─────────────
+    /// <summary>Last-known world position of the SoD entity backing this
+    /// ZDO. Maintained ONLY on the host side by pollers (CitizenStatePoller,
+    /// LightPoller, DoorPoller, etc.) via <see cref="ZdoMan.NotifyZdoPosition"/>.
+    /// Used by <c>ZdoMan.BuildAndSendDeltaBatch</c> for per-peer sector
+    /// culling: a peer that's far from this position doesn't get this
+    /// ZDO's deltas. NEVER serialised — the receiving peer derives its
+    /// own copy from received <c>ZdoKeys.Pos</c> when needed. ZDOs without
+    /// a position (Money, Weather, Case, VmailThread — global state)
+    /// keep <see cref="HasHostPosition"/> false and bypass culling.</summary>
+    public UnityEngine.Vector3 HostPosition;
+    public bool HasHostPosition;
 
     /// <summary>Snapshot of dirty keys for batch serialisation; safe to read
     /// while iterating because consumers should not mutate during a flush.</summary>
@@ -148,7 +179,11 @@ public sealed class Zdo
     {
         _dirtyKeys.Clear();
         _deletedKeys.Clear();
-        IsDirty = false;
+        if (IsDirty)
+        {
+            IsDirty = false;
+            ZdoMan.NotifyZdoClean(this);
+        }
     }
 
     // ── Iteration helpers for snapshot serialisation ─────────────────

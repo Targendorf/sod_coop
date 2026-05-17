@@ -24,7 +24,16 @@ public static class DoorPoller
     private static void Tick(float now)
     {
         if (!ZdoFeatureFlags.UseZdoForDoors) return;
+        TickInner(now);
+    }
 
+    /// <summary>Probe-time entry point used by <see cref="PollerHealthCheck"/>.
+    /// Bypasses the feature-flag gate so the field-drift probe exercises the
+    /// real SoD-field-deref path.</summary>
+    internal static void ProbeBody(float now) => TickInner(now);
+
+    private static void TickInner(float now)
+    {
         try
         {
             var dict = CityData.Instance?.doorDictionary;
@@ -40,6 +49,11 @@ public static class DoorPoller
                 int id = inter.id;
 
                 Zdo z = ZdoMan.GetOrCreateBySodId(ZdoTypeTag.Door, id, owner: ZdoMan.LocalPeerUid, persistent: true);
+                // Static position — stamp once for sector-cull.
+                if (!z.HasHostPosition)
+                {
+                    try { ZdoMan.NotifyZdoPosition(z, inter.wPos); } catch { }
+                }
                 z.Set(ZdoKeys.Closed, door.isClosed);
                 z.Set(ZdoKeys.Locked, door.isLocked);
             }

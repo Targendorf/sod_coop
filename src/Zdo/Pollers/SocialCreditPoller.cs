@@ -34,7 +34,16 @@ public static class SocialCreditPoller
         if (!ZdoFeatureFlags.UseZdoForEvents) return;
         if (!SoDCoop.Network.NetworkManager.IsHost) return;
         if (!SoDCoop.Network.NetworkManager.HasPeers) return;
+        TickInner(now);
+    }
 
+    /// <summary>Probe-time entry point used by <see cref="PollerHealthCheck"/>.
+    /// Bypasses the feature-flag / IsHost / HasPeers gates so the field-drift
+    /// probe exercises the real SoD-field-deref path even on a solo host.</summary>
+    internal static void ProbeBody(float now) => TickInner(now);
+
+    private static void TickInner(float now)
+    {
         try
         {
             var gc = global::GameplayController.Instance;

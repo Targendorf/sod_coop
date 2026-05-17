@@ -90,6 +90,43 @@ public static class ZdoBootstrap
         // ── Round 10: held-item polling moved off legacy CoopUpdateRunner ──
         HeldItemPoller.Register();
 
+        // ── PollerHealthCheck registry (delegate-based, NOT reflection) ──
+        // Reflection-based probe lookup hit a fatal MonoMod CompileMethodHook
+        // crash (0x80131506) at first WorldReady on the IL2CPP backend —
+        // same failure mode that forced UnpatchSelf in Plugin.cs. Direct
+        // Action<float> delegates target methods that are already JIT'd
+        // and bypass the dynamic-invoke trampoline entirely. Each entry
+        // here mirrors the poller registered above; if a new poller is
+        // added, drop a matching line here too.
+        PollerHealthCheck.RegisterProbe(DoorPoller.NAME,                DoorPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(LightPoller.NAME,               LightPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(SwitchPoller.NAME,              SwitchPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(CitizenStatePoller.NAME,        CitizenStatePoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(CitizenAnimationPoller.NAME,    CitizenAnimationPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(SocialCreditPoller.NAME,        SocialCreditPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(SpeechBubblePoller.NAME,        SpeechBubblePoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(PhoneCallPoller.NAME,           PhoneCallPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(FingerprintPoller.NAME,         FingerprintPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(FootprintPoller.NAME,           FootprintPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(SpatterPoller.NAME,             SpatterPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(VmailThreadPoller.NAME,         VmailThreadPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(EvidenceNotePoller.NAME,        EvidenceNotePoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(LocalPlayerPoller.NAME,         LocalPlayerPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(PlayerInputPoller.NAME,         PlayerInputPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(PauseStatePoller.NAME,          PauseStatePoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(MoneyPoller.NAME,               MoneyPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(ComputerStatePoller.NAME,       ComputerStatePoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(MurderPoller.NAME,              MurderPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(WeatherPoller.NAME,             WeatherPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(ElevatorPoller.NAME,            ElevatorPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(EvidenceCreationPoller.NAME,    EvidenceCreationPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(CaseStatusPoller.NAME,          CaseStatusPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(SideJobPoller.NAME,             SideJobPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(CaseBoardPoller.NAME,           CaseBoardPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(NpcDamagePoller.NAME,           NpcDamagePoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(MurderDiscoveryPoller.NAME,     MurderDiscoveryPoller.ProbeBody);
+        PollerHealthCheck.RegisterProbe(HeldItemPoller.NAME,            HeldItemPoller.ProbeBody);
+
         Plugin.Log.LogInfo("[ZdoBootstrap] resolvers + pollers + events registered.");
     }
 }
