@@ -63,7 +63,7 @@ public static class AppearanceSync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.PlayerAppearance, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[AppearanceSync] broadcast local appearance customized={cfg.IsCustomized}");
+            Plugin.Log.LogDebug($"[AppearanceSync] broadcast local appearance customized={cfg.IsCustomized}");
         }
         catch (System.Exception ex)
         {
@@ -133,7 +133,7 @@ public static class AppearanceSync
             try
             {
                 cfg.ApplyTo(ctrl);
-                Plugin.Log.LogInfo($"[AppearanceSync] applied appearance to humanID={humanId} (custom={cfg.IsCustomized})");
+                Plugin.Log.LogDebug($"[AppearanceSync] applied appearance to humanID={humanId} (custom={cfg.IsCustomized})");
             }
             finally { IsApplyingRemote = false; }
         }

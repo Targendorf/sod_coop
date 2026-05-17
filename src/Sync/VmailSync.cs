@@ -56,7 +56,7 @@ public static class VmailSync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.VmailCreated, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[VmailSync] thread broadcast id={thread.threadID} tree=\"{thread.treeID}\"");
+            Plugin.Log.LogDebug($"[VmailSync] thread broadcast id={thread.threadID} tree=\"{thread.treeID}\"");
         }
         catch (System.Exception ex)
         {
@@ -117,7 +117,7 @@ public static class VmailSync
                     /*progress*/ 999,
                     (StateSaveData.CustomDataSource)p.DataSource,
                     p.DataSourceId);
-                Plugin.Log.LogInfo($"[VmailSync] applied vmail thread id={p.ThreadId} tree=\"{p.TreeId}\"");
+                Plugin.Log.LogDebug($"[VmailSync] applied vmail thread id={p.ThreadId} tree=\"{p.TreeId}\"");
             }
             finally
             {

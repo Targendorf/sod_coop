@@ -47,7 +47,7 @@ public class CaseSync
             int locationId = reader.GetInt();
             Vector3 position = reader.GetVector3();
             // Store/Log
-            Plugin.Log.LogInfo($"Received Evidence: ID {evidenceId} at {locationId}");
+            Plugin.Log.LogDebug($"Received Evidence: ID {evidenceId} at {locationId}");
         }
         else if (type == PacketType.Interrogation)
         {
@@ -55,19 +55,19 @@ public class CaseSync
             int citizenId = reader.GetInt();
             int questionId = reader.GetInt();
             int responseId = reader.GetInt();
-            Plugin.Log.LogInfo($"Received Interrogation: Cit {citizenId} Q {questionId} A {responseId}");
+            Plugin.Log.LogDebug($"Received Interrogation: Cit {citizenId} Q {questionId} A {responseId}");
         }
         else if (type == PacketType.Arrest)
         {
             int citizenId = reader.GetInt();
             bool correct = reader.GetBool();
-            Plugin.Log.LogInfo($"Received Arrest: Cit {citizenId} Correct? {correct}");
+            Plugin.Log.LogDebug($"Received Arrest: Cit {citizenId} Correct? {correct}");
         }
         else if (type == PacketType.CaseResult)
         {
             bool solved = reader.GetBool();
             int suspectId = reader.GetInt();
-            Plugin.Log.LogInfo($"Received Case Result: Solved? {solved}");
+            Plugin.Log.LogDebug($"Received Case Result: Solved? {solved}");
         }
     }
     
@@ -86,7 +86,7 @@ public class CaseSync
         
         NetworkManager.SendToAll(PacketType.EvidenceFound, _writer, DeliveryMethod.ReliableOrdered);
         
-        Plugin.Log.LogInfo($"Evidence {evidenceId} synced to other players.");
+        Plugin.Log.LogDebug($"Evidence {evidenceId} synced to other players.");
     }
     
     /// <summary>
@@ -136,7 +136,7 @@ public class CaseSync
         
         NetworkManager.SendToAll(PacketType.Arrest, _writer, DeliveryMethod.ReliableOrdered);
         
-        Plugin.Log.LogInfo($"Arrest synced: Citizen {citizenId}, Correct: {isCorrectSuspect}");
+        Plugin.Log.LogDebug($"Arrest synced: Citizen {citizenId}, Correct: {isCorrectSuspect}");
     }
     
     /// <summary>
@@ -153,6 +153,6 @@ public class CaseSync
         
         NetworkManager.SendToAll(PacketType.CaseResult, _writer, DeliveryMethod.ReliableOrdered);
         
-        Plugin.Log.LogInfo($"Case result synced: {(solved ? "SOLVED" : "FAILED")}");
+        Plugin.Log.LogDebug($"Case result synced: {(solved ? "SOLVED" : "FAILED")}");
     }
 }

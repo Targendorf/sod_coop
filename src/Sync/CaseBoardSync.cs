@@ -278,7 +278,7 @@ public static class CaseBoardSync
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.CaseBoardPin, _writer, DeliveryMethod.ReliableOrdered);
 
-            Plugin.Log.LogInfo($"[CaseBoard] pin broadcast case={caseId} ev={evId} keys={packet.DataKeys.Length}");
+            Plugin.Log.LogDebug($"[CaseBoard] pin broadcast case={caseId} ev={evId} keys={packet.DataKeys.Length}");
         }
         catch (System.Exception ex)
         {
@@ -311,7 +311,7 @@ public static class CaseBoardSync
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.CaseBoardUnpin, _writer, DeliveryMethod.ReliableOrdered);
 
-            Plugin.Log.LogInfo($"[CaseBoard] unpin broadcast case={caseId} ev={evId}");
+            Plugin.Log.LogDebug($"[CaseBoard] unpin broadcast case={caseId} ev={evId}");
         }
         catch (System.Exception ex)
         {
@@ -347,7 +347,7 @@ public static class CaseBoardSync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.CaseBoardString, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[CaseBoard] string broadcast case={caseId} {fromEvId}→{toEvId} colour={colour}");
+            Plugin.Log.LogDebug($"[CaseBoard] string broadcast case={caseId} {fromEvId}→{toEvId} colour={colour}");
         }
         catch (System.Exception ex)
         {
@@ -382,7 +382,7 @@ public static class CaseBoardSync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.CaseBoardHide, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[CaseBoard] hide broadcast case={caseId} {fromEv}→{toEv} hidden={isHidden}");
+            Plugin.Log.LogDebug($"[CaseBoard] hide broadcast case={caseId} {fromEv}→{toEv} hidden={isHidden}");
         }
         catch (System.Exception ex)
         {
@@ -408,7 +408,7 @@ public static class CaseBoardSync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.CaseBoardResolveAnswer, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[CaseBoard] resolve-answer broadcast case={caseId} q={questionIndex} p={progress:F2}");
+            Plugin.Log.LogDebug($"[CaseBoard] resolve-answer broadcast case={caseId} q={questionIndex} p={progress:F2}");
         }
         catch (System.Exception ex)
         {
@@ -427,7 +427,7 @@ public static class CaseBoardSync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.CaseBoardResolve, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[CaseBoard] resolve broadcast case={caseId}");
+            Plugin.Log.LogDebug($"[CaseBoard] resolve broadcast case={caseId}");
         }
         catch (System.Exception ex)
         {
@@ -469,7 +469,7 @@ public static class CaseBoardSync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.CaseBoardStringRemove, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[CaseBoard] string-remove broadcast case={caseId} {fromEvId}→{toEvId}");
+            Plugin.Log.LogDebug($"[CaseBoard] string-remove broadcast case={caseId} {fromEvId}→{toEvId}");
         }
         catch (System.Exception ex)
         {
@@ -506,7 +506,7 @@ public static class CaseBoardSync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.CaseBoardFactName, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[CaseBoard] fact-name broadcast {fromEv}→{toEv} = \"{customName}\"");
+            Plugin.Log.LogDebug($"[CaseBoard] fact-name broadcast {fromEv}→{toEv} = \"{customName}\"");
         }
         catch (System.Exception ex)
         {
@@ -530,7 +530,7 @@ public static class CaseBoardSync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.CaseBoardStatus, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[CaseBoard] status broadcast case={caseId} status={status}");
+            Plugin.Log.LogDebug($"[CaseBoard] status broadcast case={caseId} status={status}");
         }
         catch (System.Exception ex)
         {
@@ -687,7 +687,7 @@ public static class CaseBoardSync
             var cpc = CasePanelController.Instance;
             if (cpc == null) return;
             cpc.PinToCasePanel(caseObj, evidence, keysList, forceAutoPin, position, false);
-            Plugin.Log.LogInfo($"[CaseBoard] applied remote pin case={caseId} ev={evId}");
+            Plugin.Log.LogDebug($"[CaseBoard] applied remote pin case={caseId} ev={evId}");
         }
         catch (System.Exception ex)
         {
@@ -714,7 +714,7 @@ public static class CaseBoardSync
             var cpc = CasePanelController.Instance;
             if (cpc == null) return;
             cpc.UnPinFromCasePanel(caseObj, evidence, keysList, false, null);
-            Plugin.Log.LogInfo($"[CaseBoard] applied remote unpin case={caseId} ev={evId}");
+            Plugin.Log.LogDebug($"[CaseBoard] applied remote unpin case={caseId} ev={evId}");
         }
         catch (System.Exception ex)
         {
@@ -782,7 +782,7 @@ public static class CaseBoardSync
         try
         {
             caseObj.AddNewStringColour(link, (InterfaceControls.EvidenceColours)colour);
-            Plugin.Log.LogInfo($"[CaseBoard] applied remote string case={caseId} colour={colour}");
+            Plugin.Log.LogDebug($"[CaseBoard] applied remote string case={caseId} colour={colour}");
         }
         catch (System.Exception ex)
         {
@@ -808,7 +808,7 @@ public static class CaseBoardSync
         try
         {
             caseObj.SetHidden(fact, p.IsHidden);
-            Plugin.Log.LogInfo($"[CaseBoard] applied remote hide case={p.CaseId} hidden={p.IsHidden}");
+            Plugin.Log.LogDebug($"[CaseBoard] applied remote hide case={p.CaseId} hidden={p.IsHidden}");
         }
         catch (System.Exception ex)
         {
@@ -838,7 +838,7 @@ public static class CaseBoardSync
         try
         {
             caseObj.SetStatus((Case.CaseStatus)status, cancelObjectives);
-            Plugin.Log.LogInfo($"[CaseBoard] applied remote status case={caseId} status={status}");
+            Plugin.Log.LogDebug($"[CaseBoard] applied remote status case={caseId} status={status}");
         }
         catch (System.Exception ex)
         {
@@ -865,7 +865,7 @@ public static class CaseBoardSync
         try
         {
             q.SetProgress(p.Progress, p.ForceTrigger);
-            Plugin.Log.LogInfo($"[CaseBoard] applied remote resolve-answer case={p.CaseId} q={p.QuestionIndex} p={p.Progress:F2}");
+            Plugin.Log.LogDebug($"[CaseBoard] applied remote resolve-answer case={p.CaseId} q={p.QuestionIndex} p={p.Progress:F2}");
         }
         catch (System.Exception ex)
         {
@@ -887,7 +887,7 @@ public static class CaseBoardSync
         try
         {
             caseObj.Resolve();
-            Plugin.Log.LogInfo($"[CaseBoard] applied remote resolve case={p.CaseId}");
+            Plugin.Log.LogDebug($"[CaseBoard] applied remote resolve case={p.CaseId}");
         }
         catch (System.Exception ex)
         {
@@ -913,7 +913,7 @@ public static class CaseBoardSync
         try
         {
             fact.SetCustomName(p.CustomName ?? "");
-            Plugin.Log.LogInfo($"[CaseBoard] applied remote fact-name = \"{p.CustomName}\"");
+            Plugin.Log.LogDebug($"[CaseBoard] applied remote fact-name = \"{p.CustomName}\"");
         }
         catch (System.Exception ex)
         {
@@ -944,7 +944,7 @@ public static class CaseBoardSync
         try
         {
             sc.RemoveCustomLink();
-            Plugin.Log.LogInfo($"[CaseBoard] applied remote string-remove case={caseId} {fromEvId}→{toEvId}");
+            Plugin.Log.LogDebug($"[CaseBoard] applied remote string-remove case={caseId} {fromEvId}→{toEvId}");
         }
         catch (System.Exception ex)
         {

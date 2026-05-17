@@ -163,7 +163,7 @@ public static class PhoneSync
             ExpiresAt  = Time.unscaledTime + BANNER_LIFETIME,
         });
 
-        Plugin.Log.LogInfo($"[PhoneSync] banner: {text}");
+        Plugin.Log.LogDebug($"[PhoneSync] banner: {text}");
     }
 
     // ─────────────────────────────────────────────────────────────────────────

@@ -52,7 +52,7 @@ public static class PlayerStateSync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.PlayerInBed, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[PlayerStateSync] in-bed broadcast {isInBed} (low={isLowBed})");
+            Plugin.Log.LogDebug($"[PlayerStateSync] in-bed broadcast {isInBed} (low={isLowBed})");
         }
         catch (System.Exception ex)
         {
@@ -75,7 +75,7 @@ public static class PlayerStateSync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.PlayerAsleep, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[PlayerStateSync] asleep broadcast {isAsleep}");
+            Plugin.Log.LogDebug($"[PlayerStateSync] asleep broadcast {isAsleep}");
         }
         catch (System.Exception ex)
         {

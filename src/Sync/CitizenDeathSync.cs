@@ -51,7 +51,7 @@ public static class CitizenDeathSync
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.CitizenDeath, _writer, DeliveryMethod.ReliableOrdered);
 
-            Plugin.Log.LogInfo(
+            Plugin.Log.LogDebug(
                 $"[DeathSync] broadcast death victim={victimHumanId} killer={killerHumanId} weapon={weaponInteractableId}");
         }
         catch (System.Exception ex)
@@ -72,7 +72,7 @@ public static class CitizenDeathSync
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.CrimeSceneDiscovered, _writer, DeliveryMethod.ReliableOrdered);
 
-            Plugin.Log.LogInfo($"[DeathSync] broadcast discovery by player {NetworkManager.LocalPlayerId}");
+            Plugin.Log.LogDebug($"[DeathSync] broadcast discovery by player {NetworkManager.LocalPlayerId}");
         }
         catch (System.Exception ex)
         {
@@ -229,7 +229,7 @@ public static class CitizenDeathSync
         try
         {
             mc.OnVictimDiscovery();
-            Plugin.Log.LogInfo($"[DeathSync] applied remote discovery from player {senderIdForLog}");
+            Plugin.Log.LogDebug($"[DeathSync] applied remote discovery from player {senderIdForLog}");
         }
         catch (System.Exception ex)
         {

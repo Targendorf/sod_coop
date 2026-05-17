@@ -142,7 +142,7 @@ public static class WeatherSync
         try
         {
             sd.SetWeather(rain, wind, snow, lightning, fog, transitionSpeed, instant);
-            Plugin.Log.LogInfo(
+            Plugin.Log.LogDebug(
                 $"[WeatherSync] applied (zdo) rain={rain:F2} wind={wind:F2} snow={snow:F2} " +
                 $"lit={lightning:F2} fog={fog:F2} instant={instant}");
         }

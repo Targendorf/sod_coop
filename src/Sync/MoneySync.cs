@@ -51,7 +51,7 @@ public static class MoneySync
         // separate-inventory design.
         if (amount < 0)
         {
-            Plugin.Log.LogInfo($"[MoneySync] local debit {amount} (reason=\"{reason}\") — not broadcast");
+            Plugin.Log.LogDebug($"[MoneySync] local debit {amount} (reason=\"{reason}\") — not broadcast");
             return;
         }
 
@@ -63,7 +63,7 @@ public static class MoneySync
         {
             try { SoDCoop.Zdo.ZdoEvents.SendMoneyAdded(amount, displayMessage, reason); }
             catch (System.Exception ex) { Plugin.Log.LogWarning($"MoneySync.BroadcastAddMoney (ZDO event): {ex.Message}"); }
-            Plugin.Log.LogInfo($"[MoneySync] zdo-event +{amount} reason=\"{reason}\"");
+            Plugin.Log.LogDebug($"[MoneySync] zdo-event +{amount} reason=\"{reason}\"");
             return;
         }
 
@@ -79,7 +79,7 @@ public static class MoneySync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.MoneyAdded, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[MoneySync] broadcast {amount:+#;-#} reason=\"{reason}\"");
+            Plugin.Log.LogDebug($"[MoneySync] broadcast {amount:+#;-#} reason=\"{reason}\"");
         }
         catch (System.Exception ex)
         {
@@ -139,7 +139,7 @@ public static class MoneySync
             try
             {
                 gc.AddMoney(amount, displayMessage, reason ?? "");
-                Plugin.Log.LogInfo($"[MoneySync] applied +{amount} from player {senderIdForLog} (reason=\"{reason}\")");
+                Plugin.Log.LogDebug($"[MoneySync] applied +{amount} from player {senderIdForLog} (reason=\"{reason}\")");
             }
             finally
             {

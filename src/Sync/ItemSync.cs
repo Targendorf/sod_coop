@@ -72,7 +72,7 @@ public static class ItemSync
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.PlayerPickup, _writer, DeliveryMethod.ReliableOrdered);
 
-            Plugin.Log.LogInfo($"[ItemSync] Pickup broadcast id={interactableId}");
+            Plugin.Log.LogDebug($"[ItemSync] Pickup broadcast id={interactableId}");
         }
         catch (System.Exception ex)
         {
@@ -122,7 +122,7 @@ public static class ItemSync
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.PlayerDrop, _writer, DeliveryMethod.ReliableOrdered);
 
-            Plugin.Log.LogInfo($"[ItemSync] Drop broadcast id={interactableId} pos={dropPos}");
+            Plugin.Log.LogDebug($"[ItemSync] Drop broadcast id={interactableId} pos={dropPos}");
         }
         catch (System.Exception ex)
         {
@@ -245,7 +245,7 @@ public static class ItemSync
             if (go != null && go.activeSelf)
             {
                 go.SetActive(false);
-                Plugin.Log.LogInfo($"[ItemSync] Applied pickup id={interactableId} (hidden)");
+                Plugin.Log.LogDebug($"[ItemSync] Applied pickup id={interactableId} (hidden)");
             }
         }
         catch (System.Exception ex)
@@ -278,7 +278,7 @@ public static class ItemSync
             {
                 go.transform.position = p.DropPosition;
                 if (!go.activeSelf) go.SetActive(true);
-                Plugin.Log.LogInfo($"[ItemSync] Applied drop id={p.InteractableId} pos={p.DropPosition}");
+                Plugin.Log.LogDebug($"[ItemSync] Applied drop id={p.InteractableId} pos={p.DropPosition}");
             }
         }
         catch (System.Exception ex)
@@ -311,7 +311,7 @@ public static class ItemSync
             if (go != null && !go.activeSelf)
             {
                 go.SetActive(true);
-                Plugin.Log.LogInfo($"[ItemSync] Applied drop (zdo) id={interactableId}");
+                Plugin.Log.LogDebug($"[ItemSync] Applied drop (zdo) id={interactableId}");
             }
         }
         catch (System.Exception ex)

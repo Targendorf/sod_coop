@@ -47,7 +47,7 @@ public static class NpcOutfitSync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.NpcOutfit, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[NpcOutfitSync] broadcast humanID={humanId} cat={category}");
+            Plugin.Log.LogDebug($"[NpcOutfitSync] broadcast humanID={humanId} cat={category}");
         }
         catch (System.Exception ex)
         {
@@ -96,7 +96,7 @@ public static class NpcOutfitSync
             try
             {
                 ctrl.SetCurrentOutfit((ClothesPreset.OutfitCategory)category, false, false, true);
-                Plugin.Log.LogInfo($"[NpcOutfitSync] applied humanID={humanId} cat={category}");
+                Plugin.Log.LogDebug($"[NpcOutfitSync] applied humanID={humanId} cat={category}");
             }
             finally { IsApplyingRemote = false; }
         }
@@ -173,7 +173,7 @@ public static class PlayerOutfitSync
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.PlayerOutfit, _writer, DeliveryMethod.ReliableOrdered);
 
-            Plugin.Log.LogInfo($"[PlayerOutfitSync] sent category={category}");
+            Plugin.Log.LogDebug($"[PlayerOutfitSync] sent category={category}");
         }
         catch (System.Exception ex)
         {
@@ -226,7 +226,7 @@ public static class PlayerOutfitSync
             {
                 var cat = (ClothesPreset.OutfitCategory)p.Category;
                 ctrl.SetCurrentOutfit(cat, /*forceLoad*/ false, /*forceReload*/ false, /*ignoreIfDead*/ true);
-                Plugin.Log.LogInfo($"[PlayerOutfitSync] applied outfit category={cat} to twin humanID={twinHumanId}");
+                Plugin.Log.LogDebug($"[PlayerOutfitSync] applied outfit category={cat} to twin humanID={twinHumanId}");
             }
             finally
             {

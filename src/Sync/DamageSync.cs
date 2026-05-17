@@ -79,7 +79,7 @@ public static class DamageSync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.NpcDamage, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[DamageSync] broadcast victim={victimHumanId} attacker={attackerHumanId} amount={amount:F1} kill={enableKill}");
+            Plugin.Log.LogDebug($"[DamageSync] broadcast victim={victimHumanId} attacker={attackerHumanId} amount={amount:F1} kill={enableKill}");
         }
         catch (System.Exception ex)
         {
@@ -169,7 +169,7 @@ public static class DamageSync
                     forceRagdoll, ragdollDuration, shockMP,
                     enableKill, allowRecoil, ragdollForceMP);
 
-                Plugin.Log.LogInfo($"[DamageSync] applied victim={victimHumanId} amount={amount:F1}");
+                Plugin.Log.LogDebug($"[DamageSync] applied victim={victimHumanId} amount={amount:F1}");
             }
             finally { IsApplyingRemote = false; }
         }

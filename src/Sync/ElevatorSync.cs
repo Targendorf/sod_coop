@@ -53,7 +53,7 @@ public static class ElevatorSync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.ElevatorCall, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[ElevatorSync] call broadcast bld={packet.BuildingId} btm={packet.BottomTileCoord} floor={newFloor} up={upButton}");
+            Plugin.Log.LogDebug($"[ElevatorSync] call broadcast bld={packet.BuildingId} btm={packet.BottomTileCoord} floor={newFloor} up={upButton}");
         }
         catch (System.Exception ex)
         {
@@ -102,7 +102,7 @@ public static class ElevatorSync
             try
             {
                 elevator.CallElevator(newFloor, upButton);
-                Plugin.Log.LogInfo($"[ElevatorSync] applied call bld={buildingId} floor={newFloor} up={upButton}");
+                Plugin.Log.LogDebug($"[ElevatorSync] applied call bld={buildingId} floor={newFloor} up={upButton}");
             }
             finally
             {

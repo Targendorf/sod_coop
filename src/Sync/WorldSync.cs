@@ -209,7 +209,7 @@ public class WorldSync
         EnableRootMotion(human);
         _pausedAI.Remove(citizenId);
 
-        Plugin.Log.LogInfo($"[Ownership] Claimed citizen {citizenId} (interaction range)");
+        Plugin.Log.LogDebug($"[Ownership] Claimed citizen {citizenId} (interaction range)");
     }
 
     private void ClientReleaseOwnership(int citizenId)
@@ -234,7 +234,7 @@ public class WorldSync
             _clientStates[citizenId] = s;
         }
 
-        Plugin.Log.LogInfo($"[Ownership] Released citizen {citizenId} (left interaction range)");
+        Plugin.Log.LogDebug($"[Ownership] Released citizen {citizenId} (left interaction range)");
     }
 
     private void SendOwnershipPacket(PacketType type, int citizenId)
@@ -471,7 +471,7 @@ public class WorldSync
             DisableAIController(human);
         }
 
-        Plugin.Log.LogInfo($"[Ownership] Client {p.OwnerId} claimed citizen {p.CitizenId}");
+        Plugin.Log.LogDebug($"[Ownership] Client {p.OwnerId} claimed citizen {p.CitizenId}");
     }
 
     private void OnOwnershipRelease(NetDataReader reader, int senderId)
@@ -498,7 +498,7 @@ public class WorldSync
         // Force a re-send of this citizen's state on the next scan tick.
         _hostSent.Remove(p.CitizenId);
 
-        Plugin.Log.LogInfo($"[Ownership] Client {p.OwnerId} released citizen {p.CitizenId}");
+        Plugin.Log.LogDebug($"[Ownership] Client {p.OwnerId} released citizen {p.CitizenId}");
     }
 
     // ── Command batch ─────────────────────────────────────────────────────────
@@ -615,7 +615,7 @@ public class WorldSync
         if (drift > CORRECTION_SNAP_DIST)
         {
             // Hard snap — citizen badly out of sync (teleport, room change)
-            Plugin.Log.LogInfo($"Correction SNAP citizen {corr.CitizenId} drift={drift:F1}m");
+            Plugin.Log.LogDebug($"Correction SNAP citizen {corr.CitizenId} drift={drift:F1}m");
             var agent = GetAgent(human);
             if (agent != null && agent.enabled)
                 agent.Warp(corr.Position);

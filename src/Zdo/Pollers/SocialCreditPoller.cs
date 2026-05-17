@@ -59,7 +59,7 @@ public static class SocialCreditPoller
             try
             {
                 SoDCoop.Zdo.ZdoEvents.SendSocialCredit(cur);
-                Plugin.Log.LogInfo($"[SocialCreditPoller] broadcast socialCredit={cur}");
+                Plugin.Log.LogDebug($"[SocialCreditPoller] broadcast socialCredit={cur}");
             }
             catch (Exception ex) { Plugin.Log.LogWarning($"[SocialCreditPoller] send: {ex.Message}"); }
         }

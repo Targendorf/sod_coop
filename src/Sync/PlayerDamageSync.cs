@@ -57,7 +57,7 @@ public static class PlayerDamageSync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.PlayerDamage, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[PlayerDamageSync] broadcast self-damage amount={amount:F1} lethal={isLethal} attacker={attackerHumanId}");
+            Plugin.Log.LogDebug($"[PlayerDamageSync] broadcast self-damage amount={amount:F1} lethal={isLethal} attacker={attackerHumanId}");
         }
         catch (System.Exception ex)
         {

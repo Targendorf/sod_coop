@@ -55,7 +55,7 @@ public static class ComputerSync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.ComputerLogin, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[ComputerSync] login broadcast id={interactableId} human={humanId}");
+            Plugin.Log.LogDebug($"[ComputerSync] login broadcast id={interactableId} human={humanId}");
         }
         catch (System.Exception ex)
         {
@@ -80,7 +80,7 @@ public static class ComputerSync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.ComputerApp, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[ComputerSync] app broadcast id={interactableId} preset=\"{presetName}\"");
+            Plugin.Log.LogDebug($"[ComputerSync] app broadcast id={interactableId} preset=\"{presetName}\"");
         }
         catch (System.Exception ex)
         {

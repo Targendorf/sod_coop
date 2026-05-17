@@ -82,7 +82,7 @@ public static class PlayerSuspicionSync
             _lastSent    = packet;
             _hasLastSent = true;
 
-            Plugin.Log.LogInfo($"[PlayerSuspicionSync] sent trespass={packet.IsTrespassing} illegalAction={packet.IllegalActionActive} illegalArea={packet.IllegalAreaActive} status={packet.IllegalStatus} esc={packet.TrespassingEscalation}");
+            Plugin.Log.LogDebug($"[PlayerSuspicionSync] sent trespass={packet.IsTrespassing} illegalAction={packet.IllegalActionActive} illegalArea={packet.IllegalAreaActive} status={packet.IllegalStatus} esc={packet.TrespassingEscalation}");
         }
         catch (System.Exception ex)
         {
@@ -142,7 +142,7 @@ public static class PlayerSuspicionSync
                 IsApplyingRemote = false;
             }
 
-            Plugin.Log.LogInfo($"[PlayerSuspicionSync] applied to twin humanID={twinHumanId} trespass={p.IsTrespassing} illegalArea={p.IllegalAreaActive} esc={p.TrespassingEscalation}");
+            Plugin.Log.LogDebug($"[PlayerSuspicionSync] applied to twin humanID={twinHumanId} trespass={p.IsTrespassing} illegalArea={p.IllegalAreaActive} esc={p.TrespassingEscalation}");
         }
         catch (System.Exception ex)
         {

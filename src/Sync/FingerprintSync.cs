@@ -68,7 +68,7 @@ public static class FingerprintSync
         packet.Serialize(_writer);
         NetworkManager.SendToAll(PacketType.FingerprintAdd, _writer, DeliveryMethod.ReliableOrdered);
 
-        Plugin.Log.LogInfo($"[FingerprintSync] Add broadcast: interactable={interactableId} human={humanId} life={life}");
+        Plugin.Log.LogDebug($"[FingerprintSync] Add broadcast: interactable={interactableId} human={humanId} life={life}");
     }
 
     public static void BroadcastClearManual(int interactableId)
@@ -85,7 +85,7 @@ public static class FingerprintSync
         packet.Serialize(_writer);
         NetworkManager.SendToAll(PacketType.FingerprintClearManual, _writer, DeliveryMethod.ReliableOrdered);
 
-        Plugin.Log.LogInfo($"[FingerprintSync] ClearManual broadcast: interactable={interactableId}");
+        Plugin.Log.LogDebug($"[FingerprintSync] ClearManual broadcast: interactable={interactableId}");
     }
 
     // -------------------------------------------------------------------------
@@ -185,7 +185,7 @@ public static class FingerprintSync
             {
                 var life = (Interactable.PrintLife)p.Life;
                 inter.AddNewDynamicFingerprint(human, life);
-                Plugin.Log.LogInfo($"[FingerprintSync] applied remote add: interactable={p.InteractableId} human={humanId}{(twin > 0 ? $" (twin remap from {p.HumanId})" : "")}");
+                Plugin.Log.LogDebug($"[FingerprintSync] applied remote add: interactable={p.InteractableId} human={humanId}{(twin > 0 ? $" (twin remap from {p.HumanId})" : "")}");
             }
             finally
             {
@@ -213,7 +213,7 @@ public static class FingerprintSync
             try
             {
                 inter.RemoveManuallyCreatedFingerprints();
-                Plugin.Log.LogInfo($"[FingerprintSync] applied remote ClearManual: interactable={p.InteractableId}");
+                Plugin.Log.LogDebug($"[FingerprintSync] applied remote ClearManual: interactable={p.InteractableId}");
             }
             finally
             {

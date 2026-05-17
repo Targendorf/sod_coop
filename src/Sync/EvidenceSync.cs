@@ -319,7 +319,7 @@ public static class EvidenceSync
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.EvidenceDiscoveryAdd, _writer, DeliveryMethod.ReliableOrdered);
 
-            Plugin.Log.LogInfo($"[EvidenceSync] broadcast discovery evID=\"{evId}\" disc={discovery}");
+            Plugin.Log.LogDebug($"[EvidenceSync] broadcast discovery evID=\"{evId}\" disc={discovery}");
         }
         catch (System.Exception ex)
         {
@@ -371,7 +371,7 @@ public static class EvidenceSync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.EvidenceSetNote, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[EvidenceSync] broadcast SetNote evID=\"{evId}\" keys={keyBytes.Length} text.Len={text?.Length ?? 0}");
+            Plugin.Log.LogDebug($"[EvidenceSync] broadcast SetNote evID=\"{evId}\" keys={keyBytes.Length} text.Len={text?.Length ?? 0}");
         }
         catch (System.Exception ex)
         {
@@ -413,7 +413,7 @@ public static class EvidenceSync
             _writer.Reset();
             packet.Serialize(_writer);
             NetworkManager.SendToAll(PacketType.EvidenceCustomName, _writer, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[EvidenceSync] broadcast CustomName evID=\"{evId}\" dk={dk} name=\"{customName}\"");
+            Plugin.Log.LogDebug($"[EvidenceSync] broadcast CustomName evID=\"{evId}\" dk={dk} name=\"{customName}\"");
         }
         catch (System.Exception ex)
         {
@@ -445,7 +445,7 @@ public static class EvidenceSync
             try
             {
                 ev.SetNote(keyList, text ?? "");
-                Plugin.Log.LogInfo($"[EvidenceSync] applied SetNote evID=\"{evId}\" keys={dataKeys?.Length ?? 0}");
+                Plugin.Log.LogDebug($"[EvidenceSync] applied SetNote evID=\"{evId}\" keys={dataKeys?.Length ?? 0}");
             }
             finally { IsApplyingRemote = false; }
         }
@@ -472,7 +472,7 @@ public static class EvidenceSync
             try
             {
                 ev.AddOrSetCustomName((Evidence.DataKey)dataKey, customName ?? "");
-                Plugin.Log.LogInfo($"[EvidenceSync] applied CustomName evID=\"{evId}\" dk={dataKey}");
+                Plugin.Log.LogDebug($"[EvidenceSync] applied CustomName evID=\"{evId}\" dk={dataKey}");
             }
             finally { IsApplyingRemote = false; }
         }
@@ -496,7 +496,7 @@ public static class EvidenceSync
             if (dict == null) return;
             if (!dict.TryGetValue(evId, out var ev) || ev == null)
             {
-                Plugin.Log.LogInfo($"[EvidenceSync] ApplyDiscovery: evID=\"{evId}\" not found locally — skipping.");
+                Plugin.Log.LogDebug($"[EvidenceSync] ApplyDiscovery: evID=\"{evId}\" not found locally — skipping.");
                 return;
             }
 
@@ -518,7 +518,7 @@ public static class EvidenceSync
             try
             {
                 ev.AddDiscovery((Evidence.Discovery)discovery);
-                Plugin.Log.LogInfo($"[EvidenceSync] applied discovery evID=\"{evId}\" disc={discovery}");
+                Plugin.Log.LogDebug($"[EvidenceSync] applied discovery evID=\"{evId}\" disc={discovery}");
             }
             finally
             {
