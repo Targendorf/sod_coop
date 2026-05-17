@@ -475,6 +475,10 @@ public class CoopUpdateRunner : MonoBehaviour
             // payload exceeds 100 B. Replaces ~30 per-feature Broadcast
             // call sites once Phase H is complete.
             SoDCoop.Zdo.ZdoMan.TickDeltaFlush(Time.unscaledTime);
+            // Drain async snapshot sends — zstd of the join-time snapshot
+            // now runs on the thread pool; this ships it whenever a worker
+            // finishes. No-op when the queue is empty.
+            SoDCoop.Zdo.ZdoMan.PumpPendingSnapshotSends();
             // Drive registered host-side pollers (doors, lights, citizens, …).
             SoDCoop.Zdo.ZdoPollerHost.Tick(Time.unscaledTime);
         }

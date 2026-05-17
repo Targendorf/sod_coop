@@ -1100,6 +1100,8 @@ public static class NetworkManager
     /// era; the type byte was prepended in SendToAll/SendTo/SendToHost).</summary>
     private static void HandleTransportMessage(SteamPeer peer, byte[] payload, int length)
     {
+        byte[] forwardBody = null;
+        int forwardBodyLen = 0;
         try
         {
             var reader = new NetDataReader(payload, 0, length);
@@ -1108,14 +1110,18 @@ public static class NetworkManager
 
             // Capture body before dispatch (which advances the reader) so
             // we can rebroadcast to other clients.
-            byte[] forwardBody = null;
-            int forwardBodyLen = 0;
+            //
+            // ArrayPool: rebroadcast fires for every forwardable client packet
+            // (PlayerPosition / PlayerAnimation / Footprint / Fingerprint /
+            // …) — that's dozens of allocs per second per client in a busy
+            // session. The rented buffer is returned in the finally block
+            // below so it never escapes this method.
             if (IsHost && _clients.Count >= 2 && IsForwardableFromClient(packetType))
             {
                 forwardBodyLen = reader.AvailableBytes;
                 if (forwardBodyLen > 0)
                 {
-                    forwardBody = new byte[forwardBodyLen];
+                    forwardBody = System.Buffers.ArrayPool<byte>.Shared.Rent(forwardBodyLen);
                     Buffer.BlockCopy(reader.RawData, reader.Position, forwardBody, 0, forwardBodyLen);
                 }
             }
@@ -1194,6 +1200,13 @@ public static class NetworkManager
         catch (Exception ex)
         {
             Plugin.Log.LogError($"Error processing packet: {ex}");
+        }
+        finally
+        {
+            // Return the pooled buffer regardless of whether forwarding ran
+            // or threw. clearArray:false is safe — body bytes are not secrets.
+            if (forwardBody != null)
+                System.Buffers.ArrayPool<byte>.Shared.Return(forwardBody, clearArray: false);
         }
     }
 

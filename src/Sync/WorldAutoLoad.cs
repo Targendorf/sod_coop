@@ -129,6 +129,43 @@ public static class WorldAutoLoad
             Plugin.Log.LogError($"[WorldAutoLoad] ParseShareCode threw: {ex}");
         }
 
+        // ── Step 2.5: suppress ChapterIntro / tutorial ───────────────────
+        // SoD's first-run flow plays ChapterIntro on a fresh city — that's
+        // what the player sees as "tutorial" (cinematic + scripted clue
+        // spawns + scripted mission setup). For a coop joiner we never want
+        // this: the host has already played through (or is sandbox), so the
+        // intro on the joiner just blocks input and shuffles cameras while
+        // the ZDO snapshot streams in. Worse, the intro's scripted spawns
+        // (kidnapper / notewriter / killer clues) compete with the host's
+        // already-spawned versions arriving through EvidenceSync.
+        //
+        // Force Game.skipIntro=true and Game.loadChapter=-1 BEFORE
+        // ConfirmCityGeneration so SoD's chapter selector picks "no chapter"
+        // when the city loads. ChapterController will short-circuit and the
+        // player drops straight into sandbox-style play. The host-driven
+        // world state then arrives via ZDOs and is applied on top.
+        try
+        {
+            var game = global::Game.Instance;
+            if (game != null)
+            {
+                game.skipIntro = true;
+                game.loadChapter = -1;
+                Plugin.Log.LogInfo(
+                    "[WorldAutoLoad] forced Game.skipIntro=true, Game.loadChapter=-1 (suppress tutorial intro for coop joiner).");
+            }
+            else
+            {
+                Plugin.Log.LogWarning(
+                    "[WorldAutoLoad] Game.Instance was null while preparing intro-skip — tutorial may still play.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning(
+                $"[WorldAutoLoad] failed to set Game.skipIntro / loadChapter: {ex.Message} — tutorial may still play.");
+        }
+
         // ── Step 3: kick off generation ──────────────────────────────────
         // SoD's normal flow is: user clicks Generate → OnContinueCityGeneration
         // (popup appears) → user clicks Yes → ConfirmCityGeneration (loading

@@ -40,6 +40,31 @@ public static class ZdoCompression
         }
     }
 
+    /// <summary>Thread-safe Compress for use on a background thread.
+    /// Allocates a private Compressor for the call so the shared one isn't
+    /// touched from off-main. Used by the async snapshot send path
+    /// (<see cref="ZdoMan.SendSnapshotTo"/>) which dispatches compression
+    /// to <see cref="System.Threading.Tasks.Task.Run(System.Action)"/> so
+    /// the Unity main thread is not blocked on zstd of a 1–2 MB snapshot.</summary>
+    public static byte[] CompressOffThread(byte[] data, int length)
+    {
+        if (data == null || length <= 0) return Array.Empty<byte>();
+        try
+        {
+            using var local = new Compressor(Level);
+            return local.Wrap(new ReadOnlySpan<byte>(data, 0, length)).ToArray();
+        }
+        catch (Exception)
+        {
+            // No Plugin.Log here — logger may not be thread-safe.
+            // Just fall back to uncompressed and let the receiver decode
+            // (flags bit 0 == 0 path) without disruption.
+            byte[] copy = new byte[length];
+            Buffer.BlockCopy(data, 0, copy, 0, length);
+            return copy;
+        }
+    }
+
     public static byte[] Decompress(byte[] data, int expectedLen)
     {
         if (data == null || data.Length == 0) return Array.Empty<byte>();

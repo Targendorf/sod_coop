@@ -955,7 +955,15 @@ public static class InventorySync
     /// <summary>
     /// Public ZDO-side entrypoint: receiver applies restrained state coming
     /// from a <see cref="Zdo.Resolvers.CitizenResolver"/> apply pass.
-    /// Idempotent — re-issuing the same value is a SoD-side no-op.
+    /// Idempotent — re-issuing the same value short-circuits before
+    /// touching SoD's AIController.
+    ///
+    /// Before perf pass: every snapshot apply on the joiner fired this
+    /// path for EVERY NPC in the city (~336) with restrained=false even
+    /// when the local NPC was already not restrained, producing 336+
+    /// IL2CPP marshalling round-trips + 336 LogInfo lines in one frame
+    /// right after handshake. The dedup check below cuts that to zero
+    /// for the baseline case while still applying real changes.
     /// </summary>
     public static void ApplyRestrainedByHumanId(int humanId, bool restrained, float duration)
     {
@@ -964,10 +972,15 @@ public static class InventorySync
             var aic = ResolveAIController(humanId);
             if (aic == null) return;
 
+            // Dedup: when value matches and we're not refreshing a duration
+            // (duration==0 means "no timer change" in SoD's AIController), skip.
+            if (aic.restrained == restrained && duration <= 0f)
+                return;
+
             IsApplyingRemote = true;
             try { aic.SetRestrained(restrained, duration); }
             finally { IsApplyingRemote = false; }
-            Plugin.Log.LogInfo($"[InventorySync] applied remote restrained npc={humanId} val={restrained}");
+            Plugin.Log.LogDebug($"[InventorySync] applied remote restrained npc={humanId} val={restrained}");
         }
         catch (System.Exception ex)
         {
@@ -978,6 +991,13 @@ public static class InventorySync
     private static void ApplyStunned(NpcStunnedPacket p)
         => ApplyStunnedByHumanId(p.NpcHumanId, p.IsStunned);
 
+    /// <summary>Locally-cached last-applied-stunned per NPC. SoD's
+    /// stunned-flag lives on Actor (Actor.isStunned), not on
+    /// NewAIController — and we only have the AIController here. Keeping
+    /// our own cache lets us short-circuit redundant SetStunned(false)
+    /// calls (baseline snapshot apply on join, which hits every NPC).</summary>
+    private static readonly System.Collections.Generic.Dictionary<int, bool> _lastAppliedStunned = new();
+
     public static void ApplyStunnedByHumanId(int humanId, bool stunned)
     {
         try
@@ -985,10 +1005,17 @@ public static class InventorySync
             var aic = ResolveAIController(humanId);
             if (aic == null) return;
 
+            // Dedup: SetStunned(false) on an already-not-stunned NPC is a no-op
+            // but still costs an IL2CPP call + log line per NPC at snapshot apply.
+            // See restrained-path comment above for context.
+            if (_lastAppliedStunned.TryGetValue(humanId, out var prev) && prev == stunned)
+                return;
+
             IsApplyingRemote = true;
             try { aic.SetStunned(stunned); }
             finally { IsApplyingRemote = false; }
-            Plugin.Log.LogInfo($"[InventorySync] applied remote stunned npc={humanId} val={stunned}");
+            _lastAppliedStunned[humanId] = stunned;
+            Plugin.Log.LogDebug($"[InventorySync] applied remote stunned npc={humanId} val={stunned}");
         }
         catch (System.Exception ex)
         {

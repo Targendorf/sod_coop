@@ -68,7 +68,7 @@ public static class CitizenAnimationPoller
                 count++;
             }
             if (count > 0)
-                Plugin.Log.LogInfo($"[CitizenAnimationPoller] warmup: pre-seeded {count} citizen anim baselines (no broadcast)");
+                Plugin.Log.LogDebug($"[CitizenAnimationPoller] warmup: pre-seeded {count} citizen anim baselines (no broadcast)");
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenAnimationPoller] warmup: {ex.Message}"); }
     }
@@ -86,6 +86,15 @@ public static class CitizenAnimationPoller
     /// probe exercises the real SoD-field-deref path even on a solo host.</summary>
     internal static void ProbeBody(float now) => TickInner(now);
 
+    /// <summary>Soft per-tick send cap. Caps the broadcast burst on cold-start
+    /// (when <see cref="_last"/> is empty or stale and the diff would otherwise
+    /// emit 200-300 events in one frame). Real per-tick churn in an idle city
+    /// is single digits, so this only kicks in during the recovery scenario.
+    /// Excess deltas update <see cref="_last"/> silently — they'll be picked
+    /// up by the next snapshot cursor or simply on the citizen's next real
+    /// state change.</summary>
+    private const int MAX_SENT_PER_TICK = 32;
+
     private static void TickInner(float now)
     {
         try
@@ -93,7 +102,36 @@ public static class CitizenAnimationPoller
             var dict = CityData.Instance?.citizenDictionary;
             if (dict == null) return;
 
+            // Cold-start guard: if WarmupBaseline never ran (or got Reset between
+            // ticks) the diff loop would treat the entire roster as fresh and
+            // emit one event per citizen. Detect this by checking _last vs dict
+            // size — when the baseline is grossly under-populated, fall back to
+            // a silent reseed and skip the broadcast pass for this tick.
+            int dictCount = dict.Count;
+            if (dictCount > 0 && _last.Count < dictCount / 2)
+            {
+                int reseed = 0;
+                foreach (var kv in dict)
+                {
+                    var cc = kv.Value;
+                    if (cc == null) continue;
+                    int cid = cc.humanID;
+                    if (cid == 0) continue;
+                    global::CitizenAnimationController cac;
+                    try { cac = cc.animationController; } catch { continue; }
+                    if (cac == null) continue;
+                    byte cidle, carms;
+                    try { cidle = (byte)cac.idleAnimationState; }     catch { continue; }
+                    try { carms = (byte)cac.armsBoolAnimationState; } catch { continue; }
+                    _last[cid] = (cidle, carms);
+                    reseed++;
+                }
+                Plugin.Log.LogDebug($"[CitizenAnimationPoller] cold-start reseed: filled baseline with {reseed} citizens (no broadcast).");
+                return;
+            }
+
             int sent = 0;
+            int suppressed = 0;
             foreach (var kv in dict)
             {
                 var c = kv.Value;
@@ -113,6 +151,16 @@ public static class CitizenAnimationPoller
                     continue;
 
                 _last[id] = (idle, arms);
+
+                if (sent >= MAX_SENT_PER_TICK)
+                {
+                    // Update baseline silently — don't burst more than the cap.
+                    // Receiver will see the new state on the citizen's next real
+                    // transition or on next late-joiner snapshot.
+                    suppressed++;
+                    continue;
+                }
+
                 try
                 {
                     SoDCoop.Zdo.ZdoEvents.SendCitizenAnimState(id, idle, arms);
@@ -123,8 +171,8 @@ public static class CitizenAnimationPoller
 
             // Light per-tick log only when there's actual churn — typical
             // idle city dictates this is mostly zero.
-            if (sent > 0)
-                Plugin.Log.LogInfo($"[CitizenAnimationPoller] tick: {sent} anim-state delta(s)");
+            if (sent > 0 || suppressed > 0)
+                Plugin.Log.LogDebug($"[CitizenAnimationPoller] tick: {sent} anim-state delta(s){(suppressed > 0 ? $", {suppressed} suppressed (cap)" : "")}");
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenAnimationPoller] tick: {ex.Message}"); }
     }

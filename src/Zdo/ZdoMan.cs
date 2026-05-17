@@ -1351,48 +1351,153 @@ public static class ZdoMan
 
     // ── Snapshot push (host → joiner) ─────────────────────────────────
 
+    /// <summary>Queue entry for an in-flight async snapshot send.
+    /// Serialisation runs on the main thread (touches the live ZDO
+    /// registry); compression runs on a thread-pool worker; transmission
+    /// happens on a later main-thread frame once the compress Task
+    /// completes (drained from <see cref="PumpPendingSnapshotSends"/>).</summary>
+    private struct PendingSnapshotSend
+    {
+        public SteamPeer Peer;
+        public System.Threading.Tasks.Task<byte[]> CompressTask;
+        public byte[] Payload;       // uncompressed body (kept alive for length + fallback only)
+        public int    PayloadLen;
+        public int    ZdoCount;
+        public ulong  PeerSteamId;
+        public int    PeerId;
+        public float  EnqueuedAt;
+    }
+
+    /// <summary>Per-host queue of pending async snapshot sends. Drained
+    /// once per frame from <see cref="PumpPendingSnapshotSends"/>.
+    /// Typically holds 0–1 entries; only grows during concurrent joins.</summary>
+    private static readonly List<PendingSnapshotSend> _pendingSnapshotSends = new();
+
+    /// <summary>Push a full ZDO snapshot to <paramref name="peer"/>.
+    ///
+    /// <para>Serialisation walks the live <c>_byId</c> registry and so must
+    /// run on the Unity main thread (no locks elsewhere — see class
+    /// summary). It costs ~50–150 ms on a typical 5-20K ZDO city: a
+    /// single-frame stall but not catastrophic.</para>
+    ///
+    /// <para><b>Compression</b> (zstd, level 3, 1–2 MB → 100–200 KB) used
+    /// to run on the same frame and **doubled** that stall. It is now
+    /// dispatched to the .NET thread pool via
+    /// <see cref="ZdoCompression.CompressOffThread"/>, and the actual
+    /// network send is deferred to the next frame on which the compress
+    /// Task has completed. Drained by <see cref="PumpPendingSnapshotSends"/>
+    /// from <c>CoopUpdateRunner.Update</c>.</para>
+    ///
+    /// <para>Result for the joiner: host's per-frame stall is roughly
+    /// halved at the cost of one extra frame of latency on the snapshot,
+    /// which the joiner can't see anyway (they're on a loading screen).
+    /// </para></summary>
     public static void SendSnapshotTo(SteamPeer peer)
     {
         if (peer == null) return;
         if (!NetworkManager.IsHost) return;
         try
         {
+            // Main-thread step: serialise the live registry. This must
+            // happen synchronously here; mutating ZDOs from a worker
+            // thread would race with the main-thread flush loop.
             byte[] payload = SerializeAllForSnapshot();
-
-            _payloadScratch.Reset();
-            byte flags = 0x01; // always compressed for snapshots
-            byte[] compressed = ZdoCompression.Compress(payload, payload.Length);
-            _payloadScratch.Put(flags);
-            _payloadScratch.Put((ushort)0); // uncompressedLen unused for snapshot (we store full int below)
-            _payloadScratch.Put(payload.Length);
-            _payloadScratch.Put(compressed.Length);
-            _payloadScratch.Put(compressed, 0, compressed.Length);
-
-            NetworkManager.SendTo(peer, PacketType.ZdoSnapshot, _payloadScratch, DeliveryMethod.ReliableOrdered);
-            Plugin.Log.LogInfo($"[ZdoMan] sent snapshot to {peer.SteamId.m_SteamID}: {payload.Length} → {compressed.Length} B, {Count} ZDOs");
-
-            // Seed the peer's per-peer DataRevision cursor with the
-            // current revision of every ZDO we just shipped. Without
-            // this, the first delta flush after the snapshot would
-            // re-include every dirty ZDO regardless of cursor — and
-            // any future reconnect-grace path would have an empty
-            // cursor, defeating the gap-fill optimisation.
+            int payloadLen = payload.Length;
+            int count = Count;
             int peerId = NetworkManager.GetPlayerIdByPeer(peer);
-            if (peerId >= 0
-                && NetworkManager.Players != null
-                && NetworkManager.Players.TryGetValue(peerId, out var info)
-                && info != null)
+
+            // Off-thread step: zstd-compress the serialised payload.
+            // CompressOffThread allocates its own Compressor so the
+            // shared one in ZdoCompression isn't touched concurrently.
+            var compressTask = System.Threading.Tasks.Task.Run(
+                () => ZdoCompression.CompressOffThread(payload, payloadLen));
+
+            _pendingSnapshotSends.Add(new PendingSnapshotSend
             {
-                if (info.LastSeenRev == null)
-                    info.LastSeenRev = new Dictionary<ZDOID, uint>(_byId.Count);
-                info.LastSeenRev.Clear();
-                foreach (var kv in _byId)
-                    info.LastSeenRev[kv.Key] = kv.Value.DataRevision;
-            }
+                Peer          = peer,
+                CompressTask  = compressTask,
+                Payload       = payload,
+                PayloadLen    = payloadLen,
+                ZdoCount      = count,
+                PeerSteamId   = peer.SteamId.m_SteamID,
+                PeerId        = peerId,
+                EnqueuedAt    = Time.unscaledTime,
+            });
         }
         catch (Exception ex)
         {
-            Plugin.Log.LogWarning($"[ZdoMan] SendSnapshotTo: {ex.Message}");
+            Plugin.Log.LogWarning($"[ZdoMan] SendSnapshotTo (enqueue): {ex.Message}");
+        }
+    }
+
+    /// <summary>Drain completed async snapshot compress tasks and emit
+    /// the wire packets. Called once per frame from
+    /// <c>CoopUpdateRunner.Update</c>. Safe to call when the queue is
+    /// empty (early-returns).</summary>
+    public static void PumpPendingSnapshotSends()
+    {
+        if (_pendingSnapshotSends.Count == 0) return;
+
+        for (int i = _pendingSnapshotSends.Count - 1; i >= 0; i--)
+        {
+            var p = _pendingSnapshotSends[i];
+
+            // Skip until the worker thread has finished compressing.
+            if (!p.CompressTask.IsCompleted) continue;
+
+            _pendingSnapshotSends.RemoveAt(i);
+
+            byte[] compressed;
+            try
+            {
+                compressed = p.CompressTask.Result;
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[ZdoMan] async compress task faulted for {p.PeerSteamId}: {ex.Message}");
+                continue;
+            }
+
+            try
+            {
+                _payloadScratch.Reset();
+                byte flags = 0x01; // compressed
+                _payloadScratch.Put(flags);
+                _payloadScratch.Put((ushort)0); // uncompressedLen unused for snapshot
+                _payloadScratch.Put(p.PayloadLen);
+                _payloadScratch.Put(compressed.Length);
+                _payloadScratch.Put(compressed, 0, compressed.Length);
+
+                NetworkManager.SendTo(p.Peer, PacketType.ZdoSnapshot, _payloadScratch, DeliveryMethod.ReliableOrdered);
+
+                float elapsedMs = (Time.unscaledTime - p.EnqueuedAt) * 1000f;
+                Plugin.Log.LogInfo(
+                    $"[ZdoMan] async snapshot sent to {p.PeerSteamId}: " +
+                    $"{p.PayloadLen} → {compressed.Length} B, {p.ZdoCount} ZDOs, " +
+                    $"compress+wait={elapsedMs:F0} ms.");
+
+                // Seed the peer's per-peer DataRevision cursor with the
+                // current revision of every ZDO we just shipped. Without
+                // this, the first delta flush after the snapshot would
+                // re-include every dirty ZDO regardless of cursor — and
+                // any future reconnect-grace path would have an empty
+                // cursor, defeating the gap-fill optimisation.
+                if (p.PeerId >= 0
+                    && NetworkManager.Players != null
+                    && NetworkManager.Players.TryGetValue(p.PeerId, out var info)
+                    && info != null)
+                {
+                    if (info.LastSeenRev == null)
+                        info.LastSeenRev = new Dictionary<ZDOID, uint>(_byId.Count);
+                    info.LastSeenRev.Clear();
+                    foreach (var kv in _byId)
+                        info.LastSeenRev[kv.Key] = kv.Value.DataRevision;
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[ZdoMan] PumpPendingSnapshotSends emit: {ex.Message}");
+            }
         }
     }
 

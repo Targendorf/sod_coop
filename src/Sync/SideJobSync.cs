@@ -243,7 +243,7 @@ public static class SideJobSync
             z.Set(SoDCoop.Zdo.ZdoKeys.JobGooseChaseFromPhone,  packet.GooseChaseFromPhone);
             z.Set(SoDCoop.Zdo.ZdoKeys.JobTriggerHandIn,        packet.TriggerHandIn);
 
-            Plugin.Log.LogInfo($"[SideJobSync] zdo upsert kind={kind} jobID={packet.JobId} preset=\"{packet.PresetName}\" state={packet.State}");
+            Plugin.Log.LogDebug($"[SideJobSync] zdo upsert kind={kind} jobID={packet.JobId} preset=\"{packet.PresetName}\" state={packet.State}");
         }
         catch (Exception ex)
         {
@@ -584,7 +584,7 @@ public static class SideJobSync
         if (existing != null)
         {
             UpdateScalarFields(existing, p);
-            Plugin.Log.LogInfo($"[SideJobSync] updated existing skeleton jobID={p.JobId} state={p.State} accepted={p.Accepted}");
+            Plugin.Log.LogDebug($"[SideJobSync] updated existing skeleton jobID={p.JobId} state={p.State} accepted={p.Accepted}");
             return;
         }
 

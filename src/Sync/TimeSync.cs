@@ -39,6 +39,17 @@ public class TimeSync
     private float _lastSyncTime;
     private readonly NetDataWriter _writer = new();
 
+    // Snap-log throttle: snaps fire at the broadcast rate (2 Hz). Logging every
+    // one of them at LogInfo floods BepInEx's console — 120 lines/min just for
+    // time sync, and the BepInEx writer is noticeably hot in IL2CPP. Coalesce
+    // identical-day snaps into one log line per 5 seconds.
+    private const float SNAP_LOG_INTERVAL_S = 5f;
+    private float _lastSnapLogTime = -SNAP_LOG_INTERVAL_S;
+    private int   _snapsSinceLog;
+    private int   _lastLoggedDay = int.MinValue;
+    private int   _lastLoggedHour = -1;
+    private int   _lastLoggedMin = -1;
+
     // -------------------------------------------------------------------------
 
     public void Update()
@@ -108,11 +119,35 @@ public class TimeSync
 
             if (drift > SNAP_THRESHOLD)
             {
-                // Large drift — snap immediately and log.
+                // Large drift — snap immediately.
                 session.gameTime = target;
-                Plugin.Log.LogInfo(
-                    $"TimeSync: snapped clock {drift:F1} min → " +
-                    $"Day {packet.Day} {packet.Hour:D2}:{packet.Minute:D2}");
+                _snapsSinceLog++;
+
+                // Throttle: log at most every SNAP_LOG_INTERVAL_S, or when the
+                // displayed Day/Hour/Minute changes (so the player still gets
+                // visible time-change feedback in the log without it spamming).
+                float now = Time.unscaledTime;
+                bool clockChanged = packet.Day != _lastLoggedDay
+                                 || packet.Hour != _lastLoggedHour
+                                 || packet.Minute != _lastLoggedMin;
+                if (clockChanged || now - _lastSnapLogTime >= SNAP_LOG_INTERVAL_S)
+                {
+                    if (_snapsSinceLog > 1)
+                        Plugin.Log.LogDebug(
+                            $"TimeSync: snapped clock {drift:F1} min → " +
+                            $"Day {packet.Day} {packet.Hour:D2}:{packet.Minute:D2} " +
+                            $"(coalesced ×{_snapsSinceLog})");
+                    else
+                        Plugin.Log.LogDebug(
+                            $"TimeSync: snapped clock {drift:F1} min → " +
+                            $"Day {packet.Day} {packet.Hour:D2}:{packet.Minute:D2}");
+
+                    _lastSnapLogTime = now;
+                    _snapsSinceLog = 0;
+                    _lastLoggedDay = packet.Day;
+                    _lastLoggedHour = packet.Hour;
+                    _lastLoggedMin = packet.Minute;
+                }
             }
             else if (drift > 0.05f)
             {
