@@ -90,6 +90,10 @@ public static class SodCommonBridge
                     SoDCoop.Zdo.Pollers.ComputerStatePoller.ResetBaseline();
                     SoDCoop.Zdo.Pollers.SwitchPoller.ResetBaseline();
                     SoDCoop.Zdo.Pollers.FingerprintPoller.ResetBaseline();
+                    // DoorPoller now caches (id, door) pairs rebuilt on count
+                    // change — reset clears the cache so it doesn't point at
+                    // doors destroyed by the world reload.
+                    SoDCoop.Zdo.Pollers.DoorPoller.ResetBaseline();
                     // UnpatchSelf so SoD's save-load runs without IL2CPP wrapper
                     // trampoline marshalling cost on patched methods. Empirically
                     // this brought save-load from 200s+ → ~50s in Phase 1 logs.

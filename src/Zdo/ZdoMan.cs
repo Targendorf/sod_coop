@@ -901,13 +901,11 @@ public static class ZdoMan
                 _payloadScratch.Put(revAtSerialise);
                 int keyCountOffset = _payloadScratch.Length;
                 _payloadScratch.Put((ushort)0);
-                int keyCount = 0;
-                z.EnumerateAllKeys((kHash, vType) =>
-                {
-                    _payloadScratch.Put(kHash);
-                    ZdoWire.WriteValue(_payloadScratch, (ZdoValueType)vType, z, kHash);
-                    keyCount++;
-                });
+                _enumWriter = _payloadScratch;
+                _enumZdo = z;
+                _enumKeyCount = 0;
+                z.EnumerateAllKeys(_enumVisitor);
+                int keyCount = _enumKeyCount;
                 var pData = _payloadScratch.Data;
                 pData[keyCountOffset]     = (byte)(keyCount & 0xff);
                 pData[keyCountOffset + 1] = (byte)((keyCount >> 8) & 0xff);
@@ -1209,13 +1207,11 @@ public static class ZdoMan
             // Key count placeholder.
             int keyCountPos = w.Length;
             w.Put((ushort)0);
-            ushort kc = 0;
-            z.EnumerateAllKeys((kh, vt) =>
-            {
-                w.Put(kh);
-                ZdoWire.WriteValue(w, (ZdoValueType)vt, z, kh);
-                kc++;
-            });
+            _enumWriter = w;
+            _enumZdo = z;
+            _enumKeyCount = 0;
+            z.EnumerateAllKeys(_enumVisitor);
+            ushort kc = (ushort)_enumKeyCount;
             // Patch key count.
             byte[] data = w.Data;
             data[keyCountPos    ] = (byte)(kc & 0xff);
@@ -1394,6 +1390,27 @@ public static class ZdoMan
     /// each other's half-built packet, even if call ordering changes or a
     /// re-entrant send is introduced later.</summary>
     private static readonly NetDataWriter _snapshotEmitScratch = new();
+
+    // ── Allocation-free EnumerateAllKeys visitor ────────────────────────────
+    // Zdo.EnumerateAllKeys takes an Action<int,byte>. Previously each call site
+    // passed a lambda capturing the loop's `z` + a local key-counter, which
+    // allocates a fresh closure object PER ZDO PER FLUSH — hundreds per flush ×
+    // 10 Hz = thousands of Gen0 allocations/second during normal play, a steady
+    // GC-pressure source that shows up as periodic frame hitches. Hoisting the
+    // per-call state to static fields + a single cached delegate removes the
+    // allocation entirely. Safe because all three call sites (delta flush,
+    // snapshot serialise, cursor-delta) run only on the Unity main thread and
+    // never re-enter EnumerateAllKeys.
+    private static NetDataWriter _enumWriter;
+    private static Zdo _enumZdo;
+    private static int _enumKeyCount;
+    private static readonly System.Action<int, byte> _enumVisitor = EnumVisit;
+    private static void EnumVisit(int kHash, byte vType)
+    {
+        _enumWriter.Put(kHash);
+        ZdoWire.WriteValue(_enumWriter, (ZdoValueType)vType, _enumZdo, kHash);
+        _enumKeyCount++;
+    }
 
     /// <summary>Push a full ZDO snapshot to <paramref name="peer"/>.
     ///
@@ -1594,13 +1611,11 @@ public static class ZdoMan
                 _payloadScratch.Put(rev);
                 int keyCountOffset = _payloadScratch.Length;
                 _payloadScratch.Put((ushort)0);
-                int keyCount = 0;
-                z.EnumerateAllKeys((kHash, vType) =>
-                {
-                    _payloadScratch.Put(kHash);
-                    ZdoWire.WriteValue(_payloadScratch, (ZdoValueType)vType, z, kHash);
-                    keyCount++;
-                });
+                _enumWriter = _payloadScratch;
+                _enumZdo = z;
+                _enumKeyCount = 0;
+                z.EnumerateAllKeys(_enumVisitor);
+                int keyCount = _enumKeyCount;
                 var pData = _payloadScratch.Data;
                 pData[keyCountOffset]     = (byte)(keyCount & 0xff);
                 pData[keyCountOffset + 1] = (byte)((keyCount >> 8) & 0xff);
