@@ -275,6 +275,30 @@ public static class ZdoMan
     /// and are drained over subsequent flushes.</summary>
     private const int MAX_CATCHUP_PER_FLUSH = 100;
 
+    /// <summary>Per-peer per-flush dirty-delta serialization budget, in
+    /// approximate payload bytes (Valheim ZDOMan pattern — bounded send, not
+    /// "serialize everything every tick"). Once a peer's delta packet reaches
+    /// this size in <see cref="BuildPayloadFromDirty"/>, the remaining dirty
+    /// ZDOs that still qualify for that peer (passed cull + cursor + class) are
+    /// pushed to its <see cref="_pendingResendForPeer"/> set instead of
+    /// serialised, and drained (Pass-1 catch-up) on the next flush — so nothing
+    /// is lost, and previously-cut ZDOs get priority next tick (natural
+    /// fairness, no per-peer distance sort needed).
+    ///
+    /// <para>This is a SAFETY CAP for bursts, not a constant throttle: after
+    /// the CitizenStatePoller cadence split, normal flushes are well under
+    /// budget. It only engages on spikes — the ~1 Hz vitals slow-lane tick, a
+    /// player entering a dense area, mass NPC events, or 3-4 peers — where it
+    /// spreads the spike across ~2-3 flushes (≤300 ms) instead of one host
+    /// frame stall. 16 KB uncompressed ≈ 5-8 KB on the wire after zstd.</para></summary>
+    private const int MAX_DELTA_BYTES_PER_FLUSH = 16384;
+
+    /// <summary>Scratch list of ZDOs cut by the per-flush budget in the most
+    /// recent <see cref="BuildPayloadFromDirty"/> call. The caller moves these
+    /// into the peer's pending-resend set after sending. Cleared at the start
+    /// of every BuildPayloadFromDirty.</summary>
+    private static readonly List<Zdo> _budgetOverflowScratch = new();
+
     // ── Lifecycle ─────────────────────────────────────────────────────
 
     public static void Initialize()
@@ -778,6 +802,10 @@ public static class ZdoMan
                     }
                 }
             }
+            // Move budget-cut ZDOs into this peer's pending set so the next
+            // flush's catch-up pass re-ships them (full state). Drain BEFORE
+            // the next BuildPayloadFromDirty, which clears the overflow list.
+            DrainBudgetOverflowToPending(peerId, ref peerPending);
 
             // Pass 2: Sequenced. Note: optimistic cursor update on
             // Sequenced is slightly weaker than on Reliable — a transport
@@ -799,6 +827,7 @@ public static class ZdoMan
                     }
                 }
             }
+            DrainBudgetOverflowToPending(peerId, ref peerPending);
         }
 
         // After all peers processed, clear dirty keys on every ZDO that
@@ -813,6 +842,25 @@ public static class ZdoMan
     /// by the most recent <see cref="BuildPayloadFromDirty"/> call. Lets
     /// the caller decide whether a wire send is worth doing.</summary>
     private static int _lastSerialisedCount;
+
+    /// <summary>Move any ZDOs cut by the per-flush budget (recorded in
+    /// <see cref="_budgetOverflowScratch"/> by the most recent
+    /// <see cref="BuildPayloadFromDirty"/>) into the given peer's pending-resend
+    /// set, creating the set if the peer had none. The next flush's Pass-1
+    /// catch-up drains them (full state) — so a budget cut only DEFERS state by
+    /// a flush or two, never drops it. Clears the overflow scratch.</summary>
+    private static void DrainBudgetOverflowToPending(int peerId, ref HashSet<Zdo> peerPending)
+    {
+        if (_budgetOverflowScratch.Count == 0) return;
+        if (peerPending == null)
+        {
+            peerPending = new HashSet<Zdo>();
+            _pendingResendForPeer[peerId] = peerPending;
+        }
+        for (int i = 0; i < _budgetOverflowScratch.Count; i++)
+            peerPending.Add(_budgetOverflowScratch[i]);
+        _budgetOverflowScratch.Clear();
+    }
 
     /// <summary>Serialise the dirty list (delta) and any peer-specific
     /// catch-up entries (full state) into <see cref="_payloadScratch"/>.
@@ -843,6 +891,7 @@ public static class ZdoMan
 
         int written = 0;
         _serialisedThisBuild.Clear();
+        _budgetOverflowScratch.Clear();
 
         // De-dup: a ZDO present in BOTH dirty AND pending should only be
         // serialised once. Pending entries take priority (they include
@@ -958,6 +1007,23 @@ public static class ZdoMan
                 && seenRev >= revAtSerialise)
             {
                 _stats_cursorSkip++;
+                continue;
+            }
+
+            // Budget gate (Valheim bounded-send pattern): this ZDO qualified
+            // for the peer (class + cull + cursor passed), but the packet is
+            // already at the per-flush budget. Don't serialise it — defer it
+            // to the peer's pending-resend set, drained (full-state, Pass 1)
+            // on the next flush. Nothing is lost; deferred ZDOs get priority
+            // next tick since Pass 1 runs before Pass 2.
+            //
+            // Host-only: the joiner path has no pending-resend set to defer
+            // into, and its dirty set is tiny (just its own LocalPlayer / held
+            // items) so it never approaches the budget anyway. Gating on
+            // IsHost guarantees the joiner never silently drops a delta.
+            if (NetworkManager.IsHost && _payloadScratch.Length >= MAX_DELTA_BYTES_PER_FLUSH)
+            {
+                _budgetOverflowScratch.Add(z);
                 continue;
             }
 
