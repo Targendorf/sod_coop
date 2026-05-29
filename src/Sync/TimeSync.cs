@@ -85,7 +85,12 @@ public class TimeSync
 
         _writer.Reset();
         packet.Serialize(_writer);
-        NetworkManager.SendToAll(PacketType.TimeSync, _writer, DeliveryMethod.ReliableOrdered);
+        // Sequenced, not ReliableOrdered: this re-sends the ABSOLUTE clock
+        // every TIME_SYNC_RATE (0.5 s) unconditionally, so a dropped packet
+        // self-corrects on the next tick. Keeping it off the reliable channel
+        // avoids head-of-line-stalling genuine state transitions (door/evidence
+        // /money events) behind a retransmitted clock packet.
+        NetworkManager.SendToAll(PacketType.TimeSync, _writer, DeliveryMethod.Sequenced);
     }
 
     // -------------------------------------------------------------------------

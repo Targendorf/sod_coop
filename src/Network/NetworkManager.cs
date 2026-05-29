@@ -1429,7 +1429,28 @@ public static class NetworkManager
     {
         Plugin.Log.LogInfo($"[NetworkManager] {peer.DisplayName} reports WorldReady — sending snapshots.");
         try { SoDCoop.Sync.AppearanceSync.SendSnapshotTo(peer); } catch (Exception ex) { Plugin.Log.LogWarning($"AppearanceSync.SendSnapshotTo: {ex.Message}"); }
+        // NOTE: the ZDO snapshot is enqueued here but actually ships a frame
+        // or two later from ZdoMan.PumpPendingSnapshotSends (async compress).
+        // The peer's WorldReady flag — which enables live delta/event traffic —
+        // is set there, AFTER the snapshot packet goes out, so the peer never
+        // receives a delta before the snapshot that seeds the ZDO it touches.
         try { SoDCoop.Zdo.ZdoMan.SendSnapshotTo(peer); }          catch (Exception ex) { Plugin.Log.LogWarning($"ZdoMan.SendSnapshotTo: {ex.Message}"); }
+    }
+
+    /// <summary>Host-only. Mark a peer as fully world-ready (loaded + has its
+    /// ZDO snapshot), enabling live per-peer delta/event sends to it. Called
+    /// by <c>ZdoMan.PumpPendingSnapshotSends</c> the moment the snapshot
+    /// packet actually ships. Idempotent.</summary>
+    internal static void MarkPeerWorldReady(int peerId)
+    {
+        if (peerId < 0) return;
+        if (_players.TryGetValue(peerId, out var info) && info != null && !info.WorldReady)
+        {
+            info.WorldReady = true;
+            Plugin.Log.LogInfo(
+                $"[NetworkManager] peer {peerId} ('{info.PlayerName}') is WorldReady — " +
+                $"live delta/event traffic enabled.");
+        }
     }
 
     #endregion
@@ -1883,6 +1904,31 @@ public class PlayerNetInfo
     /// <c>ClientWorldReady</c> (which the joiner won't send because
     /// WorldAutoLoad is bypassed).</summary>
     public bool SkipAutoLoad { get; set; }
+
+    /// <summary>True once this peer has finished loading the world AND
+    /// received its full ZDO snapshot — i.e. it is ready to receive and
+    /// apply live delta/event traffic. Set by
+    /// <c>ZdoMan.PumpPendingSnapshotSends</c> right after the snapshot
+    /// packet actually goes out (NOT at character-submit, NOT at
+    /// ClientWorldReady — both fire before the snapshot lands).
+    ///
+    /// <para><b>Why this exists:</b> previously the host began streaming
+    /// 10 Hz ZDO deltas and spatial events to a peer the instant it was
+    /// added to <c>_clients</c> (character-submit), which happens while the
+    /// joiner is still on SoD's ~30 s city-generation loading screen. That
+    /// peer cannot apply any of it — the live SoD objects don't exist yet —
+    /// so every delta was serialised on the host main thread for nothing,
+    /// shipped reliable-ordered (head-of-line stalling the channel), and on
+    /// the joiner triggered a per-event NRE-and-swallow storm against null
+    /// <c>CityData.Instance</c>. That is the "host lags before the client
+    /// has even loaded" symptom. Gating all per-peer sends on this flag
+    /// eliminates the wasted work entirely; the snapshot delivers the full
+    /// authoritative baseline the moment the peer is genuinely ready.</para>
+    ///
+    /// <para>Ordering guarantee: set only after the snapshot send, so a
+    /// peer never receives a delta for a ZDO before the snapshot that
+    /// creates it.</para></summary>
+    public bool WorldReady { get; set; }
 
     /// <summary>Peer's most recent broadcast world position. Updated by
     /// <c>PlayerSync</c> when a <see cref="PacketType.PlayerPosition"/>

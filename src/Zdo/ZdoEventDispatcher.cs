@@ -96,12 +96,16 @@ public static class ZdoEventDispatcher
                 int peerId = NetworkManager.GetPlayerIdByPeer(peer);
                 if (peerId < 0) continue;
 
-                // No position → treat as out-of-range. Joiner without a
-                // confirmed position skips the spatial event entirely;
-                // snapshot will deliver authoritative state regardless.
+                // Skip peers that are still loading (no snapshot yet) OR have
+                // no confirmed position. A still-loading joiner can't apply
+                // events (live SoD objects don't exist) and running its
+                // handlers there throws+swallows NREs — the loading-time
+                // freeze. WorldReady is set post-snapshot; HasKnownPosition
+                // covers the cull. Snapshot delivers authoritative state.
                 if (NetworkManager.Players == null
                     || !NetworkManager.Players.TryGetValue(peerId, out var info)
                     || info == null
+                    || !info.WorldReady
                     || !info.HasKnownPosition)
                 {
                     _eventCullSkip++;
@@ -123,11 +127,42 @@ public static class ZdoEventDispatcher
             return;
         }
 
-        // Non-spatial event OR joiner-side: broadcast to all peers.
-        int peerCount = NetworkManager.IsHost ? NetworkManager.Clients.Count : 1;
-        NetworkManager.SendToAll(PacketType.ZdoEventRpc, _scratchOut, delivery);
-        _eventSent     += peerCount;
-        _eventSentBytes += (long)_scratchOut.Length * peerCount;
+        // Non-spatial event: broadcast to all *world-ready* peers.
+        if (NetworkManager.IsHost)
+        {
+            // Per-peer loop (not SendToAll) so we can skip still-loading peers.
+            // Sending a global event (chat, money, evidence, case-board, banner)
+            // to a peer on the loading screen produces the same NRE-and-swallow
+            // storm as spatial events — its handlers deref live SoD objects that
+            // don't exist yet. The post-load snapshot carries authoritative
+            // state for everything these events would have mutated.
+            var clients = NetworkManager.Clients;
+            int frameLen = _scratchOut.Length;
+            for (int i = 0; i < clients.Count; i++)
+            {
+                var peer = clients[i];
+                if (peer == null) continue;
+                int peerId = NetworkManager.GetPlayerIdByPeer(peer);
+                if (peerId < 0) continue;
+                if (NetworkManager.Players == null
+                    || !NetworkManager.Players.TryGetValue(peerId, out var info)
+                    || info == null
+                    || !info.WorldReady)
+                    continue;
+
+                NetworkManager.SendTo(peer, PacketType.ZdoEventRpc, _scratchOut, delivery);
+                _eventSent++;
+                _eventSentBytes += frameLen;
+            }
+        }
+        else
+        {
+            // Joiner-side: only peer is the host (always ready). The host
+            // re-broadcasts to other clients via the generic packet relay.
+            NetworkManager.SendToAll(PacketType.ZdoEventRpc, _scratchOut, delivery);
+            _eventSent     += 1;
+            _eventSentBytes += _scratchOut.Length;
+        }
     }
 
     public static void SendTo(SteamPeer peer, string name, NetDataWriter payload, DeliveryMethod delivery = DeliveryMethod.ReliableOrdered)
@@ -170,6 +205,22 @@ public static class ZdoEventDispatcher
 
     public static void Dispatch(NetDataReader r, int senderId)
     {
+        // ── Client-side world-ready guard (defense in depth) ────────────────
+        // While the local world is still generating, the live SoD objects the
+        // event handlers dereference (CityData.Instance, MurderController,
+        // Player.Instance, …) don't exist. Running a handler now throws an NRE
+        // that the inner try/catch swallows — but in IL2CPP each thrown+caught
+        // exception costs real time, and a host streaming events during our
+        // load produced a per-packet exception storm: a primary cause of the
+        // loading-time freeze. The host now gates sends on the peer's
+        // WorldReady flag so these shouldn't arrive during load anyway; this
+        // is the belt-and-braces guard for Mode 2 / timing windows / forwarded
+        // traffic. Dropping is safe — the ZDO snapshot carries authoritative
+        // state and these RPC events are transient (anim flips, speech bubbles,
+        // banners). The host is always world-ready, so host-side dispatch
+        // (events from clients) is unaffected.
+        if (!SoDCoop.Sync.WorldReadyGate.IsWorldReady) return;
+
         try
         {
             byte flags = r.GetByte();

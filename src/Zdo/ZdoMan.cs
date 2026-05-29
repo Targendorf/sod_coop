@@ -318,6 +318,13 @@ public static class ZdoMan
         _inRangeForPeer.Clear();
         _pendingResendForPeer.Clear();
         _pendingOwnershipBroadcast.Clear();
+        // Session-scoped state that previously leaked across host/menu/host
+        // cycles: the auth-reject log throttle grew unbounded under a
+        // misbehaving/version-mismatched peer, and a stale pending snapshot
+        // entry (peer dropped mid-join while its compress Task was in flight)
+        // would fire one bogus send next session. Clear both on world-unready.
+        _authRejectLogThrottle.Clear();
+        _pendingSnapshotSends.Clear();
         _nextSequence = 1u;
         _flushTickCounter = 0u;
     }
@@ -707,13 +714,21 @@ public static class ZdoMan
             int peerId = NetworkManager.GetPlayerIdByPeer(peer);
             if (peerId < 0) continue;
 
+            // ── WorldReady gate ─────────────────────────────────────────────
+            // Skip peers that haven't finished loading the world AND received
+            // their snapshot. Serialising + shipping deltas to a still-loading
+            // joiner is the "host lags before the client even loaded" cause:
+            // the peer can't apply any of it (live SoD objects don't exist),
+            // it's pure wasted main-thread serialisation, and on ReliableOrdered
+            // it head-of-line-stalls the channel. WorldReady flips true in
+            // PumpPendingSnapshotSends once the snapshot actually ships.
+            PlayerNetInfo info = null;
+            NetworkManager.Players?.TryGetValue(peerId, out info);
+            if (info == null || !info.WorldReady) continue;
+
             UnityEngine.Vector3 peerPos = UnityEngine.Vector3.zero;
             bool useCull = false;
-            PlayerNetInfo info = null;
-            if (NetworkManager.Players != null
-                && NetworkManager.Players.TryGetValue(peerId, out info)
-                && info != null
-                && info.HasKnownPosition)
+            if (info.HasKnownPosition)
             {
                 peerPos = info.LastKnownPosition;
                 useCull = true;
@@ -1373,6 +1388,13 @@ public static class ZdoMan
     /// Typically holds 0–1 entries; only grows during concurrent joins.</summary>
     private static readonly List<PendingSnapshotSend> _pendingSnapshotSends = new();
 
+    /// <summary>Dedicated wire-build buffer for the async snapshot emit path.
+    /// Kept separate from <see cref="_payloadScratch"/> (the delta-flush
+    /// scratch) so the snapshot-emit and delta-flush paths can never clobber
+    /// each other's half-built packet, even if call ordering changes or a
+    /// re-entrant send is introduced later.</summary>
+    private static readonly NetDataWriter _snapshotEmitScratch = new();
+
     /// <summary>Push a full ZDO snapshot to <paramref name="peer"/>.
     ///
     /// <para>Serialisation walks the live <c>_byId</c> registry and so must
@@ -1460,15 +1482,21 @@ public static class ZdoMan
 
             try
             {
-                _payloadScratch.Reset();
+                _snapshotEmitScratch.Reset();
                 byte flags = 0x01; // compressed
-                _payloadScratch.Put(flags);
-                _payloadScratch.Put((ushort)0); // uncompressedLen unused for snapshot
-                _payloadScratch.Put(p.PayloadLen);
-                _payloadScratch.Put(compressed.Length);
-                _payloadScratch.Put(compressed, 0, compressed.Length);
+                _snapshotEmitScratch.Put(flags);
+                _snapshotEmitScratch.Put((ushort)0); // uncompressedLen unused for snapshot
+                _snapshotEmitScratch.Put(p.PayloadLen);
+                _snapshotEmitScratch.Put(compressed.Length);
+                _snapshotEmitScratch.Put(compressed, 0, compressed.Length);
 
-                NetworkManager.SendTo(p.Peer, PacketType.ZdoSnapshot, _payloadScratch, DeliveryMethod.ReliableOrdered);
+                NetworkManager.SendTo(p.Peer, PacketType.ZdoSnapshot, _snapshotEmitScratch, DeliveryMethod.ReliableOrdered);
+
+                // The snapshot is now on the wire. Enable live delta/event
+                // traffic to this peer — ordering is guaranteed (snapshot
+                // first, then deltas) because every per-peer send path gates
+                // on WorldReady, which we only flip here, post-send.
+                NetworkManager.MarkPeerWorldReady(p.PeerId);
 
                 float elapsedMs = (Time.unscaledTime - p.EnqueuedAt) * 1000f;
                 Plugin.Log.LogInfo(
