@@ -1026,6 +1026,16 @@ public static class ZdoMan
                 var z = _pendingDrainScratch[pi];
                 if (z == null) continue;
 
+                // Byte budget also applies to the catch-up pass. The count
+                // cap alone (MAX_CATCHUP_PER_FLUSH=100) lets 100 FULL-state
+                // ZDOs through — at a few hundred bytes each that's ~30 KB,
+                // double the intended per-flush budget. Stop serialising at
+                // the budget; un-drained entries simply stay in peerPending
+                // (we only Remove() after a successful serialise below) and
+                // ride the next flush.
+                if (NetworkManager.IsHost && _payloadScratch.Length >= MAX_DELTA_BYTES_PER_FLUSH)
+                    break;
+
                 // Cursor short-circuit: peer already has this revision,
                 // no point re-shipping full state. Drop from pending so
                 // we don't keep evaluating it on subsequent flushes.
@@ -1163,7 +1173,36 @@ public static class ZdoMan
             _payloadScratch.Reset();
             id.Write(_payloadScratch);
             _payloadScratch.Put(newOwner);
-            WrapAndSend(PacketType.ZdoOwnershipTransfer, _payloadScratch);
+
+            if (NetworkManager.IsHost)
+            {
+                // Per-peer instead of broadcast: this was the last send path
+                // that bypassed the per-peer WorldReady gate. A still-loading
+                // joiner would receive transfers for ZDOs it doesn't have yet
+                // (harmless — the snapshot carries authoritative ownership),
+                // but the invariant "nothing flows to a not-ready peer" is
+                // worth keeping absolute: it's what makes the loading window
+                // cheap on both ends and the gate easy to reason about.
+                var clients = NetworkManager.Clients;
+                for (int i = 0; i < clients.Count; i++)
+                {
+                    var peer = clients[i];
+                    if (peer == null) continue;
+                    int peerId = NetworkManager.GetPlayerIdByPeer(peer);
+                    if (peerId < 0) continue;
+                    if (NetworkManager.Players == null
+                        || !NetworkManager.Players.TryGetValue(peerId, out var info)
+                        || info == null
+                        || !info.WorldReady)
+                        continue;
+                    WrapAndSendTo(peer, PacketType.ZdoOwnershipTransfer, _payloadScratch);
+                }
+            }
+            else
+            {
+                // Joiner: single peer (the host), which is always world-ready.
+                WrapAndSend(PacketType.ZdoOwnershipTransfer, _payloadScratch);
+            }
         }
     }
 

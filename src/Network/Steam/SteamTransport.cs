@@ -258,6 +258,20 @@ public static class SteamTransport
 
     // ─── Receive (called per frame from NetworkManager.Update) ─────────────
 
+    /// <summary>Reused unmanaged IntPtr[RECV_BATCH] buffer for
+    /// ReceiveMessagesOnPollGroup. Allocated once on first Pump and kept for
+    /// process lifetime (512 B) — previously AllocHGlobal/FreeHGlobal ran
+    /// EVERY frame, churning the native heap even on idle frames.</summary>
+    private static IntPtr _msgPtrsBuf = IntPtr.Zero;
+
+    /// <summary>Max receive batches drained per Pump (per frame). One batch
+    /// is RECV_BATCH=64 messages; normal traffic is &lt;5 msgs/frame so a
+    /// single batch suffices. After a long frame (load hitch, alt-tab) the
+    /// socket queue can hold hundreds of messages — draining only 64/frame
+    /// would smear the backlog (and its added latency) over many frames.
+    /// The cap bounds worst-case per-frame work against a flood.</summary>
+    private const int MAX_BATCHES_PER_PUMP = 8;
+
     public static void Pump()
     {
         if (_mainThreadId != 0 && System.Threading.Thread.CurrentThread.ManagedThreadId != _mainThreadId)
@@ -268,71 +282,84 @@ public static class SteamTransport
 
         if (_pollGroup == HSteamNetPollGroup.Invalid) return;
 
-        // Allocate one unmanaged buffer of IntPtr[RECV_BATCH] that the native
-        // ReceiveMessagesOnPollGroup fills in. Reusing it across calls would
-        // be marginally faster but per-frame allocation is fine — only
-        // RECV_BATCH=64 IntPtrs per frame.
-        IntPtr msgPtrsBuf = Marshal.AllocHGlobal(IntPtr.Size * RECV_BATCH);
+        if (_msgPtrsBuf == IntPtr.Zero)
+            _msgPtrsBuf = Marshal.AllocHGlobal(IntPtr.Size * RECV_BATCH);
+
         try
         {
-            int got = SteamSocketsNative.ReceiveMessagesOnPollGroup(
-                _pollGroup.m_HSteamNetPollGroup, msgPtrsBuf, RECV_BATCH);
-            if (got <= 0) return;
-
-            for (int i = 0; i < got; i++)
+            for (int batch = 0; batch < MAX_BATCHES_PER_PUMP; batch++)
             {
-                IntPtr msgPtr = Marshal.ReadIntPtr(msgPtrsBuf, i * IntPtr.Size);
-                if (msgPtr == IntPtr.Zero) continue;
-                try
-                {
-                    // SteamNetworkingMessage_t native layout (Pack=8, from
-                    // steamnetworkingtypes.h):
-                    //   offset 0    void* m_pData              (8 B)
-                    //   offset 8    int   m_cbSize             (4 B)
-                    //   offset 12   HSteamNetConnection m_conn (uint32, 4 B)
-                    //   offset 16   SteamNetworkingIdentity m_identityPeer (136 B)
-                    //   offset 152  int64 m_nConnUserData
-                    //   ... (rest ignored for receive)
-                    //
-                    // BUG fix: previously we read hConn from offset 16 — that's
-                    // the start of m_identityPeer (m_eType = 16 for SteamID).
-                    // LookupPeer(new HSteamNetConnection(16)) always returned
-                    // null, so every inbound message was silently dropped.
-                    // This is why Steam connect succeeded (FindingRoute →
-                    // Connected) but the bootstrap handshake never advanced —
-                    // host saw the peer, accepted, then never received any
-                    // packets from it.
-                    IntPtr pData = Marshal.ReadIntPtr(msgPtr, 0);
-                    int    cbSize = Marshal.ReadInt32(msgPtr, 8);
-                    uint   hConn = (uint)Marshal.ReadInt32(msgPtr, 12);
+                int got = SteamSocketsNative.ReceiveMessagesOnPollGroup(
+                    _pollGroup.m_HSteamNetPollGroup, _msgPtrsBuf, RECV_BATCH);
+                if (got <= 0) return;
 
-                    var peer = LookupPeer(new HSteamNetConnection(hConn));
-                    if (peer != null && cbSize > 0 && pData != IntPtr.Zero)
+                for (int i = 0; i < got; i++)
+                {
+                    IntPtr msgPtr = Marshal.ReadIntPtr(_msgPtrsBuf, i * IntPtr.Size);
+                    if (msgPtr == IntPtr.Zero) continue;
+                    try
                     {
-                        byte[] buf = new byte[cbSize];
-                        Marshal.Copy(pData, buf, 0, cbSize);
-                        try { OnMessage?.Invoke(peer, buf, cbSize); }
-                        catch (Exception ex) { Plugin.Log.LogError($"[SteamTransport] OnMessage handler threw: {ex}"); }
+                        // SteamNetworkingMessage_t native layout (Pack=8, from
+                        // steamnetworkingtypes.h):
+                        //   offset 0    void* m_pData              (8 B)
+                        //   offset 8    int   m_cbSize             (4 B)
+                        //   offset 12   HSteamNetConnection m_conn (uint32, 4 B)
+                        //   offset 16   SteamNetworkingIdentity m_identityPeer (136 B)
+                        //   offset 152  int64 m_nConnUserData
+                        //   ... (rest ignored for receive)
+                        //
+                        // BUG fix: previously we read hConn from offset 16 — that's
+                        // the start of m_identityPeer (m_eType = 16 for SteamID).
+                        // LookupPeer(new HSteamNetConnection(16)) always returned
+                        // null, so every inbound message was silently dropped.
+                        // This is why Steam connect succeeded (FindingRoute →
+                        // Connected) but the bootstrap handshake never advanced —
+                        // host saw the peer, accepted, then never received any
+                        // packets from it.
+                        IntPtr pData = Marshal.ReadIntPtr(msgPtr, 0);
+                        int    cbSize = Marshal.ReadInt32(msgPtr, 8);
+                        uint   hConn = (uint)Marshal.ReadInt32(msgPtr, 12);
+
+                        var peer = LookupPeer(new HSteamNetConnection(hConn));
+                        if (peer != null && cbSize > 0 && pData != IntPtr.Zero)
+                        {
+                            // Rented, not allocated: this runs once per incoming
+                            // packet — the hottest receive path in the mod. All
+                            // downstream consumers are bounded by the explicit
+                            // length (HandleTransportMessage constructs
+                            // NetDataReader(payload, 0, length)) and consume
+                            // synchronously, so returning in finally is safe.
+                            byte[] buf = System.Buffers.ArrayPool<byte>.Shared.Rent(cbSize);
+                            try
+                            {
+                                Marshal.Copy(pData, buf, 0, cbSize);
+                                try { OnMessage?.Invoke(peer, buf, cbSize); }
+                                catch (Exception ex) { Plugin.Log.LogError($"[SteamTransport] OnMessage handler threw: {ex}"); }
+                            }
+                            finally
+                            {
+                                System.Buffers.ArrayPool<byte>.Shared.Return(buf, clearArray: false);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Plugin.Log.LogWarning($"[SteamTransport] message dispatch: {ex.Message}");
+                    }
+                    finally
+                    {
+                        // Steam manages the message buffer; we must release it.
+                        SteamSocketsNative.ReleaseMessage(msgPtr);
                     }
                 }
-                catch (Exception ex)
-                {
-                    Plugin.Log.LogWarning($"[SteamTransport] message dispatch: {ex.Message}");
-                }
-                finally
-                {
-                    // Steam manages the message buffer; we must release it.
-                    SteamSocketsNative.ReleaseMessage(msgPtr);
-                }
+
+                // Partial batch ⇒ the socket queue is drained; stop early.
+                if (got < RECV_BATCH) return;
             }
         }
         catch (Exception ex)
         {
             Plugin.Log.LogWarning($"[SteamTransport] Pump: {ex.GetType().Name}: {ex.Message}");
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(msgPtrsBuf);
         }
     }
 
