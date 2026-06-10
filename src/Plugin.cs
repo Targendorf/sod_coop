@@ -466,6 +466,7 @@ public class CoopUpdateRunner : MonoBehaviour
 
     void Update()
     {
+        CoopPerf.FrameStart();
         try
         {
             Plugin.DrainPendingResume();   // ← Pause/Resume gate check (revived from archive)
@@ -499,6 +500,10 @@ public class CoopUpdateRunner : MonoBehaviour
         {
             Plugin.Log.LogError($"Error in CoopUpdateRunner.Update: {ex}");
         }
+        finally
+        {
+            CoopPerf.FrameEnd();
+        }
     }
 
     void OnGUI()
@@ -518,6 +523,76 @@ public class CoopUpdateRunner : MonoBehaviour
         catch (System.Exception ex)
         {
             Plugin.Log.LogError($"Error in CoopUpdateRunner.OnGUI: {ex}");
+        }
+    }
+}
+
+/// <summary>
+/// Built-in frame-cost attribution for the co-op layer. Answers the one
+/// question every laggy-playtest log so far could NOT answer: when the host
+/// drops frames, is the time going into OUR per-frame work
+/// (CoopUpdateRunner.Update cascade) or into the game itself?
+///
+/// Two outputs, both throttled and cheap:
+///  • A 10-second rollup: avg/max milliseconds the coop layer spent per
+///    frame (logged only when max ≥ 1 ms so idle sessions stay silent).
+///  • A frame-spike attribution line whenever the WHOLE game frame took
+///    ≥ 200 ms: how much of that spike was the coop layer vs the game.
+///    "[CoopPerf] FRAME SPIKE 512 ms — coop layer 3.1 ms" exonerates the
+///    netcode; "— coop layer 480 ms" convicts it.
+///
+/// Costs one Stopwatch restart/stop per frame — negligible.
+/// </summary>
+public static class CoopPerf
+{
+    private static readonly System.Diagnostics.Stopwatch _sw = new();
+    private static double _maxMs;
+    private static double _sumMs;
+    private static int    _frames;
+    private static float  _nextRollupAt;
+    private static float  _lastFrameTime;
+
+    private const float ROLLUP_INTERVAL_S  = 10f;
+    private const float SPIKE_THRESHOLD_S  = 0.2f;   // whole-frame spike: 200 ms
+    private const double ROLLUP_MIN_MAX_MS = 1.0;    // stay silent when idle
+
+    public static void FrameStart()
+    {
+        // Whole-frame spike detection via unscaled delta between OUR Update
+        // calls (≈ the game's frame time; unaffected by pause timeScale).
+        float now = Time.unscaledTime;
+        if (_lastFrameTime > 0f)
+        {
+            float frameDt = now - _lastFrameTime;
+            if (frameDt >= SPIKE_THRESHOLD_S)
+            {
+                // _sw still holds the PREVIOUS frame's coop-layer cost.
+                Plugin.Log.LogInfo(
+                    $"[CoopPerf] FRAME SPIKE {frameDt * 1000f:F0} ms — coop layer used {_sw.Elapsed.TotalMilliseconds:F1} ms of the previous frame.");
+            }
+        }
+        _lastFrameTime = now;
+        _sw.Restart();
+    }
+
+    public static void FrameEnd()
+    {
+        _sw.Stop();
+        double ms = _sw.Elapsed.TotalMilliseconds;
+        _sumMs += ms;
+        _frames++;
+        if (ms > _maxMs) _maxMs = ms;
+
+        float now = Time.unscaledTime;
+        if (now >= _nextRollupAt)
+        {
+            if (_frames > 0 && _maxMs >= ROLLUP_MIN_MAX_MS)
+            {
+                Plugin.Log.LogInfo(
+                    $"[CoopPerf] 10s: coop layer avg={_sumMs / _frames:F2} ms/frame, max={_maxMs:F1} ms, frames={_frames}");
+            }
+            _nextRollupAt = now + ROLLUP_INTERVAL_S;
+            _maxMs = 0; _sumMs = 0; _frames = 0;
         }
     }
 }

@@ -40,7 +40,15 @@ public static class MoneySync
     //  Outbound
     // ─────────────────────────────────────────────────────────────────────────
 
-    public static void BroadcastAddMoney(int amount, bool displayMessage, string reason)
+    /// <param name="notifyPollerBaseline">When true (default), advances
+    /// <see cref="SoDCoop.Zdo.Pollers.MoneyPoller"/>'s diff baseline by
+    /// <paramref name="amount"/> after a successful broadcast — the wallet is
+    /// about to reflect this credit (the AddMoney patch fires POST-add), and
+    /// without the bump the poller would see the same credit as a fresh local
+    /// delta next tick and broadcast it a SECOND time (double-credit on
+    /// receivers). The poller itself passes false — it advances its own
+    /// baseline before calling here.</param>
+    public static void BroadcastAddMoney(int amount, bool displayMessage, string reason, bool notifyPollerBaseline = true)
     {
         if (!NetworkManager.IsConnected) return;
         if (IsApplyingRemote) return;
@@ -53,6 +61,11 @@ public static class MoneySync
         {
             Plugin.Log.LogDebug($"[MoneySync] local debit {amount} (reason=\"{reason}\") — not broadcast");
             return;
+        }
+
+        if (notifyPollerBaseline)
+        {
+            try { SoDCoop.Zdo.Pollers.MoneyPoller.NotifyExternalCredit(amount); } catch { }
         }
 
         // Round 10: prefer the unified ZdoEventRpc channel when the events
@@ -145,6 +158,16 @@ public static class MoneySync
             {
                 IsApplyingRemote = false;
             }
+
+            // CRITICAL — advance the money poller's diff baseline by the credit
+            // we just applied. IsApplyingRemote only guards the AddMoney PATCH
+            // (same call stack); the POLLER diffs the wallet a tick later, sees
+            // this credit as a fresh local delta, and broadcasts it BACK to the
+            // sender → infinite +N echo loop (playtest 2026-06-10: ~1.4 Hz,
+            // 93 rounds, +9300 inflation, permanent background churn on both
+            // machines). Baseline accounting is the only correct fix for a
+            // poll-later race.
+            try { SoDCoop.Zdo.Pollers.MoneyPoller.NotifyExternalCredit(amount); } catch { }
         }
         catch (System.Exception ex)
         {

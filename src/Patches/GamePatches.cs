@@ -2327,6 +2327,21 @@ public static class GamePatches
     // all wired up — no downstream NREs), only the OnGameStart cinematic is
     // skipped, and only when WorldAutoLoad is in the middle of a coop-
     // joiner bootstrap. Host playthrough and solo play are untouched.
+    /// <summary>True iff this machine is a connected co-op JOINER in a session
+    /// it auto-loaded from the host's descriptor. The 2026-06-10 playtest
+    /// proved IsBootstrappingWorld is the WRONG gate here: WorldReadyGate
+    /// clears it as soon as city+citizens+Player exist, but CityConstructor
+    /// invokes ChapterIntro.OnGameStart SECONDS later during end-of-load
+    /// finalize — the old gate was already false and the tutorial ran,
+    /// parking the joiner's player ~484 m off-map in the intro staging
+    /// (the "players render outside the city" symptom). JoinedSessionActive
+    /// survives until session end; IsConnected/!IsHost ensure a later
+    /// disconnect or hosting-own-game never inherits the suppression.</summary>
+    private static bool IsJoinerSuppressingIntro()
+        => WorldAutoLoad.JoinedSessionActive
+           && SoDCoop.Network.NetworkManager.IsConnected
+           && !SoDCoop.Network.NetworkManager.IsHost;
+
     [HarmonyPatch(typeof(global::ChapterIntro), nameof(global::ChapterIntro.OnGameStart))]
     public static class ChapterIntro_OnGameStart_Patch
     {
@@ -2335,7 +2350,16 @@ public static class GamePatches
         {
             try
             {
-                if (!WorldAutoLoad.IsBootstrappingWorld) return true; // host / solo / re-load — normal flow
+                if (!IsJoinerSuppressingIntro())
+                {
+                    // Loud-ish breadcrumb (Info, fires at most once per load):
+                    // the previous playtest could not distinguish "prefix never
+                    // fired" from "gate was false". Never again.
+                    Plugin.Log.LogInfo(
+                        $"[Patch.ChapterIntro] OnGameStart passthrough (joinedSession={WorldAutoLoad.JoinedSessionActive} " +
+                        $"connected={SoDCoop.Network.NetworkManager.IsConnected} isHost={SoDCoop.Network.NetworkManager.IsHost}) — normal flow.");
+                    return true; // host / solo / re-load — normal flow
+                }
                 Plugin.Log.LogInfo(
                     "[Patch.ChapterIntro] coop joiner — suppressing ChapterIntro.OnGameStart " +
                     "(no tutorial cinematic; case state will arrive via EvidenceSync).");
@@ -2345,6 +2369,33 @@ public static class GamePatches
             {
                 Plugin.Log.LogWarning($"ChapterIntro.OnGameStart patch: {ex.Message}");
                 return true; // on any error, let the original run so we don't half-start
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  CityConstructor.EnableTutorial — belt-and-braces for the joiner path.
+    //  Even with ChapterIntro.OnGameStart suppressed and askToEnableTutorial
+    //  cleared on the presets, any residual SoD path that tries to switch the
+    //  session into tutorial mode on a co-op joiner is refused here. Host and
+    //  solo play are untouched.
+    // ─────────────────────────────────────────────────────────────────────────
+    [HarmonyPatch(typeof(global::CityConstructor), nameof(global::CityConstructor.EnableTutorial))]
+    public static class CityConstructor_EnableTutorial_Patch
+    {
+        [HarmonyPrefix]
+        public static bool Prefix()
+        {
+            try
+            {
+                if (!IsJoinerSuppressingIntro()) return true;
+                Plugin.Log.LogInfo("[Patch.EnableTutorial] coop joiner — tutorial mode refused.");
+                return false;
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"CityConstructor.EnableTutorial patch: {ex.Message}");
+                return true;
             }
         }
     }

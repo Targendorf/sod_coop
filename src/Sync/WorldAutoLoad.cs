@@ -35,6 +35,24 @@ public static class WorldAutoLoad
     /// screen.</summary>
     public static bool IsBootstrappingWorld { get; private set; }
 
+    /// <summary>True from the moment this machine accepts a host's world
+    /// descriptor (i.e. it is a JOINER auto-loading the host's city) until
+    /// the session ends. Unlike <see cref="IsBootstrappingWorld"/> — which is
+    /// cleared at WorldReadyGate's (EARLY) ready signal — this flag survives
+    /// the entire load, including SoD's late scripted finalization.
+    ///
+    /// <para><b>Why it exists (playtest 2026-06-10):</b> the tutorial-skip
+    /// Harmony prefix on <c>ChapterIntro.OnGameStart</c> was gated on
+    /// IsBootstrappingWorld. But WorldReadyGate fires as soon as CityData +
+    /// citizens + Player exist — SECONDS before CityConstructor's end-of-load
+    /// finalize invokes OnGameStart. The gate read false, the prefix passed
+    /// through, the joiner got the tutorial, and the intro staging parked the
+    /// player ~484 m off-map (the "players render outside the city" symptom).
+    /// Consumers must combine this with <c>NetworkManager.IsConnected &amp;&amp;
+    /// !NetworkManager.IsHost</c> so a later disconnect / host-own-game never
+    /// inherits the suppression.</para></summary>
+    public static bool JoinedSessionActive { get; private set; }
+
     /// <summary>Cached descriptor for the in-flight join. Cleared after
     /// SoD's WorldReady fires.</summary>
     public static WorldDescriptorPacket Pending { get; private set; }
@@ -47,6 +65,7 @@ public static class WorldAutoLoad
     {
         Pending = d;
         IsBootstrappingWorld = true;
+        JoinedSessionActive = true;
 
         Plugin.Log.LogInfo(
             $"[WorldAutoLoad] descriptor: seed='{d.Seed}' cityName='{d.CityName}' " +
@@ -130,19 +149,60 @@ public static class WorldAutoLoad
         }
 
         // ── Step 2.5: suppress ChapterIntro / tutorial ───────────────────
-        // First attempt (regression in commit 8ff87c7) set both
-        // Game.skipIntro=true AND Game.loadChapter=-1 here. The latter
-        // crashed CityConstructor.StartLoading with
-        // ArgumentOutOfRangeException — SoD uses loadChapter as a direct
-        // index into a chapter list, and -1 is not a valid sentinel at
-        // that code path. The intro-skip is now handled by a Harmony
-        // Prefix on ChapterController.LoadChapter (see
-        // Patches.GamePatches.Patch_ChapterController_LoadChapter), gated
-        // on IsBootstrappingWorld so host playthrough is untouched.
-        //
-        // We deliberately do NOT touch Game.Instance fields here anymore:
-        // SoD's own loader knows how to pick the chapter, and our patch
-        // intercepts ChapterController.LoadChapter on the joiner-only path.
+        // Three layers (the 2026-06-10 playtest proved one isn't enough):
+        //   1. Game.skipIntro = true — SoD's own intro-skip switch. (The
+        //      8ff87c7 crash was caused by Game.loadChapter = -1, NOT by
+        //      skipIntro: loadChapter is used as a direct list index in
+        //      CityConstructor.StartLoading. skipIntro alone is safe.)
+        //   2. Clear askToEnableTutorial on every chapter preset so the
+        //      "Enable tutorial?" popup never fires for the joiner.
+        //   3. Harmony Prefix on ChapterIntro.OnGameStart (GamePatches),
+        //      gated on JoinedSessionActive — a flag that, unlike
+        //      IsBootstrappingWorld, survives until session end and so is
+        //      still true when CityConstructor's LATE finalize invokes
+        //      OnGameStart (the previous gate was already false by then).
+        try
+        {
+            var game = global::Game.Instance;
+            if (game != null)
+            {
+                game.skipIntro = true;
+                Plugin.Log.LogInfo("[WorldAutoLoad] Game.skipIntro=true (joiner intro suppression, layer 1).");
+            }
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"[WorldAutoLoad] could not set Game.skipIntro: {ex.Message}");
+        }
+
+        try
+        {
+            var cc = global::ChapterController.Instance;
+            var all = cc?.allChapters;
+            if (all != null)
+            {
+                int cleared = 0;
+                for (int i = 0; i < all.Count; i++)
+                {
+                    var preset = all[i];
+                    if (preset == null) continue;
+                    if (preset.askToEnableTutorial)
+                    {
+                        preset.askToEnableTutorial = false;
+                        cleared++;
+                    }
+                }
+                Plugin.Log.LogInfo($"[WorldAutoLoad] cleared askToEnableTutorial on {cleared} chapter preset(s) (layer 2).");
+            }
+            else
+            {
+                Plugin.Log.LogInfo("[WorldAutoLoad] ChapterController not available at menu — tutorial popup suppression deferred to layer 3 patch.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"[WorldAutoLoad] clearing askToEnableTutorial: {ex.Message}");
+        }
 
         // ── Step 3: kick off generation ──────────────────────────────────
         // SoD's normal flow is: user clicks Generate → OnContinueCityGeneration
