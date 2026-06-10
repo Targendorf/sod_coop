@@ -61,17 +61,18 @@ public static class CitizenStatePoller
     {
         try
         {
-            var dict = CityData.Instance?.citizenDictionary;
-            if (dict == null) return;
+            // Shared managed roster — avoids re-enumerating the Il2Cpp
+            // citizenDictionary (per-element native calls) every tick.
+            if (!CitizenRosterCache.TryGetRoster(out var ids, out var citizens)) return;
 
             // Slow lane fires once every SLOW_EVERY base ticks (~1 Hz).
             bool slowTick = (_tickCounter++ % SLOW_EVERY) == 0;
 
-            foreach (var kv in dict)
+            for (int ci = 0; ci < citizens.Count; ci++)
             {
-                var c = kv.Value;
+                var c = citizens[ci];
                 if (c == null) continue;
-                int id = c.humanID;
+                int id = ids[ci];
 
                 // Fast-skip if the live SoD object isn't fully initialised.
                 if (id == 0) continue;

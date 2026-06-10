@@ -42,7 +42,11 @@ namespace SoDCoop.Zdo.Pollers;
 /// </summary>
 public static class SpeechBubblePoller
 {
-    public const float TICK_HZ = 10f;
+    // 5 Hz (was 10): this was the single highest-frequency full-roster scan
+    // in the mod. A speech bubble's typewriter phase lasts ≥1 s, so a 200 ms
+    // detection latency on the final-text transition is imperceptible —
+    // halving the scan rate halves its steady-state interop cost for free.
+    public const float TICK_HZ = 5f;
     public const string NAME = "speech-bubble";
 
     /// <summary>Last broadcast (humanId, text) per Actor — diff baseline so
@@ -69,14 +73,13 @@ public static class SpeechBubblePoller
     {
         try
         {
-            var dict = CityData.Instance?.citizenDictionary;
-            if (dict == null) return;
+            if (!CitizenRosterCache.TryGetRoster(out var ids, out var citizens)) return;
             int count = 0;
-            foreach (var kv in dict)
+            for (int ci = 0; ci < citizens.Count; ci++)
             {
-                var c = kv.Value;
+                var c = citizens[ci];
                 if (c == null) continue;
-                int id = c.humanID;
+                int id = ids[ci];
                 if (id == 0) continue;
                 global::SpeechController sc;
                 try { sc = c.speechController; } catch { continue; }
@@ -143,14 +146,13 @@ public static class SpeechBubblePoller
 
             // 2. All citizens — host only, since host owns the NPC simulation.
             if (!SoDCoop.Network.NetworkManager.IsHost) return;
-            var dict = CityData.Instance?.citizenDictionary;
-            if (dict == null) return;
+            if (!CitizenRosterCache.TryGetRoster(out var ids, out var citizens)) return;
 
-            foreach (var kv in dict)
+            for (int ci = 0; ci < citizens.Count; ci++)
             {
-                var c = kv.Value;
+                var c = citizens[ci];
                 if (c == null) continue;
-                int id = c.humanID;
+                int id = ids[ci];
                 if (id == 0) continue;
                 ProbeAndBroadcast(id, c);
             }

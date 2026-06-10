@@ -349,6 +349,12 @@ public static class ZdoMan
         // would fire one bogus send next session. Clear both on world-unready.
         _authRejectLogThrottle.Clear();
         _pendingSnapshotSends.Clear();
+        // Amortized resolver-apply queue is session-scoped too: a queue
+        // drained mid-way when the world unloads must not replay stale
+        // applies into the next session's freshly-generated city.
+        _pendingResolverApply.Clear();
+        _pendingResolverApplySet.Clear();
+        _resolverApplyDrainTotal = 0;
         _nextSequence = 1u;
         _flushTickCounter = 0u;
     }
@@ -417,29 +423,117 @@ public static class ZdoMan
 
     public static int Count => _byId.Count;
 
+    // ── Amortized resolver apply (joiner-side catch-up) ──────────────
+
+    /// <summary>FIFO queue of ZDOs awaiting a resolver apply, drained at
+    /// <see cref="RESOLVER_APPLIES_PER_FRAME"/> per frame by
+    /// <see cref="PumpPendingResolverApplies"/>. Exists because the two
+    /// joiner-side "apply the whole world" paths (snapshot restore and
+    /// post-load catch-up) used to walk the entire ~20 K-ZDO registry and
+    /// run every resolver inline in a single frame — a multi-hundred-ms
+    /// hitch exactly when the client spawns into the world.
+    ///
+    /// <para>Amortizing is safe because resolvers read the ZDO's CURRENT
+    /// registry state at apply time (not a captured snapshot): a delta
+    /// arriving and applying inline before the amortized baseline apply
+    /// runs is harmless — the later queued apply just re-applies the same
+    /// freshest state (idempotent). Queue order only affects how quickly
+    /// a given object visually catches up, never correctness.</para></summary>
+    private static readonly List<Zdo> _pendingResolverApply = new();
+
+    /// <summary>Dedup companion to <see cref="_pendingResolverApply"/> —
+    /// a ZDO already queued isn't queued twice (re-applying the same
+    /// current state twice would be wasted work, not a bug).</summary>
+    private static readonly HashSet<Zdo> _pendingResolverApplySet = new();
+
+    /// <summary>Resolver applies drained per frame. 1500/frame clears a
+    /// ~20 K registry in ~13 frames (~0.2 s at 60 fps) instead of one
+    /// 300+ ms single-frame stall.</summary>
+    private const int RESOLVER_APPLIES_PER_FRAME = 1500;
+
+    /// <summary>Running count of applies performed in the current drain
+    /// cycle — reported once in the queue-drained log line, then reset.</summary>
+    private static int _resolverApplyDrainTotal;
+
+    /// <summary>Queue <paramref name="z"/> for an amortized resolver apply.
+    /// No-op if it's null or already queued.</summary>
+    private static void EnqueueResolverApply(Zdo z)
+    {
+        if (z == null) return;
+        if (!_pendingResolverApplySet.Add(z)) return;
+        _pendingResolverApply.Add(z);
+    }
+
+    /// <summary>Drain up to <see cref="RESOLVER_APPLIES_PER_FRAME"/> queued
+    /// resolver applies. Called once per frame from
+    /// <c>CoopUpdateRunner.Update</c>; early-returns when the queue is
+    /// empty. Errors are throttled to 5 log lines per call (same pattern
+    /// as the old inline catch-up loop) so one broken resolver can't spam
+    /// the BepInEx log thousands of times in a single drain.</summary>
+    public static void PumpPendingResolverApplies()
+    {
+        if (_pendingResolverApply.Count == 0) return;
+
+        int take = Math.Min(RESOLVER_APPLIES_PER_FRAME, _pendingResolverApply.Count);
+        int errors = 0;
+        for (int i = 0; i < take; i++)
+        {
+            var z = _pendingResolverApply[i];
+            _pendingResolverApplySet.Remove(z);
+            // Skip ZDOs destroyed (or replaced in the registry) while
+            // queued — mirrors the old inline loops, which only ever saw
+            // live registry entries.
+            if (!_byId.TryGetValue(z.Id, out var live) || !ReferenceEquals(live, z)) continue;
+            try
+            {
+                Resolvers.ZdoResolverRegistry.Apply(z);
+                _resolverApplyDrainTotal++;
+            }
+            catch (Exception ex)
+            {
+                errors++;
+                if (errors <= 5)
+                    Plugin.Log.LogWarning($"[ZdoMan] amortized resolver apply failed for {z.Id} ({z.ZdoTypeTag}): {ex.Message}");
+            }
+        }
+        // FIFO drain from the front: RemoveRange(0, take) is a single
+        // memmove of the survivors (~150 KB of refs worst case) — far
+        // cheaper than the resolver applies themselves, and it preserves
+        // enqueue order so earlier-restored ZDOs catch up first.
+        _pendingResolverApply.RemoveRange(0, take);
+
+        if (_pendingResolverApply.Count == 0)
+        {
+            Plugin.Log.LogInfo($"[ZdoMan] amortized resolver apply complete ({_resolverApplyDrainTotal} total).");
+            _resolverApplyDrainTotal = 0;
+        }
+    }
+
     /// <summary>
-    /// Walk every ZDO currently in the registry and apply it via the
-    /// resolver pipeline. Used by joiner-side post-load to catch up on
-    /// state that streamed in while SoD's city was still generating
-    /// (resolvers were skipped at that time to avoid NREs against
-    /// not-yet-existing Human / Interactable refs).
+    /// Schedule every ZDO currently in the registry for a resolver apply.
+    /// Used by joiner-side post-load to catch up on state that streamed in
+    /// while SoD's city was still generating (resolvers were skipped at
+    /// that time to avoid NREs against not-yet-existing Human /
+    /// Interactable refs).
+    ///
+    /// <para>The applies are NOT performed inline — each registry ZDO is
+    /// queued via <see cref="EnqueueResolverApply"/> and drained by
+    /// <see cref="PumpPendingResolverApplies"/> at
+    /// <see cref="RESOLVER_APPLIES_PER_FRAME"/> per frame. Applying all
+    /// ~20 K resolvers in one frame cost 300+ ms exactly when the client
+    /// spawned in; amortized, the same work spreads over ~13 frames
+    /// (~0.2 s). Safe because resolvers read each ZDO's CURRENT registry
+    /// state at apply time — any delta that lands (and applies inline)
+    /// before a queued baseline apply runs is simply re-applied
+    /// idempotently by the queued one.</para>
     /// </summary>
     public static void ApplyAllToLiveWorld()
     {
         try
         {
-            int n = 0, errors = 0;
             foreach (var z in _byId.Values)
-            {
-                try { Resolvers.ZdoResolverRegistry.Apply(z); n++; }
-                catch (Exception ex)
-                {
-                    errors++;
-                    if (errors <= 5)
-                        Plugin.Log.LogWarning($"[ZdoMan] catch-up apply failed for {z.Id} ({z.ZdoTypeTag}): {ex.Message}");
-                }
-            }
-            Plugin.Log.LogInfo($"[ZdoMan] catch-up apply: {n} ZDOs ({errors} errors).");
+                EnqueueResolverApply(z);
+            Plugin.Log.LogInfo($"[ZdoMan] catch-up apply scheduled for {_pendingResolverApply.Count} ZDOs (amortized at {RESOLVER_APPLIES_PER_FRAME}/frame).");
         }
         catch (Exception ex)
         {
@@ -1292,6 +1386,16 @@ public static class ZdoMan
         dat[countPos + 3] = (byte)((actual >> 24) & 0xff);
     }
 
+    /// <summary>Restore the full registry from a snapshot payload.
+    ///
+    /// <para>Registry ingestion (key reads + indexing) stays synchronous —
+    /// it's cheap dictionary work. The live-side resolver applies are NOT
+    /// run inline: each restored ZDO is queued via
+    /// <see cref="EnqueueResolverApply"/> and drained by
+    /// <see cref="PumpPendingResolverApplies"/> at
+    /// <see cref="RESOLVER_APPLIES_PER_FRAME"/> per frame, because running
+    /// ~20 K resolvers inside this loop stalled the joiner 300+ ms right
+    /// as they spawned into the world.</para></summary>
     public static void RestoreFromSnapshot(byte[] payload)
     {
         if (payload == null || payload.Length == 0) return;
@@ -1342,15 +1446,22 @@ public static class ZdoMan
                 // to Create + duplicate.
                 IndexSodId(z);
 
-                // Translate ZDO state into live SoD-side mutations — only
-                // when our world is loaded. Snapshot is normally sent AFTER
+                // Queue the live SoD-side resolver apply — only when our
+                // world is loaded. Snapshot is normally sent AFTER
                 // ClientWorldReady fires (so this is true), but during
                 // reconnect-snapshot or any racy path where snapshot lands
                 // before SoD's CityData is up, we'd otherwise NRE inside
                 // resolvers that walk Human/Interactable refs that don't
                 // exist yet.
+                //
+                // The apply itself is amortized across frames by
+                // PumpPendingResolverApplies — running ~20 K resolvers
+                // inline in this loop was a 300+ ms joiner hitch. Safe:
+                // resolvers read the ZDO's current registry state at apply
+                // time, so a delta that applies inline before the queued
+                // baseline apply runs is simply re-applied idempotently.
                 if (SoDCoop.Sync.WorldReadyGate.IsWorldReady)
-                    Resolvers.ZdoResolverRegistry.Apply(z);
+                    EnqueueResolverApply(z);
             }
             Plugin.Log.LogInfo($"[ZdoMan] restored {count} ZDOs from snapshot.");
         }

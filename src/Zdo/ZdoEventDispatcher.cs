@@ -203,6 +203,19 @@ public static class ZdoEventDispatcher
         }
     }
 
+    /// <summary>Decode an incoming <c>ZdoEventRpc</c> frame and invoke the
+    /// registered handler. Hot path — runs for EVERY incoming event packet,
+    /// so the body is copied out of the transport reader with a single
+    /// <see cref="Buffer.BlockCopy"/> into a rented
+    /// <see cref="System.Buffers.ArrayPool{T}"/> buffer instead of a fresh
+    /// allocation plus a per-byte <c>GetByte()</c> loop.
+    ///
+    /// <para><b>Pooling contract:</b> the rented buffer is returned in the
+    /// <c>finally</c> below — and in the uncompressed path <c>inner</c>
+    /// wraps that buffer directly — so handlers MUST consume the reader
+    /// synchronously and MUST NOT retain it (or its <c>RawData</c>) past
+    /// the call. All current handlers are parse-and-apply functions and
+    /// satisfy this.</para></summary>
     public static void Dispatch(NetDataReader r, int senderId)
     {
         // ── Client-side world-ready guard (defense in depth) ────────────────
@@ -227,28 +240,60 @@ public static class ZdoEventDispatcher
             int innerLen = r.GetInt();
             int bodyLen  = r.GetInt();
 
-            byte[] body = new byte[bodyLen];
-            for (int i = 0; i < bodyLen; i++) body[i] = r.GetByte();
+            if (bodyLen <= 0) return;
 
-            NetDataReader inner;
-            if ((flags & 0x01) != 0)
+            // The old per-byte GetByte() loop threw on truncated packets;
+            // BlockCopy only validates against the *physical* array length
+            // (LiteNetLib reuses oversized receive buffers), so we must
+            // bounds-check the reader's logical size ourselves or a
+            // truncated/corrupt frame would silently read trailing garbage.
+            if (bodyLen > r.AvailableBytes)
             {
-                byte[] decompressed = ZdoCompression.Decompress(body, innerLen);
-                inner = new NetDataReader(decompressed);
-            }
-            else
-            {
-                inner = new NetDataReader(body);
+                Plugin.Log.LogWarning($"[ZdoEventDispatcher] truncated event frame from sender {senderId}: bodyLen={bodyLen} > available={r.AvailableBytes}");
+                return;
             }
 
-            int nameHash = inner.GetInt();
-            if (_byNameHash.TryGetValue(nameHash, out var entry))
+            // Rent, don't allocate — this path runs per incoming event
+            // packet. NB: pooled buffers may be LARGER than bodyLen, so
+            // every consumer below must be bounded by bodyLen explicitly
+            // and never rely on body.Length.
+            byte[] body = System.Buffers.ArrayPool<byte>.Shared.Rent(bodyLen);
+            try
             {
-                entry.handler(inner, senderId);
+                Buffer.BlockCopy(r.RawData, r.Position, body, 0, bodyLen);
+                r.SkipBytes(bodyLen);
+
+                NetDataReader inner;
+                if ((flags & 0x01) != 0)
+                {
+                    // 3-arg overload bounds the zstd read to bodyLen — the
+                    // pooled buffer carries stale bytes past the real frame.
+                    byte[] decompressed = ZdoCompression.Decompress(body, bodyLen, innerLen);
+                    inner = new NetDataReader(decompressed);
+                }
+                else
+                {
+                    // (source, offset, maxSize) ctor caps the readable
+                    // length at bodyLen; the plain (byte[]) ctor would
+                    // expose the pooled buffer's oversized tail to handlers.
+                    inner = new NetDataReader(body, 0, bodyLen);
+                }
+
+                int nameHash = inner.GetInt();
+                if (_byNameHash.TryGetValue(nameHash, out var entry))
+                {
+                    // Handler runs synchronously here, before the finally
+                    // returns the pooled buffer that 'inner' may wrap.
+                    entry.handler(inner, senderId);
+                }
+                else
+                {
+                    Plugin.Log.LogWarning($"[ZdoEventDispatcher] unknown event hash {nameHash:X8} from sender {senderId}");
+                }
             }
-            else
+            finally
             {
-                Plugin.Log.LogWarning($"[ZdoEventDispatcher] unknown event hash {nameHash:X8} from sender {senderId}");
+                System.Buffers.ArrayPool<byte>.Shared.Return(body, clearArray: false);
             }
         }
         catch (Exception ex)

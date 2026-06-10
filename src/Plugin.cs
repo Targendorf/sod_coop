@@ -376,6 +376,16 @@ public class Plugin : BasePlugin
         WorldReadyGate.OnWorldUnready += () =>
         {
             try { ZdoMan.Clear(); } catch (System.Exception ex) { Log.LogWarning($"ZdoMan.Clear: {ex.Message}"); }
+            // The citizen roster cache must drop with the world too. Its
+            // count-change rebuild heuristic can't detect "same city (or a
+            // city with an identical citizen count) reloaded via a path that
+            // skips SodCommonBridge.OnBeforeLoad" — e.g. return-to-menu then
+            // re-host the same seed: 336 == 336 means no rebuild, and every
+            // per-citizen poller would silently iterate destroyed Human refs
+            // (Unity null-equality makes them all skip) for the whole
+            // session — a total citizen-sync outage with no errors logged.
+            try { SoDCoop.Zdo.Pollers.CitizenRosterCache.Reset(); }
+            catch (System.Exception ex) { Log.LogWarning($"CitizenRosterCache.Reset: {ex.Message}"); }
         };
 
         Log.LogInfo("Initializing remote player manager...");
@@ -479,6 +489,9 @@ public class CoopUpdateRunner : MonoBehaviour
             // now runs on the thread pool; this ships it whenever a worker
             // finishes. No-op when the queue is empty.
             SoDCoop.Zdo.ZdoMan.PumpPendingSnapshotSends();
+            // Drain amortized joiner-side resolver applies (snapshot restore /
+            // post-load catch-up) at a bounded per-frame rate. No-op when empty.
+            SoDCoop.Zdo.ZdoMan.PumpPendingResolverApplies();
             // Drive registered host-side pollers (doors, lights, citizens, …).
             SoDCoop.Zdo.ZdoPollerHost.Tick(Time.unscaledTime);
         }

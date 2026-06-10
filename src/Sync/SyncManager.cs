@@ -321,14 +321,15 @@ public static class SyncManager
             {
                 CaseSync?.OnPacketReceived(type, reader, senderId);
             }
-            
-            if (type == PacketType.TimeSync)
+            // NOTE: the branches below are part of the same else-if chain on
+            // purpose — a packet matches at most ONE handler, preventing
+            // double-dispatch if a future type overlaps a range branch above.
+            else if (type == PacketType.TimeSync)
             {
                 TimeSync?.OnPacketReceived(type, reader, senderId);
             }
-
             // Chat / UI packets (80-99)
-            if (type == PacketType.ChatMessage)
+            else if (type == PacketType.ChatMessage)
             {
                 CoopUI.OnChatPacketReceived(reader, senderId);
             }

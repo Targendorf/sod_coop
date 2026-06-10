@@ -66,11 +66,21 @@ public static class ZdoCompression
     }
 
     public static byte[] Decompress(byte[] data, int expectedLen)
+        => Decompress(data, data?.Length ?? 0, expectedLen);
+
+    /// <summary>Decompress exactly <paramref name="dataLen"/> bytes from the
+    /// start of <paramref name="data"/>. Exists for callers handing in pooled
+    /// (<see cref="System.Buffers.ArrayPool{T}"/>) buffers — those can be
+    /// LARGER than the logical payload, so reading <c>data.Length</c> bytes
+    /// (as the 2-arg overload does) would feed zstd trailing garbage past the
+    /// real frame and corrupt or fail the decode. Used by
+    /// <see cref="ZdoEventDispatcher.Dispatch"/>'s rented receive buffer.</summary>
+    public static byte[] Decompress(byte[] data, int dataLen, int expectedLen)
     {
-        if (data == null || data.Length == 0) return Array.Empty<byte>();
+        if (data == null || dataLen <= 0) return Array.Empty<byte>();
         try
         {
-            return Decompressor.Unwrap(new ReadOnlySpan<byte>(data, 0, data.Length)).ToArray();
+            return Decompressor.Unwrap(new ReadOnlySpan<byte>(data, 0, dataLen)).ToArray();
         }
         catch (Exception ex)
         {

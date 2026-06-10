@@ -49,14 +49,13 @@ public static class CitizenAnimationPoller
     {
         try
         {
-            var dict = CityData.Instance?.citizenDictionary;
-            if (dict == null) return;
+            if (!CitizenRosterCache.TryGetRoster(out var ids, out var citizens)) return;
             int count = 0;
-            foreach (var kv in dict)
+            for (int ci = 0; ci < citizens.Count; ci++)
             {
-                var c = kv.Value;
+                var c = citizens[ci];
                 if (c == null) continue;
-                int id = c.humanID;
+                int id = ids[ci];
                 if (id == 0) continue;
                 global::CitizenAnimationController ac;
                 try { ac = c.animationController; } catch { continue; }
@@ -99,23 +98,24 @@ public static class CitizenAnimationPoller
     {
         try
         {
-            var dict = CityData.Instance?.citizenDictionary;
-            if (dict == null) return;
+            // Shared managed roster — avoids re-enumerating the Il2Cpp
+            // citizenDictionary (per-element native calls) every tick.
+            if (!CitizenRosterCache.TryGetRoster(out var ids, out var citizens)) return;
 
             // Cold-start guard: if WarmupBaseline never ran (or got Reset between
             // ticks) the diff loop would treat the entire roster as fresh and
-            // emit one event per citizen. Detect this by checking _last vs dict
+            // emit one event per citizen. Detect this by checking _last vs roster
             // size — when the baseline is grossly under-populated, fall back to
             // a silent reseed and skip the broadcast pass for this tick.
-            int dictCount = dict.Count;
-            if (dictCount > 0 && _last.Count < dictCount / 2)
+            int rosterCount = citizens.Count;
+            if (rosterCount > 0 && _last.Count < rosterCount / 2)
             {
                 int reseed = 0;
-                foreach (var kv in dict)
+                for (int ci = 0; ci < citizens.Count; ci++)
                 {
-                    var cc = kv.Value;
+                    var cc = citizens[ci];
                     if (cc == null) continue;
-                    int cid = cc.humanID;
+                    int cid = ids[ci];
                     if (cid == 0) continue;
                     global::CitizenAnimationController cac;
                     try { cac = cc.animationController; } catch { continue; }
@@ -132,11 +132,11 @@ public static class CitizenAnimationPoller
 
             int sent = 0;
             int suppressed = 0;
-            foreach (var kv in dict)
+            for (int ci = 0; ci < citizens.Count; ci++)
             {
-                var c = kv.Value;
+                var c = citizens[ci];
                 if (c == null) continue;
-                int id = c.humanID;
+                int id = ids[ci];
                 if (id == 0) continue;
 
                 global::CitizenAnimationController ac;

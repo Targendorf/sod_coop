@@ -78,8 +78,9 @@ public static class NpcDamagePoller
     {
         try
         {
-            var dict = CityData.Instance?.citizenDictionary;
-            if (dict == null) return;
+            // Shared managed roster — avoids re-enumerating the Il2Cpp
+            // citizenDictionary (per-element native calls) every tick.
+            if (!CitizenRosterCache.TryGetRoster(out var ids, out var citizens)) return;
 
             // Baseline pass: snapshot, no broadcast (avoids re-emitting
             // every saved citizen's prior-session damage on first tick).
@@ -87,20 +88,20 @@ public static class NpcDamagePoller
             {
                 _initialized = true;
                 _last.Clear();
-                foreach (var kv in dict)
+                for (int ci = 0; ci < citizens.Count; ci++)
                 {
-                    var c = kv.Value;
+                    var c = citizens[ci];
                     if (c == null) continue;
-                    _last[c.humanID] = c.currentHealth;
+                    _last[ids[ci]] = c.currentHealth;
                 }
                 return;
             }
 
-            foreach (var kv in dict)
+            for (int ci = 0; ci < citizens.Count; ci++)
             {
-                var c = kv.Value;
+                var c = citizens[ci];
                 if (c == null) continue;
-                int   id  = c.humanID;
+                int   id  = ids[ci];
                 float cur = c.currentHealth;
 
                 if (!_last.TryGetValue(id, out float prev))

@@ -37,13 +37,14 @@ public static class MurderPoller
     {
         try
         {
-            var dict = CityData.Instance?.citizenDictionary;
-            if (dict == null) return;
+            // Shared managed roster — avoids re-enumerating the Il2Cpp
+            // citizenDictionary (per-element native calls) every tick.
+            if (!CitizenRosterCache.TryGetRoster(out var ids, out var citizens)) return;
 
-            foreach (var kv in dict)
+            for (int ci = 0; ci < citizens.Count; ci++)
             {
-                int id = kv.Key;
-                var c = kv.Value;
+                int id = ids[ci];
+                var c = citizens[ci];
                 if (c == null) continue;
 
                 bool dead = false;
