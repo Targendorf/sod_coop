@@ -269,6 +269,85 @@ public static class TwinManager
             if (FreezeTwin(humanID)) frozen++;
         }
         if (frozen > 0) Plugin.Log.LogInfo($"[TwinManager] froze {frozen} twin(s) (NewAIController disabled).");
+
+        HideOwnTwinBody();
+    }
+
+    /// <summary>Hide the LOCAL player's own twin so they don't walk past a
+    /// frozen copy of themselves.
+    ///
+    /// <para>The twin has to keep existing: it is the citizen record every
+    /// machine attributes this player's fingerprints, footprints and other
+    /// forensic traces to, so deleting it would break evidence. It just has no
+    /// reason to be <i>visible</i> on the owner's own machine — the owner is
+    /// <c>Player.Instance</c>, and the twin is a motionless duplicate standing
+    /// wherever it was first claimed.</para>
+    ///
+    /// <para>Renderers are disabled rather than the GameObject deactivated:
+    /// switching the object off would take the <c>Human</c> component, and with
+    /// it the forensic record and every lookup through
+    /// <c>citizenDictionary</c>, down with it.</para>
+    ///
+    /// <para>OTHER players' twins are deliberately left alone — since 54a3512
+    /// they ARE the visible body of a remote player.</para></summary>
+    /// <summary>Id of the twin whose renderers we have already switched off, so
+    /// the per-frame call is an int compare in the steady state instead of a
+    /// GetComponentsInChildren walk. Reset on world unload — a reload rebuilds
+    /// the citizen hierarchy with its renderers back on.</summary>
+    private static int _ownTwinHidden;
+
+    public static void HideOwnTwinBody()
+    {
+        try
+        {
+            int myTwin = SoDCoop.Network.NetworkManager.MyTwinHumanID;
+            if (myTwin <= 0) return;
+            // The twin id only becomes known at handshake, well after
+            // FreezeAllTwins runs, so this is also called from the frame
+            // cascade until it lands.
+            if (_ownTwinHidden == myTwin) return;
+            SetTwinRenderersEnabled(myTwin, false);
+            _ownTwinHidden = myTwin;
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[TwinManager] HideOwnTwinBody: {ex.Message}"); }
+    }
+
+    /// <summary>Forget which twin we hid. Called on world unload / session end
+    /// so the next world re-hides against its freshly built citizen rig.</summary>
+    public static void ResetOwnTwinHidden() => _ownTwinHidden = 0;
+
+    /// <summary>Put a twin's renderers back. Called when the player releases a
+    /// twin (character reset) so a citizen that returns to the city's normal
+    /// population isn't left invisible.</summary>
+    public static void ShowTwinBody(int humanID) => SetTwinRenderersEnabled(humanID, true);
+
+    private static void SetTwinRenderersEnabled(int humanID, bool enabled)
+    {
+        try
+        {
+            var city = global::CityData.Instance;
+            if (city == null || city.citizenDictionary == null) return;
+            if (!city.citizenDictionary.TryGetValue(humanID, out var human) || human == null) return;
+            var go = human.gameObject;
+            if (go == null) return;
+
+            // includeInactive: true — parts of SoD's citizen rig sit on
+            // inactive children (held items, alternate meshes) and would
+            // otherwise reappear the moment the game enables them.
+            var renderers = go.GetComponentsInChildren<UnityEngine.Renderer>(true);
+            if (renderers == null) return;
+            int n = 0;
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                var r = renderers[i];
+                if (r == null || r.enabled == enabled) continue;
+                r.enabled = enabled;
+                n++;
+            }
+            if (n > 0)
+                Plugin.Log.LogInfo($"[TwinManager] own twin #{humanID}: {(enabled ? "showed" : "hid")} {n} renderer(s).");
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[TwinManager] SetTwinRenderersEnabled({humanID},{enabled}): {ex.Message}"); }
     }
 
     /// <summary>
@@ -322,7 +401,15 @@ public static class TwinManager
             string name = $"{rec.FirstName} {rec.Surname}".Trim();
 
             CharacterStore.Delete(seed, clientGuid);
-            if (humanID > 0) UnfreezeTwin(humanID);
+            if (humanID > 0)
+            {
+                UnfreezeTwin(humanID);
+                // The citizen rejoins the normal population — it must be
+                // visible again, and the hide must be re-evaluated for
+                // whatever twin replaces it.
+                ShowTwinBody(humanID);
+                if (_ownTwinHidden == humanID) _ownTwinHidden = 0;
+            }
 
             Plugin.Log.LogInfo($"[TwinManager] released character \"{name}\" (humanID={humanID}, client={clientGuid}); citizen rejoins simulation.");
             return true;

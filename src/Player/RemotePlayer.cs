@@ -27,8 +27,17 @@ public class RemotePlayer : MonoBehaviour
 
     #region Tuning
 
-    /// <summary>How far behind realtime to render. Larger = smoother but more lag.</summary>
-    private const float INTERP_DELAY = 0.10f;
+    /// <summary>How far behind realtime to render. Larger = smoother but more
+    /// lag.
+    ///
+    /// <para>Must cover at least two send intervals, otherwise one lost packet
+    /// leaves no snapshot newer than the render time and playback falls into
+    /// velocity extrapolation — a visible hitch. Position packets go out
+    /// Sequenced (unreliable, no retransmit), so losing one is routine, not
+    /// exceptional. Paired with PlayerSync's 50 ms walk / 33 ms run cadence,
+    /// 120 ms is ~2.4 and ~3.6 intervals respectively. The extra 20 ms over the
+    /// old value is not perceptible; the hitch it removes was.</para></summary>
+    private const float INTERP_DELAY = 0.12f;
 
     /// <summary>Max time we'll extrapolate past the newest snapshot before freezing.</summary>
     private const float MAX_EXTRAPOLATION = 0.25f;
@@ -39,7 +48,9 @@ public class RemotePlayer : MonoBehaviour
     /// <summary>Snapshot ring capacity. ~12 covers ~600ms of history at 20Hz.</summary>
     private const int BUFFER_CAPACITY = 12;
 
-    /// <summary>Rotation slerp speed when applying interpolated target each frame.</summary>
+    /// <summary>Rotation smoothing rate, per second. Fed through an
+    /// exponential so the result is frame-rate independent — see
+    /// <see cref="SmoothingFactor"/>.</summary>
     private const float ROTATION_LERP_SPEED = 18f;
 
     #endregion
@@ -294,13 +305,28 @@ public class RemotePlayer : MonoBehaviour
         // and CurrentPosition even when the twin is the visible body.
         transform.position = targetPos;
         // Slight rotation easing to mask packet jitter on yaw.
-        transform.rotation = Quaternion.Slerp(transform.rotation, targetRot, Time.unscaledDeltaTime * ROTATION_LERP_SPEED);
+        transform.rotation = Quaternion.Slerp(transform.rotation, targetRot,
+            SmoothingFactor(ROTATION_LERP_SPEED, Time.unscaledDeltaTime));
 
         // Prefer the twin citizen as this player's body. Falls back to the
         // stand-in clone when no twin is assigned yet.
         if (!DriveTwin(targetPos))
             DriveAnimator();
     }
+
+    /// <summary>Frame-rate-independent exponential smoothing factor.
+    ///
+    /// <para>The old form was <c>Slerp(a, b, dt * rate)</c>, which makes the
+    /// amount of smoothing depend on frame rate: at 60 FPS that is t≈0.30 per
+    /// frame, at 30 FPS t≈0.60, and past ~55 ms per frame it exceeds 1 and
+    /// clamps, turning the ease into a snap. So remote players turned at
+    /// visibly different rates depending on the viewer's FPS — and worst
+    /// exactly when the host was hitching. <c>1 - exp(-rate·dt)</c> converges
+    /// at the same real-world rate regardless of how the frame time is
+    /// carved up.</para></summary>
+    [HideFromIl2Cpp]
+    private static float SmoothingFactor(float rate, float dt)
+        => 1f - Mathf.Exp(-rate * Mathf.Max(dt, 0f));
 
     // ── Twin-driven body ────────────────────────────────────────────────
     //

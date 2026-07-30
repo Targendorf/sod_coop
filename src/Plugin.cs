@@ -395,6 +395,10 @@ public class Plugin : BasePlugin
             // session — a total citizen-sync outage with no errors logged.
             try { SoDCoop.Zdo.Pollers.CitizenRosterCache.Reset(); }
             catch (System.Exception ex) { Log.LogWarning($"CitizenRosterCache.Reset: {ex.Message}"); }
+            // Forget which twin we hid — the reload rebuilds the citizen rig
+            // with its renderers back on, so the hide has to be re-applied.
+            try { SoDCoop.Sync.TwinManager.ResetOwnTwinHidden(); }
+            catch (System.Exception ex) { Log.LogWarning($"TwinManager.ResetOwnTwinHidden: {ex.Message}"); }
         };
 
         Log.LogInfo("Initializing remote player manager...");
@@ -490,6 +494,10 @@ public class CoopUpdateRunner : MonoBehaviour
             // SoDCoop.Sync.InventorySync.Update();
             SoDCoop.Sync.HostStatusSync.Update();
             SoDCoop.Sync.PlayerSuspicionSync.Update();
+            // Hide our own twin once its id lands (it arrives at handshake,
+            // after FreezeAllTwins has already run). Guarded by an id compare,
+            // so this is two field reads once it's done.
+            SoDCoop.Sync.TwinManager.HideOwnTwinBody();
             // Interpolate + apply host-authoritative citizen positions. Must run
             // every frame (not on the poller cadence) — it renders between 10 Hz
             // snapshots, same contract as RemotePlayer. No-op on the host and

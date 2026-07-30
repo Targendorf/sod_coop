@@ -81,9 +81,17 @@ public static class CitizenPositionSync
     private const int MAX_ENTRIES_PER_PACKET = 60;
 
     /// <summary>Render this far behind the newest snapshot so there is always a
-    /// later sample to interpolate towards. One send interval plus a little
-    /// slack.</summary>
-    private const float INTERP_DELAY_S = 0.12f;
+    /// later sample to interpolate towards.
+    ///
+    /// <para>Must cover at least two send intervals. At <see cref="SYNC_HZ"/>
+    /// = 10 that is 100 ms apart, so the original 120 ms left only 1.2
+    /// intervals of slack: any packet arriving even slightly late — and these
+    /// go out Sequenced, unreliable and with no retransmit — left no sample
+    /// newer than the render time, so the citizen stalled on its last known
+    /// position and then jumped when the next one landed. 250 ms gives 2.5
+    /// intervals and rides out a dropped packet. The added latency is
+    /// irrelevant for ambient pedestrians; the stutter was not.</para></summary>
+    private const float INTERP_DELAY_S = 0.25f;
 
     /// <summary>Jump further than this between snapshots and we snap instead of
     /// interpolating — the citizen was teleported by SoD (lift, vehicle, spawn)

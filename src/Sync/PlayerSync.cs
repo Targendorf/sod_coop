@@ -16,7 +16,16 @@ public class PlayerSync
 
     // Send-rate buckets, picked by current speed.
     private const float RATE_IDLE     = 0.25f;  // 4 Hz keepalive when standing still
-    private const float RATE_WALK     = 1f / 15f;
+    // 20 Hz (50 ms), raised from 15 Hz (66.7 ms). The receiver renders
+    // RemotePlayer.INTERP_DELAY behind the newest snapshot and needs a NEWER
+    // snapshot to interpolate towards; at 66.7 ms spacing a 120 ms delay left
+    // barely one interval of slack, so a SINGLE dropped packet — and these go
+    // out Sequenced, i.e. unreliable with no retransmit — dropped the receiver
+    // into velocity extrapolation and produced a visible hitch. Walking is
+    // where players spend most of their time, so it was also the most visible
+    // case. At 50 ms the delay covers ~2.4 intervals and rides out a drop.
+    // Costs ~5 extra packets/s per player, a few hundred bytes.
+    private const float RATE_WALK     = 1f / 20f;
     private const float RATE_RUN      = 1f / 30f;
     private const float SPEED_WALK    = 0.15f;  // m/s threshold above which we count as moving
     private const float SPEED_RUN     = 3.0f;   // ~jog/run threshold
