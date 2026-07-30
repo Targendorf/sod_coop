@@ -490,6 +490,11 @@ public class CoopUpdateRunner : MonoBehaviour
             // SoDCoop.Sync.InventorySync.Update();
             SoDCoop.Sync.HostStatusSync.Update();
             SoDCoop.Sync.PlayerSuspicionSync.Update();
+            // Interpolate + apply host-authoritative citizen positions. Must run
+            // every frame (not on the poller cadence) — it renders between 10 Hz
+            // snapshots, same contract as RemotePlayer. No-op on the host and
+            // when nothing is being driven.
+            CoopPerf.Sample("npcpos", () => SoDCoop.Sync.CitizenPositionSync.Update());
             // Drive registered host-side pollers (doors, lights, citizens, …)
             // BEFORE the delta flush — pollers mark ZDOs dirty + enqueue
             // batched events, then the flush ships both in the same frame.

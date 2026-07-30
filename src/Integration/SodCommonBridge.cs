@@ -94,6 +94,11 @@ public static class SodCommonBridge
                     SoDCoop.Zdo.Pollers.CitizenStatePoller.ResetBaseline();
                     SoDCoop.Zdo.Pollers.SpeechBubblePoller.ResetBaseline();
                     SoDCoop.Zdo.Pollers.SocialCreditPoller.ResetBaseline();
+                    // Network-driven citizens: drop the driven set before SoD
+                    // destroys the citizens. Otherwise the dictionary holds
+                    // destroyed Human refs, and the AI re-enable on release
+                    // would be aimed at dead components.
+                    SoDCoop.Sync.CitizenPositionSync.Reset();
                     // Round 8 (2026-05-08): scan caches for the heavy
                     // GetComponentInChildren-based pollers. Without these
                     // resets, save-load would leave the caches pointing at

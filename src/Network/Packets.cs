@@ -727,5 +727,18 @@ public enum PacketType : byte
     /// re-sync was accepted rather than silently dropped).</summary>
     SaveTransferComplete = 209,
 
+    /// <summary>Host → one client: positions of the citizens currently near
+    /// THAT client, so both players see the same people in the same places.
+    /// Body: <c>byte count</c> then <c>count ×</c> {<c>int humanId,
+    /// float x, float y, float z</c>}.
+    ///
+    /// <para>Sent <see cref="DeliveryMethod.Sequenced"/> — pure overwrite
+    /// state, where a late packet is worthless because the next supersedes it,
+    /// and reliable delivery would head-of-line block real state transitions
+    /// behind retransmits of stale positions. Per-peer rather than broadcast
+    /// because a client only needs the citizens near itself; see
+    /// <c>CitizenPositionSync</c>.</para></summary>
+    CitizenPositions     = 210,
+
     #endregion
 }

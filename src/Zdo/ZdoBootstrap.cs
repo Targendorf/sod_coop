@@ -27,6 +27,10 @@ public static class ZdoBootstrap
         SwitchPoller.Register();
         ZdoResolverRegistry.Register(new CitizenResolver());
         CitizenStatePoller.Register();
+        // Position replication for citizens near each peer. Registered right
+        // after CitizenStatePoller because it consumes the HostPosition that
+        // poller stamps — it reads no SoD fields of its own.
+        SoDCoop.Sync.CitizenPositionSync.Register();
         // Per-citizen idle/arms anim state (host → clients via ZdoEventRpc).
         // Mode is configurable via CoopSettings.CitizenAnimSync:
         //   Disabled — no poller, SoD AI is deterministic from the same seed.

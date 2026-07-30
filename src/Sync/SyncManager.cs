@@ -116,6 +116,10 @@ public static class SyncManager
         // `IsConnected && !IsHost` gate covers that, but the flag should not
         // outlive its session on its own).
         try { WorldAutoLoad.Reset(); } catch { }
+        // Hand every network-driven citizen back to its local AI. A citizen
+        // left with ai.enabled=false after the session ends would stand
+        // motionless in the player's own single-player game.
+        try { CitizenPositionSync.Reset(); } catch { }
         Plugin.Log.LogInfo($"SyncManager deactivated: {reason}");
     }
     
@@ -161,6 +165,11 @@ public static class SyncManager
             //    early-return block (before legacy fan-out) because the enum
             //    values 207-209 don't match any legacy range and would
             //    otherwise fall through to no handler and silently drop.
+            if (type == PacketType.CitizenPositions)
+            {
+                SoDCoop.Sync.CitizenPositionSync.HandlePacket(reader, senderId);
+                return;
+            }
             if (type == PacketType.SaveTransferHeader)
             {
                 SoDCoop.Sync.SaveTransfer.HandleHeader(reader, senderId);

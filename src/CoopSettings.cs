@@ -151,6 +151,13 @@ public static class CoopSettings
     /// saves.</summary>
     public static ConfigEntry<bool> SaveTransferForceSaveOnJoin;
 
+    /// <summary>Host-authoritative position replication for citizens near each
+    /// client. On by default: without it nothing syncs citizen positions at all
+    /// and the two players drift into seeing the same person in different
+    /// places, because only SoD's citizen *schedule* is deterministic from the
+    /// seed — the movement execution is not. See <c>CitizenPositionSync</c>.</summary>
+    public static ConfigEntry<bool> SyncCitizenPositions;
+
     /// <summary>How NPC idle/arms animation states (sweeping, cooking, typing,
     /// etc.) are synced from host to clients. <see cref="CitizenAnimSyncMode"/>
     /// for options.</summary>
@@ -218,6 +225,13 @@ public static class CoopSettings
             "save/load. Writes to a dedicated coop file — never over your own saves. Off by default " +
             "because saving mid-session this way is not yet playtest-verified; leave it off and just " +
             "save before friends join for the same result.");
+
+        SyncCitizenPositions = config.Bind(
+            "Networking", "SyncCitizenPositions", true,
+            "Host sends the positions of citizens near each client so both players see the same " +
+            "people in the same places. Clients freeze those citizens' local AI and drive them from " +
+            "the host instead. Turn off to fall back to purely local NPC simulation (cheaper, but " +
+            "the two worlds drift apart visibly over a session).");
 
         CitizenAnimSync = config.Bind(
             "Performance", "CitizenAnimSync", CitizenAnimSyncMode.Auto,

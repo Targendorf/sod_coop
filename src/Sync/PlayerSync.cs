@@ -189,8 +189,21 @@ public class PlayerSync
     {
         byte flags = 0;
         if (speed >= SPEED_RUN) flags |= (byte)MovementFlags.Running;
-        // Crouch/Grounded reads disabled until we confirm SoD's Player API field names —
-        // the protocol bits are preserved so we can flip them on without a wire change.
+
+        // Crouch. The whole receive path for this bit was already built and
+        // working — RemotePlayer reads MovementFlags.Crouching and feeds the
+        // animator's crouch bool — but the SENDER never set it, so remote
+        // players never appeared crouched. The old blocker here was "field name
+        // unconfirmed"; it's confirmed: `isCrouched` is declared on Actor
+        // (Assembly-CSharp_Dump/Actor.cs:2187), Player extends Human extends
+        // Actor, and CitizenStatePoller already reads `c.isCrouched` on every
+        // citizen every tick.
+        try
+        {
+            var self = global::Player.Instance;
+            if (self != null && self.isCrouched) flags |= (byte)MovementFlags.Crouching;
+        }
+        catch { /* mid-init / field drift — fall through without the bit */ }
 
         var packet = new PlayerPositionPacket
         {
