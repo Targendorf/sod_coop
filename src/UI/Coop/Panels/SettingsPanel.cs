@@ -20,16 +20,29 @@ public class SettingsPanel : CoopPanelBase
 {
     protected override string Title => L.Get("settings.title");
 
+    // Settings now has: 4 overlay toggles + language block + networking
+    // section (2 toggles + note) + back. That's ~14 rows — doesn't fit
+    // comfortably in the default 520px panel height. Scrollable + a bit
+    // taller keeps everything reachable without truncation.
+    protected override float PanelHeight => 620f;
+    protected override bool  ScrollableBody => true;
+
     private Button _statusBtn;
     private Button _chatBtn;
     private Button _nameTagsBtn;
     private Button _bannersBtn;
+    private Button _worldBootstrapBtn;
+    private Button _saveTransferAutoBtn;
+    private Button _citizenAnimBtn;
 
     protected override void BuildBody()
     {
         WrappedBodyLabel(L.Get("settings.tagline"),
             CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelMuted);
         Spacer(12f);
+
+        // ── Overlays section ────────────────────────────────────────────
+        SectionHeader("Overlays");
 
         string lblStatus  = L.Get("settings.toggle.statusHud");
         string lblChat    = L.Get("settings.toggle.chat");
@@ -52,16 +65,81 @@ public class SettingsPanel : CoopPanelBase
             BuildLabel(lblBanners, CoopSettings.ShowOverlayBanners),
             () => Toggle(CoopSettings.ShowOverlayBanners, _bannersBtn, lblBanners));
 
-        Spacer(8f);
+        Spacer(14f);
 
-        BodyLabel(L.Get("settings.label.language"), CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);
+        // ── Language section ────────────────────────────────────────────
+        SectionHeader(L.Get("settings.label.language"));
         WrappedBodyLabel(L.Get("settings.lang.note"),
+            CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
+
+        Spacer(14f);
+
+        // ── Networking section ──────────────────────────────────────────
+        // World bootstrap mode + save-transfer auto-accept. Host-side
+        // settings; affect how a joining client acquires the host's world.
+        SectionHeader(L.Get("settings.section.networking"));
+
+        _worldBootstrapBtn = CoopMenuFactory.MenuButton("ToggleWorldBootstrap", Body,
+            BuildWorldBootstrapLabel(),
+            () => CycleWorldBootstrap());
+
+        _saveTransferAutoBtn = CoopMenuFactory.MenuButton("ToggleSaveTransferAuto", Body,
+            BuildLabel(L.Get("settings.toggle.saveTransferAuto"), CoopSettings.SaveTransferAutoAccept),
+            () => Toggle(CoopSettings.SaveTransferAutoAccept, _saveTransferAutoBtn, L.Get("settings.toggle.saveTransferAuto")));
+
+        WrappedBodyLabel(L.Get("settings.note.worldBootstrap"),
+            CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
+
+        Spacer(14f);
+
+        // ── Performance section ─────────────────────────────────────────
+        SectionHeader("Performance");
+
+        _citizenAnimBtn = CoopMenuFactory.MenuButton("ToggleCitizenAnim", Body,
+            BuildCitizenAnimLabel(),
+            () => CycleCitizenAnim());
+
+        WrappedBodyLabel("NPC animation sync: Disabled = best perf (minor visual lag near NPCs). " +
+            "Auto = scan only nearby NPCs (recommended). Fixed Hz = scan all NPCs (smoothest, heaviest).",
             CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
 
         Spacer(20f);
 
         CoopMenuFactory.MenuButton("Back", Body, L.Get("settings.btn.back"),
             () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Main));
+    }
+
+    /// <summary>A small amber-tinted section divider with a label. Gives
+    /// visual grouping between Overlays / Language / Networking so the
+    /// settings panel reads as structured rather than a flat button list.
+    /// Replaces the bare <c>BodyLabel</c> section headers that blended into
+    /// the surrounding content.</summary>
+    private void SectionHeader(string text)
+    {
+        var go = CoopMenuFactory.Group("Section", Body);
+        var rt = go.GetComponent<RectTransform>();
+        rt.sizeDelta = new(0, 28f);
+        var le = go.AddComponent<LayoutElement>();
+        le.preferredHeight = 28f;
+        le.flexibleWidth = 1f;
+
+        // Thin amber underline (top of section).
+        var lineGo = new GameObject("Underline");
+        lineGo.transform.SetParent(go.transform, false);
+        var lineRt = lineGo.AddComponent<RectTransform>();
+        lineRt.anchorMin = new(0f, 0f); lineRt.anchorMax = new(1f, 0f);
+        lineRt.offsetMin = new(0f, 0f); lineRt.offsetMax = new(0f, 1f);
+        var lineImg = lineGo.AddComponent<Image>();
+        lineImg.color = new Color(CoopMenuTheme.PanelBorder.r, CoopMenuTheme.PanelBorder.g,
+                                  CoopMenuTheme.PanelBorder.b, 0.5f);
+        lineImg.raycastTarget = false;
+
+        var t = CoopMenuFactory.Label("Text", go.transform, text,
+            CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelTitle,
+            TextAnchor.LowerLeft, FontStyle.Bold);
+        var tRt = t.GetComponent<RectTransform>();
+        tRt.offsetMin = new(2f, 4f);
+        tRt.offsetMax = new(-2f, -2f);
     }
 
     public override void Show()
@@ -78,6 +156,70 @@ public class SettingsPanel : CoopPanelBase
         SetButtonLabel(_chatBtn,     BuildLabel(L.Get("settings.toggle.chat"),      CoopSettings.ShowChatWindow));
         SetButtonLabel(_nameTagsBtn, BuildLabel(L.Get("settings.toggle.nameTags"),  CoopSettings.ShowNameTags));
         SetButtonLabel(_bannersBtn,  BuildLabel(L.Get("settings.toggle.banners"),   CoopSettings.ShowOverlayBanners));
+        SetButtonLabel(_worldBootstrapBtn,    BuildWorldBootstrapLabel());
+        SetButtonLabel(_saveTransferAutoBtn,  BuildLabel(L.Get("settings.toggle.saveTransferAuto"), CoopSettings.SaveTransferAutoAccept));
+        SetButtonLabel(_citizenAnimBtn,       BuildCitizenAnimLabel());
+    }
+
+    /// <summary>Build the WorldBootstrap button label from the current enum
+    /// value. SaveTransfer → "World bootstrap: Save Transfer"; ShareCode →
+    /// "World bootstrap: Share Code". The label doubles as the visible
+    /// state — no separate checkbox because this is a 2-way enum, not a
+    /// bool.</summary>
+    private static string BuildWorldBootstrapLabel()
+    {
+        var mode = CoopSettings.WorldBootstrap?.Value ?? WorldBootstrapMode.SaveTransfer;
+        // Reuse the two distinct translation keys so each mode's label is
+        // localisable independently.
+        return mode == WorldBootstrapMode.ShareCode
+            ? "[●]  " + L.Get("settings.toggle.worldBootstrap.sharecode")
+            : "[●]  " + L.Get("settings.toggle.worldBootstrap");
+    }
+
+    /// <summary>Cycle WorldBootstrap between SaveTransfer and ShareCode.
+    /// Two-state cycle (not a true cycle for a 2-value enum, but named
+    /// Cycle for symmetry with future expansion if a third mode is added).
+    /// Logs the flip for debugging.</summary>
+    private void CycleWorldBootstrap()
+    {
+        if (CoopSettings.WorldBootstrap == null) return;
+        var current = CoopSettings.WorldBootstrap.Value;
+        var next = current == WorldBootstrapMode.SaveTransfer
+            ? WorldBootstrapMode.ShareCode
+            : WorldBootstrapMode.SaveTransfer;
+        CoopSettings.WorldBootstrap.Value = next;
+        Plugin.Log.LogInfo($"[Settings] WorldBootstrap = {next} (was {current})");
+        SetButtonLabel(_worldBootstrapBtn, BuildWorldBootstrapLabel());
+    }
+
+    /// <summary>Label for the NPC animation sync mode button.</summary>
+    private static string BuildCitizenAnimLabel()
+    {
+        var m = CoopSettings.CitizenAnimSync?.Value ?? CitizenAnimSyncMode.Auto;
+        string label = m switch
+        {
+            CitizenAnimSyncMode.Disabled => "NPC Anim Sync: Off",
+            CitizenAnimSyncMode.Auto     => "NPC Anim Sync: Auto (nearby)",
+            _                            => $"NPC Anim Sync: {CoopSettings.CitizenAnimSyncHz?.Value ?? 2} Hz (all)",
+        };
+        return "[●]  " + label;
+    }
+
+    /// <summary>Cycle: Off → Auto → 1Hz → 2Hz → 3Hz → 5Hz → Off.</summary>
+    private void CycleCitizenAnim()
+    {
+        if (CoopSettings.CitizenAnimSync == null) return;
+        var m = CoopSettings.CitizenAnimSync.Value;
+        if (m == CitizenAnimSyncMode.Disabled) { CoopSettings.CitizenAnimSync.Value = CitizenAnimSyncMode.Auto; }
+        else if (m == CitizenAnimSyncMode.Auto) { CoopSettings.CitizenAnimSync.Value = CitizenAnimSyncMode.FixedHz; if (CoopSettings.CitizenAnimSyncHz != null) CoopSettings.CitizenAnimSyncHz.Value = 1; }
+        else
+        {
+            int hz = CoopSettings.CitizenAnimSyncHz?.Value ?? 2;
+            if (hz < 5) { if (CoopSettings.CitizenAnimSyncHz != null) CoopSettings.CitizenAnimSyncHz.Value = hz + 1; }
+            else { CoopSettings.CitizenAnimSync.Value = CitizenAnimSyncMode.Disabled; }
+        }
+        Plugin.Log.LogInfo($"[Settings] CitizenAnimSync = {CoopSettings.CitizenAnimSync.Value}" + (CoopSettings.CitizenAnimSync.Value == CitizenAnimSyncMode.FixedHz ? $" @ {CoopSettings.CitizenAnimSyncHz?.Value}Hz" : ""));
+        SetButtonLabel(_citizenAnimBtn, BuildCitizenAnimLabel());
     }
 
     private static void Toggle(ConfigEntry<bool> entry, Button btn, string baseLabel)

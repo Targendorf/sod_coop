@@ -149,6 +149,14 @@ public static class CitizenVisualCloner
             if (typeName == "MeshRenderer" || typeName == "SkinnedMeshRenderer") continue;
             if (typeName == "MeshFilter") continue;
             if (typeName == "Animator") continue;  // keep skeleton driver; applyRootMotion=false below
+            // Keep CitizenOutfitController — it's what AppearanceConfig.ApplyTo
+            // stamps debugOverride* fields onto and calls LoadCurrentOutfit on
+            // to rebuild the visual. Without it, RemotePlayer clones can't
+            // receive appearance customization (players never see each other's
+            // chosen clothes / hair / skin). The controller on the clone still
+            // references the original citizen's outfits list, which is fine —
+            // we only call debugOverride + LoadCurrentOutfit, not AI logic.
+            if (typeName == "CitizenOutfitController") continue;
 
             try { UnityEngine.Object.Destroy(comp); }
             catch { /* some components refuse — ignore */ }

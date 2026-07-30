@@ -99,6 +99,11 @@ public static class Translations
         ["settings.toggle.banners"]     = "Show overlay banners (sleep / phone)",
         ["settings.label.language"]     = "Language (restart needed)",
         ["settings.lang.note"]          = "Edit BepInEx/config/com.sodcoop.mod.cfg → [General] → LanguageOverride. Use \"auto\" for game language.",
+        ["settings.section.networking"] = "Networking",
+        ["settings.toggle.worldBootstrap"]      = "World bootstrap: Save Transfer",
+        ["settings.toggle.worldBootstrap.sharecode"] = "World bootstrap: Share Code",
+        ["settings.note.worldBootstrap"] = "Save Transfer — host sends its save file, identical world guaranteed. Share Code — client regenerates city from seed (faster connect, may diverge).",
+        ["settings.toggle.saveTransferAuto"]   = "Auto-accept save transfers",
         ["settings.btn.back"]           = "←  Back",
 
         // IpInfo panel

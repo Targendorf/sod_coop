@@ -33,15 +33,39 @@ namespace SoDCoop.Zdo.Pollers;
 /// </summary>
 public static class LocalPlayerPoller
 {
-    public const float TICK_HZ = 1f;
+    /// <summary>Fast-lane tick rate — drives position / rotation / velocity
+    /// writes into the LocalPlayer ZDO. 15 Hz matches the high end of the
+    /// legacy PlayerSync adaptive rate (walk 15 Hz, run 30 Hz) while staying
+    /// well under the ZDO flush rate (10 Hz) so a position write always has
+    /// a flush ready to ship it. Position is the only fast-lane field;
+    /// everything else rides the <see cref="SLOW_EVERY"/> cadence to avoid
+    /// re-dirtying the ZDO 15× per second with continuously-decaying vitals
+    /// / cosmetic flags that only need ~1 Hz.</summary>
+    public const float TICK_HZ = 15f;
     public const string NAME = "local-player";
+
+    /// <summary>How many fast ticks between slow-lane passes. At
+    /// <see cref="TICK_HZ"/>=15 a value of 15 makes the slow lane run at
+    /// ~1 Hz — matching the previous whole-poller rate for vitals /
+    /// apartments / damage-diff / activity.</summary>
+    private const int SLOW_EVERY = 15;
+    private static int _tickCounter;
 
     /// <summary>Below this delta, ignore — SoD's bleed tick can write tiny
     /// fractional drops every frame which we don't want to broadcast.</summary>
     private const float DAMAGE_EPSILON = 1f;
 
+    /// <summary>Position deadband. Player.transform advances every rendered
+    /// frame by a sub-millimetre amount even when "standing still" (camera
+    /// bob, idle sway). Without a deadband Zdo.Set(Vector3) re-dirties the
+    /// ZDO every fast tick → 15 dirty/sec × N peers of pointless position
+    /// serialisation. 1 cm is well below perceptible remote-player jitter.</summary>
+    private const float POSITION_DEADBAND_SQ = 0.01f * 0.01f;
+
     private static bool  _healthInitialized;
     private static float _lastHealth;
+    private static UnityEngine.Vector3 _lastPos;
+    private static bool _posBaselined;
 
     /// <summary>Last-tick set of address IDs the local player owned. Diff
     /// against current tick → diff = (added → SendApartmentOwned add,
@@ -58,6 +82,8 @@ public static class LocalPlayerPoller
         _healthInitialized = false;
         _apartmentsInitialized = false;
         _lastApartmentIds.Clear();
+        _posBaselined = false;
+        _tickCounter = 0;
     }
 
     /// <summary>Resolve the player's current coarse-grained activity from
@@ -105,8 +131,61 @@ public static class LocalPlayerPoller
             var z = ZdoMan.GetOrCreateBySodId(ZdoTypeTag.LocalPlayer, sodId,
                 owner: ZdoMan.LocalPeerUid, persistent: false);
 
-            try { z.Set(ZdoKeys.Pos, p.transform.position); } catch { }
+            // ── FAST LANE (every tick, 15 Hz) ─────────────────────────────
+            // Position / rotation / velocity — the only fields that need
+            // high-rate sync for smooth remote-player interpolation. A
+            // position deadband swallows sub-cm camera-bob jitter so the ZDO
+            // isn't re-dirtied every tick when the player is "standing still".
+            //
+            // IMPORTANT: use Player.playerContainer (world-space body root at
+            // foot level), NOT p.transform (camera-height parent ~1.6m above
+            // the feet). Using .transform made remote players float above the
+            // ground AND produced wild teleport deltas (519m, 1946m) because
+            // the camera rig can be at a very different position during
+            // loading / scene transitions.
+            UnityEngine.Vector3 pos = default;
+            try
+            {
+                var anchor = p.playerContainer;
+                pos = (anchor != null) ? anchor.position : p.transform.position;
+            }
+            catch { pos = p.transform.position; }
+            bool posMoved = true;
+            if (_posBaselined)
+            {
+                float dx = pos.x - _lastPos.x;
+                float dz = pos.z - _lastPos.z;
+                float dy = pos.y - _lastPos.y;
+                posMoved = (dx * dx + dy * dy + dz * dz) >= POSITION_DEADBAND_SQ;
+            }
+            if (posMoved)
+            {
+                try { z.Set(ZdoKeys.Pos, pos); } catch { }
+                // Velocity from position delta over the fast-tick interval.
+                // Receiver's RemotePlayer uses it for short-term extrapolation
+                // when a position delta is late — without it, a stalled packet
+                // freezes the avatar in place instead of coasting.
+                float dt = 1f / TICK_HZ;
+                if (_posBaselined)
+                {
+                    UnityEngine.Vector3 vel = new Vector3(
+                        (pos.x - _lastPos.x) / dt,
+                        (pos.y - _lastPos.y) / dt,
+                        (pos.z - _lastPos.z) / dt);
+                    try { z.Set(ZdoKeys.Velocity, vel); } catch { }
+                }
+                _lastPos = pos;
+                _posBaselined = true;
+            }
             try { z.Set(ZdoKeys.Rot, p.transform.rotation); } catch { }
+
+            // Slow lane fires once every SLOW_EVERY fast ticks (~1 Hz).
+            bool slowTick = (_tickCounter++ % SLOW_EVERY) == 0;
+            if (!slowTick) return;
+
+            // ── SLOW LANE (~1 Hz) ─────────────────────────────────────────
+            // Vitals (continuous-decay floats), discrete state flags, activity,
+            // trespass — all gameplay/HUD fields that don't need 15 Hz.
 
             try { z.Set(ZdoKeys.Nourishment, p.nourishment); } catch { }
             try { z.Set(ZdoKeys.Hydration,   p.hydration);   } catch { }
@@ -165,8 +244,8 @@ public static class LocalPlayerPoller
                 {
                     float delta = _lastHealth - curHealth;
                     bool  lethal = curHealth <= 0f;
-                    Vector3 pos = Vector3.zero;
-                    try { if (p.transform != null) pos = p.transform.position; } catch { }
+                    Vector3 dmgPos = Vector3.zero;
+                    try { if (p.transform != null) dmgPos = p.transform.position; } catch { }
 
                     // Phase G.5 (Wave 1.6): unified RPC via
                     // ZdoEventDispatcher.PLAYER_DAMAGE_RICH instead of legacy
@@ -174,7 +253,7 @@ public static class LocalPlayerPoller
                     // calls PlayerDamageSync.ApplyFromZdo.
                     if (ZdoFeatureFlags.UseZdoForEvents)
                     {
-                        try { ZdoEvents.SendPlayerDamage(-1, delta, pos, Vector3.up, lethal); }
+                        try { ZdoEvents.SendPlayerDamage(-1, delta, dmgPos, Vector3.up, lethal); }
                         catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerPoller] dmg zdo: {ex.Message}"); }
                     }
                     else
@@ -184,7 +263,7 @@ public static class LocalPlayerPoller
                             Sync.PlayerDamageSync.BroadcastDamage(
                                 attackerHumanId: -1,
                                 amount:          delta,
-                                hitPosition:     pos,
+                                hitPosition:     dmgPos,
                                 hitDirection:    Vector3.up,
                                 isLethal:        lethal);
                         }

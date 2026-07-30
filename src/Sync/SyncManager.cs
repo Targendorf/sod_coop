@@ -102,6 +102,20 @@ public static class SyncManager
         // Drop all placement-mock visuals so they don't dangle in the world
         // after we lose the connection.
         try { InventorySync.ClearAllMocks(); } catch { }
+        // Drop any in-flight save-transfer state so a half-shipped transfer
+        // (host side) or half-reassembled save (client side) doesn't leak
+        // across sessions / into a reconnect.
+        try { SaveTransfer.Reset(); } catch { }
+        // Drop joiner-bootstrap state. WorldAutoLoad.Reset had NO callers, so a
+        // join that aborted before WorldReady left IsBootstrappingWorld true
+        // and OnWorldReadyAfterAutoLoad still subscribed — it would then fire
+        // on the player's next SOLO world load and run ApplyAllToLiveWorld +
+        // SendToHost(ClientWorldReady) against a session that no longer exists.
+        // Also clears JoinedSessionActive so the tutorial-suppression patches
+        // stop keying on a dead session (today the compound
+        // `IsConnected && !IsHost` gate covers that, but the flag should not
+        // outlive its session on its own).
+        try { WorldAutoLoad.Reset(); } catch { }
         Plugin.Log.LogInfo($"SyncManager deactivated: {reason}");
     }
     
@@ -141,6 +155,25 @@ public static class SyncManager
             {
                 // Version mismatch is informational; logged + UI surfaced via NetworkManager.
                 Plugin.Log.LogWarning("[SyncManager] received ZdoVersionMismatch — connection will close.");
+                return;
+            }
+            // ── Save-Transfer (Mode 3) bootstrap channel. Handled here in the
+            //    early-return block (before legacy fan-out) because the enum
+            //    values 207-209 don't match any legacy range and would
+            //    otherwise fall through to no handler and silently drop.
+            if (type == PacketType.SaveTransferHeader)
+            {
+                SoDCoop.Sync.SaveTransfer.HandleHeader(reader, senderId);
+                return;
+            }
+            if (type == PacketType.SaveTransferChunk)
+            {
+                SoDCoop.Sync.SaveTransfer.HandleChunk(reader, senderId);
+                return;
+            }
+            if (type == PacketType.SaveTransferComplete)
+            {
+                SoDCoop.Sync.SaveTransfer.HandleComplete(reader, senderId);
                 return;
             }
 

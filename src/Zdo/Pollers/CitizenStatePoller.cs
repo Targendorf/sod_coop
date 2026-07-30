@@ -44,7 +44,36 @@ public static class CitizenStatePoller
     private const int SLOW_EVERY = 5;
     private static int _tickCounter;
 
+    /// <summary>Below this absolute delta, a float Set() is suppressed. SoD's
+    /// bleed/poison/regen ticks write sub-unit fractional changes every frame;
+    /// without a deadband <c>Zdo.Set(float)</c> re-dirties the citizen every
+    /// fast tick (5 Hz × ~336 citizens = up to 1680 dirty ZDOs/sec that each
+    /// get serialised + culled + shipped). Health is the gameplay-relevant
+    /// outlier — 0.5 hp deadband is well below one damage tick and keeps
+    /// combat death/lethal events crisp while swallowing float jitter.</summary>
+    private const float HEALTH_DEADBAND = 0.5f;
+
+    /// <summary>Set <paramref name="key"/> on <paramref name="z"/> only if the
+    /// new value differs from the current value by more than
+    /// <paramref name="deadband"/>. Avoids the perpetual dirty churn that
+    /// <c>Zdo.Set(float)</c> otherwise produces on continuously-decaying SoD
+    /// sim fields (currentHealth under bleed, nourishment/hydration decay,
+    /// drunk/bleeding decay).</summary>
+    private static void SetFloatDeadband(Zdo z, int key, float v, float deadband)
+    {
+        float prev = z.GetFloat(key, float.NaN);
+        if (!float.IsNaN(prev) && UnityEngine.Mathf.Abs(prev - v) < deadband) return;
+        z.Set(key, v);
+    }
+
     public static void Register() => ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick);
+
+    /// <summary>Drop the slow-lane tick cursor so the first post-load tick
+    /// runs the slow lane immediately (correct outfit/vitals state right
+    /// after a save load instead of waiting up to 1 s for the slow lane to
+    /// cycle back around). Called from
+    /// <c>SodCommonBridge.OnBeforeLoad</c>.</summary>
+    public static void ResetBaseline() { _tickCounter = 0; }
 
     private static void Tick(float now)
     {
@@ -96,19 +125,27 @@ public static class CitizenStatePoller
 
                 try { z.Set(ZdoKeys.Stunned,  c.isStunned);  } catch { }
                 try { z.Set(ZdoKeys.Crouched, c.isCrouched); } catch { }
-                // currentHealth: damage/heal is discrete (event-driven), so it
-                // doesn't churn the dirty set — keep it fast for combat response.
-                try { z.Set(ZdoKeys.CurrentHealth, c.currentHealth); } catch { }
+                // currentHealth: damage/heal is discrete (event-driven), but
+                // SoD's bleed/poison tick writes sub-unit fractional drops
+                // every frame — without a deadband Zdo.Set(float) re-dirties
+                // the citizen every fast tick (5 Hz × 336 = ~1.7k dirty/sec).
+                // HEALTH_DEADBAND is well below a single damage event so combat
+                // death/lethal transitions stay crisp while float jitter is
+                // swallowed.
+                try { SetFloatDeadband(z, ZdoKeys.CurrentHealth, c.currentHealth, HEALTH_DEADBAND); } catch { }
 
-                // Restrain state — on NewAIController. State transition (discrete),
-                // gameplay-relevant (combat / arrest), keep fast.
+                // Restrain state — on NewAIController. The restrained BOOL is
+                // the discrete gameplay-relevant transition (combat / arrest),
+                // keep it fast. restrainTime is a monotonically-growing timer
+                // that's dirty every fast tick for as long as anyone is tied
+                // up — moved to the slow lane below (it's cosmetic: how long
+                // the NPC has been restrained, not whether they are).
                 try
                 {
                     var ai = c.ai;
                     if (ai != null)
                     {
-                        z.Set(ZdoKeys.Restrained,         ai.restrained);
-                        z.Set(ZdoKeys.RestrainedDuration, ai.restrainTime);
+                        z.Set(ZdoKeys.Restrained, ai.restrained);
                     }
                 }
                 catch { /* AI may be uninitialised on early ticks */ }
@@ -132,6 +169,17 @@ public static class CitizenStatePoller
 
                 try { z.Set(ZdoKeys.InBed,  c.isInBed);  } catch { }
                 try { z.Set(ZdoKeys.Asleep, c.isAsleep); } catch { }
+
+                // restrainTime (monotonic timer while NPC is tied up). Moved
+                // here from the fast lane — it's cosmetic and would otherwise
+                // dirty every restrained citizen every fast tick for the
+                // entire duration of the restraint.
+                try
+                {
+                    var ai = c.ai;
+                    if (ai != null) z.Set(ZdoKeys.RestrainedDuration, ai.restrainTime);
+                }
+                catch { /* AI may be uninitialised on early ticks */ }
 
                 // Visual-state floats — drunk staggers walk, bleeding drips
                 // blood. Both auto-drive SoD animation/spatter on the receiver.

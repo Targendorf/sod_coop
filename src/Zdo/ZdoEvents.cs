@@ -258,8 +258,11 @@ public static class ZdoEvents
         }
         catch { }
 
-        // Sequenced: late frames can be dropped, the next state stomps anyway.
-        ZdoEventDispatcher.Send(CITIZEN_ANIM_STATE, _w, DeliveryMethod.Sequenced, originPos);
+        // Sequenced + batched: late frames can be dropped (the next state
+        // stomps anyway), and CitizenAnimationPoller emits up to 32 of these
+        // per tick × 5 Hz — batching collapses those into one packet per
+        // flush instead of 32 individual Steam sends.
+        ZdoEventDispatcher.Send(CITIZEN_ANIM_STATE, _w, DeliveryMethod.Sequenced, originPos, batch: true);
     }
 
     /// <summary>Host-only. Broadcast the current social-credit (reputation)
@@ -309,7 +312,11 @@ public static class ZdoEvents
         }
         catch { }
 
-        ZdoEventDispatcher.Send(SPEECH_BUBBLE, _w, DeliveryMethod.Sequenced, originPos);
+        // Sequenced + batched: SpeechBubblePoller scans the whole citizen
+        // roster at 5 Hz and can emit several bubbles per tick (busy
+        // street with overlapping NPC dialog). Batching keeps send count
+        // O(1) per frame regardless of dialog density.
+        ZdoEventDispatcher.Send(SPEECH_BUBBLE, _w, DeliveryMethod.Sequenced, originPos, batch: true);
     }
 
     /// <summary>Broadcast a per-player apartment ownership add or remove.

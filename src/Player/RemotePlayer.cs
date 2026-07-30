@@ -68,6 +68,7 @@ public class RemotePlayer : MonoBehaviour
     private Animator _animator;
     private bool _animatorParamsScanned;
     private int _animSpeedHash      = -1;
+    private int _animWalkSpeedHash  = -1;   // SoD citizen rig: drives the walk-cycle blend tree
     private int _animIsRunningHash  = -1;
     private int _animIsCrouchingHash = -1;
 
@@ -87,6 +88,13 @@ public class RemotePlayer : MonoBehaviour
 
     /// <summary>Detached corpse, kept so we can destroy it on revive.</summary>
     private GameObject _corpse;
+
+    /// <summary>Last-received appearance customization for this remote
+    /// player. Re-applied whenever the citizen visual is (re)cloned —
+    /// without this the avatar renders the random citizen's procedural
+    /// look instead of the player's chosen clothes / hair / skin. Updated
+    /// by <see cref="ApplyAppearance"/> (called from AppearanceSync).</summary>
+    private SoDCoop.Player.AppearanceConfig? _pendingAppearance;
 
     /// <summary>
     /// Toggle the downed state. <paramref name="hitDirection"/> sets the
@@ -193,6 +201,69 @@ public class RemotePlayer : MonoBehaviour
         _hasReceivedAny = true;
     }
 
+    /// <summary>
+    /// ZDO-side counterpart to <see cref="ApplyPositionState"/>. Called from
+    /// <c>LocalPlayerResolver.Apply</c> when a peer's <c>LocalPlayer</c> ZDO
+    /// arrives with a fresh position. Converts the (position, rotation,
+    /// dataRevision) triple into the same snapshot buffer the legacy packet
+    /// path feeds, so the existing interpolation / teleport / extrapolation
+    /// logic in <see cref="Update"/> is reused verbatim.
+    ///
+    /// <para><paramref name="dataRevision"/> is the ZDO's monotonic
+    /// DataRevision at serialise time — used as a stand-in for the legacy
+    /// packet's ushort Sequence. Cast to ushort (collisions only across
+    /// ~65k revisions, irrelevant for position-ordering).</para>
+    ///
+    /// <para>Replaces the legacy <c>PlayerPositionPacket</c> path once
+    /// <c>ZdoFeatureFlags.UseZdoForPlayerState</c> is on — the host/peer no
+    /// longer ships a separate Sequenced packet for position, the state
+    /// rides the unified LocalPlayer ZDO delta channel instead. The legacy
+    /// <see cref="ApplyPositionState"/> stays for mixed-version peers and
+    /// as the receive path for any old <c>PlayerPosition</c> packets.</para>
+    /// </summary>
+    [HideFromIl2Cpp]
+    public void ApplyPositionFromZdo(Vector3 position, Quaternion rotation, uint dataRevision, Vector3 velocity, byte flags)
+    {
+        // Out-of-order guard mirrors ApplyPositionState. ushort diff handles
+        // wraparound at 65k; DataRevision is monotonic per-ZDO so the diff
+        // semantics carry over (a lower revision means a stale delta).
+        ushort seq = (ushort)dataRevision;
+        if (_hasReceivedAny)
+        {
+            short diff = (short)(seq - _newestSeq);
+            if (diff <= 0) return;
+        }
+
+        // Hard teleport on huge jumps (scene change, respawn, far spawn).
+        if (_hasReceivedAny)
+        {
+            float dist = Vector3.Distance(transform.position, position);
+            if (dist > TELEPORT_THRESHOLD)
+            {
+                Plugin.Log.LogInfo($"RemotePlayer {PlayerId} teleported (Δ={dist:F1}m) [zdo].");
+                transform.position = position;
+                transform.rotation = rotation;
+                _buffer.Clear();
+            }
+        }
+
+        var snap = new Snapshot
+        {
+            Sequence    = seq,
+            ArrivalTime = Time.unscaledTime,
+            Position    = position,
+            Rotation    = rotation,
+            Velocity    = velocity,
+            Flags       = flags,
+        };
+
+        if (_buffer.Count >= BUFFER_CAPACITY) _buffer.RemoveAt(0);
+        _buffer.Add(snap);
+
+        _newestSeq      = seq;
+        _hasReceivedAny = true;
+    }
+
     void Update()
     {
         if (!_initialized || _buffer.Count == 0) return;
@@ -285,7 +356,18 @@ public class RemotePlayer : MonoBehaviour
             bool isRunning   = (newest.Flags & (byte)MovementFlags.Running)   != 0;
             bool isCrouching = (newest.Flags & (byte)MovementFlags.Crouching) != 0;
 
+            // moveSpeed: raw m/s — the animator's blend tree threshold on
+            // SoD's citizen rig is roughly 0=idle, 1.5=walk, 4+=run.
             if (_animSpeedHash      != -1) _animator.SetFloat(_animSpeedHash, speed);
+            // walkAnimSpeed: normalised 0..1 — SoD's walk-cycle blend tree
+            // reads this to fade between idle and walk-in-place. Without it
+            // the body slides without animating. Derive from speed: below
+            // ~1.5 m/s treat as idle, above ramp to 1 by ~5 m/s.
+            if (_animWalkSpeedHash   != -1)
+            {
+                float walkNorm = Mathf.Clamp01(speed / 1.5f);
+                _animator.SetFloat(_animWalkSpeedHash, walkNorm);
+            }
             if (_animIsRunningHash  != -1) _animator.SetBool(_animIsRunningHash, isRunning);
             if (_animIsCrouchingHash != -1) _animator.SetBool(_animIsCrouchingHash, isCrouching);
         }
@@ -319,11 +401,20 @@ public class RemotePlayer : MonoBehaviour
                 if (p == null || string.IsNullOrEmpty(p.name)) continue;
                 var n = p.name.ToLowerInvariant();
 
-                // Speed / movement magnitude
+                // Speed / movement magnitude. SoD's citizen rig uses
+                // "moveSpeed" (primary) and "walkAnimSpeed" (secondary, also
+                // drives the walk-cycle blend tree). Map BOTH so whichever
+                // one the animator's blend tree reads gets a real value —
+                // without walkAnimSpeed the body stays in the idle pose even
+                // when transform.position is moving (playtest 2026-06-16:
+                // players saw each other slide without walking anim).
                 if (_animSpeedHash == -1 &&
                     (n == "speed" || n == "movespeed" || n == "movementspeed" ||
                      n == "velocity" || n == "forwardspeed"))
                     _animSpeedHash = p.nameHash;
+                if (_animWalkSpeedHash == -1 &&
+                    (n == "walkanimspeed" || n == "walkspeed" || n == "walkspeedscale"))
+                    _animWalkSpeedHash = p.nameHash;
 
                 // Running / sprinting — also covers bare "run" seen in SoD logs
                 else if (_animIsRunningHash == -1 &&
@@ -340,7 +431,7 @@ public class RemotePlayer : MonoBehaviour
 
             Plugin.Log.LogInfo(
                 $"RemotePlayer {PlayerId} animator mapped: " +
-                $"speed={_animSpeedHash}, run={_animIsRunningHash}, crouch={_animIsCrouchingHash}");
+                $"speed={_animSpeedHash}, walk={_animWalkSpeedHash}, run={_animIsRunningHash}, crouch={_animIsCrouchingHash}");
         }
         catch { }
     }
@@ -680,6 +771,40 @@ public class RemotePlayer : MonoBehaviour
         _flashlight = null;
         RebuildHeldVisual();
         if (_heldInteractableId >= 0) ApplyRaised(_isRaised);
+        // Re-apply any appearance customization received before the visual
+        // existed. CitizenVisualCloner now keeps CitizenOutfitController on
+        // the clone, so ApplyTo can stamp debugOverride* + LoadCurrentOutfit.
+        if (_pendingAppearance.HasValue)
+        {
+            try { ApplyAppearance(_pendingAppearance.Value); } catch { }
+        }
+    }
+
+    /// <summary>Apply the peer's chosen appearance (clothes / hair / skin /
+    /// build / etc.) to this RemotePlayer's citizen-clone visual. Called
+    /// from <see cref="SoDCoop.Sync.AppearanceSync"/> when a
+    /// <c>PlayerAppearance</c> packet arrives, and re-applied from
+    /// <see cref="OnVisualUpgraded"/> whenever the visual is re-cloned
+    /// (e.g. after a world reload). Safe to call before the citizen visual
+    /// exists — the config is stashed and replayed on upgrade.
+    ///
+    /// <para>Without this, players see a random citizen's procedural outfit
+    /// on each other's avatars instead of the customized look they chose in
+    /// the AppearancePanel.</para></summary>
+    [HideFromIl2Cpp]
+    public void ApplyAppearance(SoDCoop.Player.AppearanceConfig cfg)
+    {
+        _pendingAppearance = cfg;
+        try
+        {
+            // Find the CitizenOutfitController on the clone (CitizenVisualCloner
+            // preserves it). If the visual hasn't been upgraded yet (still on
+            // the capsule fallback), stash + bail — OnVisualUpgraded replays.
+            var ctrl = GetComponentInChildren<global::CitizenOutfitController>();
+            if (ctrl == null) return;
+            cfg.ApplyTo(ctrl);
+        }
+        catch { /* outfitController may be mid-init — replay on next upgrade */ }
     }
 
     /// <summary>Called when we revert to the capsule fallback (citizen rig destroyed).</summary>

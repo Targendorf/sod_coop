@@ -18,6 +18,12 @@ public class JoinPanel : CoopPanelBase
 {
     protected override string Title => L.Get("join.title");
 
+    // Tagline + state label + instructions + friends button + direct IP
+    // section (label + 2 inputs + button) + status + back. Scrollable so
+    // the direct-IP inputs don't push Back off-screen.
+    protected override float PanelHeight => 660f;
+    protected override bool  ScrollableBody => true;
+
     private Text       _statusLabel;
     private Text       _gameStateLabel;
     private Button     _openFriendsBtn;

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using SoDCoop.Network;
 
 namespace SoDCoop.Zdo.Pollers;
 
@@ -29,14 +30,20 @@ namespace SoDCoop.Zdo.Pollers;
 /// </summary>
 public static class CitizenAnimationPoller
 {
-    public const float TICK_HZ = 5f;
     public const string NAME = "citizen-anim";
 
     /// <summary>Last-broadcast (idle, arms) per citizen. Diff vs current
     /// tick → only changed pairs hit the wire.</summary>
     private static readonly Dictionary<int, (byte idle, byte arms)> _last = new();
 
-    public static void Register() => ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick, WarmupBaseline);
+    /// <summary>Register with a configurable tick rate. The actual scan
+    /// behaviour (full vs spatial) is decided per-tick from
+    /// CoopSettings.CitizenAnimSync.</summary>
+    public static void Register(int hz = 2)
+    {
+        hz = UnityEngine.Mathf.Clamp(hz, 1, 5);
+        ZdoPollerHost.Register(NAME, 1f / hz, Tick, WarmupBaseline);
+    }
 
     /// <summary>Pre-seed <see cref="_last"/> with every citizen's current
     /// (idle, arms) state without broadcasting. Called by
@@ -102,20 +109,64 @@ public static class CitizenAnimationPoller
             // citizenDictionary (per-element native calls) every tick.
             if (!CitizenRosterCache.TryGetRoster(out var ids, out var citizens)) return;
 
-            // Cold-start guard: if WarmupBaseline never ran (or got Reset between
-            // ticks) the diff loop would treat the entire roster as fresh and
-            // emit one event per citizen. Detect this by checking _last vs roster
-            // size — when the baseline is grossly under-populated, fall back to
-            // a silent reseed and skip the broadcast pass for this tick.
-            int rosterCount = citizens.Count;
-            if (rosterCount > 0 && _last.Count < rosterCount / 2)
+            // ── Mode selection ──────────────────────────────────────────────
+            // Disabled: SoD AI is deterministic — clients compute the same
+            //   animation states from the same seed. No network sync needed.
+            // Auto: scan only citizens within CULL_RADIUS of connected peers
+            //   via SpatialGrid (~30-50 instead of 336). Cheap + accurate
+            //   near players. Recommended.
+            // FixedHz: scan ALL citizens at the configured rate. Most accurate
+            //   but heavy IL2CPP interop cost.
+            var mode = CoopSettings.CitizenAnimSync?.Value ?? CitizenAnimSyncMode.Auto;
+            if (mode == CitizenAnimSyncMode.Disabled) return;
+
+            // Build the set of citizens to scan this tick. In FixedHz mode
+            // it's the full roster; in Auto mode it's a subset filtered by
+            // proximity to connected peers via SpatialGrid.
+            List<int> scanIds = ids;
+            List<Human> scanCitizens = citizens;
+            int scanCount = citizens.Count;
+
+            if (mode == CitizenAnimSyncMode.Auto && NetworkManager.HasPeers)
             {
-                int reseed = 0;
-                for (int ci = 0; ci < citizens.Count; ci++)
+                // Collect all in-range citizen IDs from every connected peer's
+                // position via SpatialGrid.Query. This is O(visible cells)
+                // instead of O(all citizens) — the entire reason Auto mode
+                // exists.
+                BuildSpatialScanSet(ids, citizens, out scanIds, out scanCitizens);
+                scanCount = scanCitizens.Count;
+            }
+
+            if (scanCount == 0) return;
+
+            // Cold-start guard: if the baseline for these citizens is empty
+            // (first tick after warmup or after a roster change), re-seed
+            // silently and skip broadcasting to avoid a burst.
+            // In Auto mode we check only the citizens we're about to scan.
+            bool needReseed = false;
+            if (mode == CitizenAnimSyncMode.Auto)
+            {
+                // Auto: check if any of the spatially-selected citizens lack
+                // a baseline entry.
+                for (int ci = 0; ci < scanCount; ci++)
                 {
-                    var cc = citizens[ci];
+                    if (scanIds[ci] != 0 && !_last.ContainsKey(scanIds[ci]))
+                    { needReseed = true; break; }
+                }
+            }
+            else
+            {
+                // FixedHz: original half-roster heuristic.
+                needReseed = (_last.Count < scanCount / 2);
+            }
+
+            if (needReseed)
+            {
+                for (int ci = 0; ci < scanCount; ci++)
+                {
+                    var cc = scanCitizens[ci];
                     if (cc == null) continue;
-                    int cid = ids[ci];
+                    int cid = scanIds[ci];
                     if (cid == 0) continue;
                     global::CitizenAnimationController cac;
                     try { cac = cc.animationController; } catch { continue; }
@@ -124,19 +175,17 @@ public static class CitizenAnimationPoller
                     try { cidle = (byte)cac.idleAnimationState; }     catch { continue; }
                     try { carms = (byte)cac.armsBoolAnimationState; } catch { continue; }
                     _last[cid] = (cidle, carms);
-                    reseed++;
                 }
-                Plugin.Log.LogDebug($"[CitizenAnimationPoller] cold-start reseed: filled baseline with {reseed} citizens (no broadcast).");
                 return;
             }
 
             int sent = 0;
             int suppressed = 0;
-            for (int ci = 0; ci < citizens.Count; ci++)
+            for (int ci = 0; ci < scanCount; ci++)
             {
-                var c = citizens[ci];
+                var c = scanCitizens[ci];
                 if (c == null) continue;
-                int id = ids[ci];
+                int id = scanIds[ci];
                 if (id == 0) continue;
 
                 global::CitizenAnimationController ac;
@@ -154,9 +203,6 @@ public static class CitizenAnimationPoller
 
                 if (sent >= MAX_SENT_PER_TICK)
                 {
-                    // Update baseline silently — don't burst more than the cap.
-                    // Receiver will see the new state on the citizen's next real
-                    // transition or on next late-joiner snapshot.
                     suppressed++;
                     continue;
                 }
@@ -169,13 +215,84 @@ public static class CitizenAnimationPoller
                 catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenAnimationPoller] send {id}: {ex.Message}"); }
             }
 
-            // Light per-tick log only when there's actual churn — typical
-            // idle city dictates this is mostly zero.
             if (sent > 0 || suppressed > 0)
-                Plugin.Log.LogDebug($"[CitizenAnimationPoller] tick: {sent} anim-state delta(s){(suppressed > 0 ? $", {suppressed} suppressed (cap)" : "")}");
+                Plugin.Log.LogDebug($"[CitizenAnimationPoller] tick ({mode}, {scanCount} citizens): {sent} delta(s){(suppressed > 0 ? $", {suppressed} suppressed" : "")}");
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenAnimationPoller] tick: {ex.Message}"); }
     }
+
+    // ── Spatial scan subset (Auto mode) ─────────────────────────────────
+
+    /// <summary>Reusable lists for the spatial-scan subset. Avoids per-tick
+    /// allocation in Auto mode.</summary>
+    private static readonly List<int> _spatialIds = new();
+    private static readonly List<Human> _spatialCitizens = new();
+
+    /// <summary>Build a (id, citizen) subset containing only citizens within
+    /// <see cref="ZdoMan.CULL_RADIUS_M"/> of any connected peer's last-known
+    /// position, via <see cref="SpatialGrid.Query"/>. Falls back to the full
+    /// roster if SpatialGrid has no indexed citizens (e.g. before the first
+    /// CitizenStatePoller tick stamps positions).</summary>
+    private static void BuildSpatialScanSet(List<int> allIds, List<Human> allCitizens,
+                                             out List<int> outIds, out List<Human> outCitizens)
+    {
+        _spatialIds.Clear();
+        _spatialCitizens.Clear();
+
+        try
+        {
+            // Query the grid for each connected peer's position. Merge
+            // results into a HashSet to dedup citizens near multiple peers.
+            var clients = NetworkManager.Clients;
+            var inRangeIds = _spatialIdScratch;
+            inRangeIds.Clear();
+
+            for (int i = 0; i < clients.Count; i++)
+            {
+                int peerId = NetworkManager.GetPlayerIdByPeer(clients[i]);
+                if (peerId < 0) continue;
+                if (NetworkManager.Players == null
+                    || !NetworkManager.Players.TryGetValue(peerId, out var info)
+                    || info == null
+                    || !info.HasKnownPosition) continue;
+
+                var nearZdos = SpatialGrid.Query(info.LastKnownPosition, SoDCoop.Zdo.ZdoMan.CULL_RADIUS_M);
+                for (int z = 0; z < nearZdos.Count; z++)
+                {
+                    int sodId = nearZdos[z].GetInt(ZdoKeys.SodId, int.MinValue);
+                    if (sodId != int.MinValue) inRangeIds.Add(sodId);
+                }
+            }
+
+            if (inRangeIds.Count == 0)
+            {
+                // No indexed citizens yet — fall back to full roster.
+                outIds = allIds;
+                outCitizens = allCitizens;
+                return;
+            }
+
+            // Walk the full roster once, picking only in-range IDs.
+            for (int ci = 0; ci < allCitizens.Count; ci++)
+            {
+                if (allIds[ci] != 0 && inRangeIds.Contains(allIds[ci]))
+                {
+                    _spatialIds.Add(allIds[ci]);
+                    _spatialCitizens.Add(allCitizens[ci]);
+                }
+            }
+
+            outIds = _spatialIds;
+            outCitizens = _spatialCitizens;
+        }
+        catch
+        {
+            outIds = allIds;
+            outCitizens = allCitizens;
+        }
+    }
+
+    private static readonly HashSet<int> _spatialIdScratch = new();
 
     /// <summary>Drop the diff baseline so the next post-load tick treats
     /// every citizen as freshly-discovered (forces a full re-broadcast).

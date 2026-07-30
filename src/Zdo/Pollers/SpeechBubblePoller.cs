@@ -46,7 +46,12 @@ public static class SpeechBubblePoller
     // in the mod. A speech bubble's typewriter phase lasts ≥1 s, so a 200 ms
     // detection latency on the final-text transition is imperceptible —
     // halving the scan rate halves its steady-state interop cost for free.
-    public const float TICK_HZ = 5f;
+    // 1 Hz (was 5): scanning 336 citizens for speech-bubble transitions is
+    // IL2CPP-interop-heavy. A 1s detection latency on NPC dialog is
+    // imperceptible and cuts the per-tick native-call cost 5x. Combined with
+    // MAX_POLLERS_PER_FRAME cap in ZdoPollerHost this prevents the death-
+    // spiral observed in playtest 2026-06-23.
+    public const float TICK_HZ = 1f;
     public const string NAME = "speech-bubble";
 
     /// <summary>Last broadcast (humanId, text) per Actor — diff baseline so

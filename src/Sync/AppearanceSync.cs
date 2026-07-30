@@ -116,7 +116,10 @@ public static class AppearanceSync
     /// <summary>
     /// Apply config to the citizen with this humanID on the local machine,
     /// guarded by <see cref="IsApplyingRemote"/> so any patches that observe
-    /// outfit changes don't re-broadcast.
+    /// outfit changes don't re-broadcast. Also forwards to the matching
+    /// RemotePlayer avatar (if one exists) so other players see the
+    /// customized look on each other's in-world body, not just on the twin
+    /// NPC sitting frozen in the city.
     /// </summary>
     public static void ApplyToHumanLocal(int humanId, AppearanceConfig cfg)
     {
@@ -133,14 +136,50 @@ public static class AppearanceSync
             try
             {
                 cfg.ApplyTo(ctrl);
-                Plugin.Log.LogDebug($"[AppearanceSync] applied appearance to humanID={humanId} (custom={cfg.IsCustomized})");
+                Plugin.Log.LogDebug($"[AppearanceSync] applied appearance to twin humanID={humanId} (custom={cfg.IsCustomized})");
             }
             finally { IsApplyingRemote = false; }
+
+            // Also apply to the RemotePlayer avatar for this peer so the
+            // in-world body (the cloned citizen visual the player actually
+            // sees moving around) reflects the customization. Resolve the
+            // playerId from the twin humanID via the player roster.
+            try
+            {
+                int playerId = ResolvePlayerIdForTwin(humanId);
+                if (playerId >= 0)
+                {
+                    var rp = SoDCoop.Player.RemotePlayerManager.GetPlayer(playerId);
+                    rp?.ApplyAppearance(cfg);
+                }
+            }
+            catch { /* RemotePlayer may not exist yet — twin-only apply is fine */ }
         }
         catch (System.Exception ex)
         {
             Plugin.Log.LogWarning($"AppearanceSync.ApplyToHumanLocal({humanId}): {ex.Message}");
         }
+    }
+
+    /// <summary>Resolve the network playerId whose twin citizen matches the
+    /// given humanID. Reverse of TwinManager.GetTwinHumanIDForSender.
+    /// Returns -1 if no match (e.g. the twin belongs to a disconnected
+    /// peer or the local host — neither has a RemotePlayer).</summary>
+    private static int ResolvePlayerIdForTwin(int humanId)
+    {
+        if (humanId <= 0) return -1;
+        try
+        {
+            if (NetworkManager.Players == null) return -1;
+            foreach (var kv in NetworkManager.Players)
+            {
+                var info = kv.Value;
+                if (info == null) continue;
+                if (info.TwinHumanID == humanId) return kv.Key;
+            }
+        }
+        catch { }
+        return -1;
     }
 
     // ─────────────────────────────────────────────────────────────────────

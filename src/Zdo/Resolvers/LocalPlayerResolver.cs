@@ -8,10 +8,18 @@ namespace SoDCoop.Zdo.Resolvers;
 /// ZDO keyed by <c>__sodId = LocalPlayerId</c>; on remote peers the same
 /// key resolves to the matching <c>RemotePlayer</c> mirror.
 ///
-/// <para>Phase G.5 (Wave 1.3-4): currently handles held-item + raised
-/// stance + flashlight. Position / rotation / vitals stay on the
-/// existing <see cref="SoDCoop.Sync.PlayerSync"/> wire path during
-/// transition (will move in a later wave).</para>
+/// <para>Owns the full per-peer avatar state: position / rotation /
+/// velocity (drives snapshot interpolation on the RemotePlayer), held
+/// item / raised / flashlight, dead / downed pose, and (host-only) the
+/// twin-citizen mirror for crouch / KO / HP / activity. Replaces the
+/// legacy <see cref="SoDCoop.Sync.PlayerSync"/> position+vitals packet
+/// path — the old path shipped a 30 Hz <c>PlayerPosition</c> Sequenced
+/// packet AND a 1 Hz <c>PlayerVitals</c> packet on top of this ZDO,
+/// doubling bandwidth + send-syscall count for the hottest stream in
+/// the mod. With position on the ZDO, the legacy <c>PlayerSync.Update</c>
+/// early-returns when <c>ZdoFeatureFlags.UseZdoForPlayerState</c> is on;
+/// its <c>OnPacketReceived</c> stays as the forward-compat receive path
+/// for mixed-version peers still shipping the old packets.</para>
 /// </summary>
 public sealed class LocalPlayerResolver : IZdoResolver
 {
@@ -25,6 +33,57 @@ public sealed class LocalPlayerResolver : IZdoResolver
         if (playerId == SoDCoop.Network.NetworkManager.LocalPlayerId) return; // own
 
         var rp = SoDCoop.Player.RemotePlayerManager.GetPlayer(playerId);
+
+        // ── Position / rotation / velocity → RemotePlayer snapshot buffer ──
+        // Even if the RemotePlayer hasn't spawned yet (position delta
+        // outraced PlayerJoined), we still stamp the peer's known position
+        // onto PlayerNetInfo + EvaluatePeerCatchup below — the host needs
+        // the peer position for sector culling regardless of whether the
+        // avatar visual exists yet.
+        bool hasPos = z.HasKey(ZdoKeys.Pos);
+        if (hasPos)
+        {
+            UnityEngine.Vector3 pos = z.GetVector3(ZdoKeys.Pos);
+            // Stamp peer position for host-side sector culling (mirrors what
+            // PlayerSync.OnRemotePlayerPosition used to do for every legacy
+            // position packet). Debounced inside EvaluatePeerCatchup.
+            if (SoDCoop.Network.NetworkManager.Players != null
+                && SoDCoop.Network.NetworkManager.Players.TryGetValue(playerId, out var info)
+                && info != null)
+            {
+                info.LastKnownPosition = pos;
+                info.HasKnownPosition = true;
+                try { SoDCoop.Zdo.ZdoMan.EvaluatePeerCatchup(playerId, pos); }
+                catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerResolver] catchup: {ex.Message}"); }
+            }
+
+            if (rp != null)
+            {
+                try
+                {
+                    UnityEngine.Quaternion rot = z.HasKey(ZdoKeys.Rot)
+                        ? z.GetQuaternion(ZdoKeys.Rot)
+                        : UnityEngine.Quaternion.identity;
+                    UnityEngine.Vector3 vel = z.HasKey(ZdoKeys.Velocity)
+                        ? z.GetVector3(ZdoKeys.Velocity)
+                        : UnityEngine.Vector3.zero;
+                    // Movement flags for DriveAnimator: bit0 = running
+                    // (derive from velocity magnitude — SoD's run threshold
+                    // is ~3 m/s), bit1 = crouching (from the Crouched key
+                    // LocalPlayerPoller writes). Without these the
+                    // walk-cycle blend is correct but the run/crouch pose
+                    // overrides never fire, so a sprinting player animates
+                    // as walking and a crouching player stands tall.
+                    byte flags = 0;
+                    if (vel.sqrMagnitude > 9f) flags |= (byte)SoDCoop.Network.MovementFlags.Running; // 3 m/s
+                    if (z.HasKey(ZdoKeys.Crouched) && z.GetBool(ZdoKeys.Crouched, false))
+                        flags |= (byte)SoDCoop.Network.MovementFlags.Crouching;
+                    rp.ApplyPositionFromZdo(pos, rot, z.DataRevision, vel, flags);
+                }
+                catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerResolver] position: {ex.Message}"); }
+            }
+        }
+
         if (rp == null) return;
 
         try
@@ -56,6 +115,20 @@ public sealed class LocalPlayerResolver : IZdoResolver
             }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerResolver] flashlight: {ex.Message}"); }
+
+        // Dead → downed-pose driver. Previously this came in via the 1 Hz
+        // PlayerVitals packet (PlayerSync.OnPacketReceived → SetDown). Now
+        // driven off the Dead bool on the ZDO so the legacy vitals packet
+        // path can be retired alongside position.
+        try
+        {
+            if (z.HasKey(ZdoKeys.Dead))
+            {
+                bool dead = z.GetBool(ZdoKeys.Dead, false);
+                if (rp.IsDown != dead) rp.SetDown(dead);
+            }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerResolver] dead: {ex.Message}"); }
 
         // Host-only: a remote peer pushed its self-state — mirror crouch /
         // KO / HP onto that peer's twin citizen in our world. Next tick

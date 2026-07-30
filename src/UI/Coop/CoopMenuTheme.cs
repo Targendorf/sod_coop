@@ -45,11 +45,15 @@ public static class CoopMenuTheme
     public const float SectionPadding  = 14f;
 
     // Typography
-    public const int FontSizeTitle     = 28;
-    public const int FontSizeHeader    = 18;
+    public const int FontSizeTitle     = 26;
+    public const int FontSizeHeader    = 17;
     public const int FontSizeBody      = 15;
     public const int FontSizeButton    = 16;
-    public const int FontSizeSmall     = 12;
+    public const int FontSizeSmall     = 13;
+
+    /// <summary>Colour-transition duration for button hover/press. Faster
+    /// feels snappier; 0.1s is the Unity uGUI default.</summary>
+    public const float ButtonFadeDuration = 0.1f;
 
     /// <summary>Thin border render — 4 outline rects around a panel.</summary>
     public const float BorderThickness = 2f;

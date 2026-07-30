@@ -18,6 +18,12 @@ public class HostPanel : CoopPanelBase
 {
     protected override string Title => L.Get("host.title");
 
+    // Identity label + Start/Stop/Invite + direct-IP section (label +
+    // port + button) + status + back = ~10 rows. Scrollable keeps the
+    // direct-IP section reachable on smaller panels / larger fonts.
+    protected override float PanelHeight => 620f;
+    protected override bool  ScrollableBody => true;
+
     private Text       _identityLabel;
     private Text       _statusLabel;
     private Button     _startBtn;
@@ -150,13 +156,21 @@ public class HostPanel : CoopPanelBase
                     _statusLabel.text = L.Get("host.warn.noSave");
                     _statusLabel.color = CoopMenuTheme.LabelWarn;
                 }
-                Plugin.Log.LogWarning("[HostPanel] Start Hosting rejected: world not ready (still on main menu / loading).");
+                Plugin.Log.LogWarning("[HostPanel] Start Hosting rejected: load or generate a city first, THEN click Host.");
                 return;
             }
 
             if (NetworkManager.StartHost())
             {
                 Plugin.Log.LogInfo($"[CoopMenu] hosting via Steam as \"{NetworkManager.LocalPlayerName}\"");
+            }
+            else
+            {
+                if (_statusLabel != null)
+                {
+                    _statusLabel.text = "Failed to start hosting. Check the log.";
+                    _statusLabel.color = CoopMenuTheme.LabelError;
+                }
             }
         }
         catch (System.Exception ex)

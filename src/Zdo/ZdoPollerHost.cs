@@ -46,6 +46,15 @@ public static class ZdoPollerHost
     /// post-baseline reality.</summary>
     private static bool _hadPeers;
 
+    /// <summary>Max poller callbacks invoked per frame across ALL pollers (any-
+    /// peer + host). When the game is hitching, multiple intervals elapse in a
+    /// single long frame, so many pollers are "due" at once. Without a cap,
+    /// running them all re-stalls the next frame → death spiral. The cap
+    /// spreads the work across frames instead. 3/frame = enough headroom for
+    /// 60 FPS steady state (3 callbacks = ~5-15ms) while keeping a hitch frame
+    /// from spiraling.</summary>
+    private const int MAX_POLLERS_PER_FRAME = 3;
+
     /// <summary>Register a host-only poller. Most pollers (door, light,
     /// vmail, etc.) use this — the host owns the world simulation and
     /// derives authoritative state from it.
@@ -121,22 +130,34 @@ public static class ZdoPollerHost
         }
 
         // Any-peer pollers fire on every machine.
+        // Adaptive skipping: when the game is already hitching (unscaledDeltaTime
+        // >> poller interval), multiple pollers can be "due" at once. Running all
+        // of them in a single frame re-stalls the next frame, which makes even
+        // more pollers due — a death spiral (playtest 2026-06-23: host held at
+        // 1.4 FPS for the entire session, pollers=700-1600ms/frame). Cap the
+        // number of poller callbacks per frame so coop layer cost stays bounded
+        // regardless of how many intervals elapsed.
+        int fired = 0;
         for (int i = 0; i < _anyPeerPollers.Count; i++)
         {
             var p = _anyPeerPollers[i];
             if (now < p.NextAt) continue;
+            if (fired >= MAX_POLLERS_PER_FRAME) { p.NextAt = now + p.Interval; continue; }
             p.NextAt = now + p.Interval;
+            fired++;
             try { p.Callback(now); }
             catch (Exception ex) { Plugin.Log.LogError($"[ZdoPollerHost] {p.Name}: {ex.Message}"); }
         }
 
-        // Host-only pollers.
+        // Host-only pollers — same adaptive cap.
         if (!NetworkManager.IsHost) return;
         for (int i = 0; i < _hostPollers.Count; i++)
         {
             var p = _hostPollers[i];
             if (now < p.NextAt) continue;
+            if (fired >= MAX_POLLERS_PER_FRAME) { p.NextAt = now + p.Interval; continue; }
             p.NextAt = now + p.Interval;
+            fired++;
             try { p.Callback(now); }
             catch (Exception ex) { Plugin.Log.LogError($"[ZdoPollerHost] {p.Name}: {ex.Message}"); }
         }

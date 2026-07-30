@@ -96,16 +96,17 @@ public static class ZdoMan
         if (z == null) return;
         z.HostPosition = pos;
         z.HasHostPosition = true;
-        _spatialZdos.Add(z);
+        // Indexed into the tile-bucketed spatial grid so catch-up queries
+        // are O(visible cells) instead of O(N_spatial) linear scan. The grid
+        // handles same-cell no-op + cross-cell move atomically.
+        SpatialGrid.Insert(z);
     }
 
-    /// <summary>Subset of <see cref="_byId"/> that has a known host
-    /// position — i.e. that participates in sector culling. Maintained
-    /// by <see cref="NotifyZdoPosition"/>. The catch-up path walks this
-    /// instead of the full registry (~19 K) which would be O(N) per
-    /// peer movement; typical city has ~2 K spatial ZDOs (Citizens +
-    /// Lights + Doors + Switches + Computers).</summary>
-    private static readonly HashSet<Zdo> _spatialZdos = new();
+    /// <summary>Spatial index of every ZDO with a known host position. Was a
+    /// flat <c>HashSet&lt;Zdo&gt;</c> that <see cref="EvaluatePeerCatchup"/>
+    /// walked linearly (~2 K entries per peer movement); now a tile-bucketed
+    /// grid (<see cref="SpatialGrid"/>) so the catch-up query touches only
+    /// the 3×3 cell window around the peer.</summary>
 
     /// <summary>Per-peer "ZDOs currently in sector-cull range" snapshot.
     /// Diffed each <see cref="EvaluatePeerCatchup"/> call to find newly-
@@ -168,27 +169,21 @@ public static class ZdoMan
             _inRangeForPeer[peerId] = prevInRange;
         }
 
-        // Walk the spatial subset, recompute the new in-range set, queue
-        // the diff (newly-entered) for resend.
-        // Bug #2: build into shared scratch, then promote to peer's slot
-        // by swapping (the previous in-range set is dropped — its memory
-        // becomes the new scratch). Avoids one HashSet allocation per
-        // position-change-debounced eval.
-        _newInRangeScratch.Clear();
-        foreach (var z in _spatialZdos)
+        // Query the spatial grid for ZDOs within cull radius of the peer.
+        // This is the hot path that used to linear-scan the whole spatial
+        // set (~2 K entries) on every peer-movement-debounced eval; the grid
+        // walks only the 3×3 cell window around the peer and returns exactly
+        // the in-range set, distance-checked.
+        var inRange = SpatialGrid.Query(newPeerPos, CULL_RADIUS_M);
+        foreach (var z in inRange)
         {
-            if (!z.HasHostPosition) continue;
-            float dx = z.HostPosition.x - newPeerPos.x;
-            float dz = z.HostPosition.z - newPeerPos.z;
-            if (dx * dx + dz * dz > CULL_RADIUS_M_SQ) continue;
-            _newInRangeScratch.Add(z);
             if (!prevInRange.Contains(z)) pending.Add(z);
         }
-        // Move scratch contents into peer's persistent slot. Reuse prevInRange
-        // as the new container (it's already allocated) instead of
-        // allocating a new HashSet — copy from scratch into it.
+        // Move the queried set into the peer's persistent slot. Reuse
+        // prevInRange (already allocated) as the new container instead of
+        // allocating a fresh HashSet.
         prevInRange.Clear();
-        foreach (var z in _newInRangeScratch) prevInRange.Add(z);
+        foreach (var z in inRange) prevInRange.Add(z);
         // _inRangeForPeer[peerId] already references prevInRange via
         // TryGetValue above, so no re-assignment needed.
 
@@ -238,7 +233,6 @@ public static class ZdoMan
     // using. Avoids per-flush HashSet allocations: 4 peers × 10 Hz =
     // 40 GC-tracked allocations/sec previously.
     private static readonly HashSet<Zdo> _sentInThisPacketScratch = new();
-    private static readonly HashSet<Zdo> _newInRangeScratch = new();
     // Materialised drain list for capped catch-up (bug #3): we Take(N) ZDOs
     // out of the pending HashSet per flush so a 1000+ entry teleport doesn't
     // produce a single multi-MB head-of-line packet.
@@ -338,10 +332,17 @@ public static class ZdoMan
         _bySodIdInt.Clear();
         _bySodIdStr.Clear();
         _dirty.Clear();
-        _spatialZdos.Clear();
+        SpatialGrid.Clear();
         _inRangeForPeer.Clear();
         _pendingResendForPeer.Clear();
         _pendingOwnershipBroadcast.Clear();
+        // Drop any half-received chunked snapshot. A partial stream that
+        // survived into a new session would be appended to by the next
+        // header-less chunk and restored as a fragment.
+        ResetChunkReassembly();
+        // Drop any half-sent chunked snapshot: the entries pin multi-MB
+        // buffers and reference peers from the session being torn down.
+        _pendingSnapshotSends.Clear();
         // Session-scoped state that previously leaked across host/menu/host
         // cycles: the auth-reject log throttle grew unbounded under a
         // misbehaving/version-mismatched peer, and a stale pending snapshot
@@ -552,8 +553,8 @@ public static class ZdoMan
         // a no-op, so this is safe regardless of dirty state.)
         _dirty.Remove(z);
         // Remove from spatial index + per-peer catch-up sets — otherwise
-        // a future EvaluatePeerCatchup walk would deref a freed ZDO.
-        _spatialZdos.Remove(z);
+        // a future EvaluatePeerCatchup query would deref a freed ZDO.
+        SpatialGrid.Remove(z);
         foreach (var kv in _inRangeForPeer)         kv.Value.Remove(z);
         foreach (var kv in _pendingResendForPeer)   kv.Value.Remove(z);
         OnZdoDestroyed?.Invoke(z);
@@ -1578,27 +1579,96 @@ public static class ZdoMan
 
     // ── Snapshot push (host → joiner) ─────────────────────────────────
 
-    /// <summary>Queue entry for an in-flight async snapshot send.
-    /// Serialisation runs on the main thread (touches the live ZDO
-    /// registry); compression runs on a thread-pool worker; transmission
-    /// happens on a later main-thread frame once the compress Task
-    /// completes (drained from <see cref="PumpPendingSnapshotSends"/>).</summary>
+    /// <summary>Queue entry for an in-flight chunked snapshot send.
+    ///
+    /// <para><b>Pipeline:</b> serialise once on the main thread (walks the
+    /// live <c>_byId</c> registry, so it cannot move off-thread) → zstd the
+    /// WHOLE payload on a thread-pool worker → chunk the resulting
+    /// <b>compressed</b> buffer across frames at
+    /// <see cref="MAX_CHUNK_BYTES_PER_FRAME"/> per frame.</para>
+    ///
+    /// <para><b>Why compress-then-chunk and not chunk-then-compress:</b> an
+    /// earlier revision shipped the chunks RAW (per-chunk zstd was judged not
+    /// worth the overhead, and the whole-payload compress was dropped along
+    /// with it). That put 1.5 MB on the wire where the previous atomic path
+    /// had put ~150 KB — a 10× bandwidth regression — while leaving the
+    /// serialise stall it was meant to fix completely untouched, because
+    /// serialise was always the expensive half and it still runs
+    /// synchronously in <see cref="SendSnapshotTo"/>. Compressing the full
+    /// payload once off-thread and chunking the compressed bytes keeps both
+    /// wins: the 10× compression ratio AND bounded per-frame send cost.</para>
+    ///
+    /// <para>Reassembly on the receiver is driven by <b>bytes received</b>
+    /// against the header's announced compressed length, not by counting
+    /// chunks. Byte-driven completion is robust to a short final chunk and to
+    /// the host changing its chunk size between builds, and it leaves no
+    /// "completed" predicate latched true after a restore.</para></summary>
     private struct PendingSnapshotSend
     {
         public SteamPeer Peer;
-        public System.Threading.Tasks.Task<byte[]> CompressTask;
-        public byte[] Payload;       // uncompressed body (kept alive for length + fallback only)
+        /// <summary>FULL uncompressed snapshot body (WIRE_VERSION + count +
+        /// ZDO records). Retained only until <see cref="CompressTask"/>
+        /// completes — the wire carries the compressed form.</summary>
+        public byte[] Payload;
         public int    PayloadLen;
+        /// <summary>Off-thread zstd of the whole <see cref="Payload"/>.
+        /// <see cref="PumpPendingSnapshotSends"/> skips this entry until the
+        /// Task completes, then chunks its result.</summary>
+        public System.Threading.Tasks.Task<byte[]> CompressTask;
+        /// <summary>Compressed payload, populated from
+        /// <see cref="CompressTask"/> on the first frame after it finishes.
+        /// This — not <see cref="Payload"/> — is what gets chunked.</summary>
+        public byte[] Compressed;
+        public int    CompressedLen;
         public int    ZdoCount;
         public ulong  PeerSteamId;
         public int    PeerId;
         public float  EnqueuedAt;
+        /// <summary>Byte offset into <see cref="Compressed"/> of the next
+        /// chunk to send. Advances only when the transport ACCEPTS the slice
+        /// (see the backpressure note in <see cref="PumpPendingSnapshotSends"/>).</summary>
+        public int    Cursor;
+        /// <summary>Number of chunks actually shipped (header included).
+        /// Diagnostics only.</summary>
+        public int    ChunksSent;
+        /// <summary>Total chunk count written into the header chunk, for
+        /// receiver-side progress logging only.</summary>
+        public ushort TotalChunks;
+        /// <summary>True once the header chunk (chunk 0) has been ACCEPTED by
+        /// the transport. A rejected header is retried next frame.</summary>
+        public bool   HeaderSent;
+        /// <summary>Wall-clock of the last frame on which the transport
+        /// accepted at least one byte. Used to abort a transfer that is
+        /// permanently wedged (peer gone / send buffer never drains) instead
+        /// of retrying forever and pinning a multi-MB buffer.</summary>
+        public float  LastProgressAt;
     }
 
-    /// <summary>Per-host queue of pending async snapshot sends. Drained
-    /// once per frame from <see cref="PumpPendingSnapshotSends"/>.
+    /// <summary>Abort a snapshot send that has made zero forward progress for
+    /// this long. Generous: a saturated 2 MB Steam send buffer on a slow
+    /// uplink can legitimately stall for several seconds mid-drain, and the
+    /// joiner is on a loading screen anyway. Only a genuinely dead peer or a
+    /// permanently full buffer should ever trip it.</summary>
+    private const float SNAPSHOT_STALL_TIMEOUT_S = 30f;
+
+    /// <summary>Per-host queue of pending chunked snapshot sends. Drained
+    /// chunk-by-chunk once per frame from <see cref="PumpPendingSnapshotSends"/>.
     /// Typically holds 0–1 entries; only grows during concurrent joins.</summary>
     private static readonly List<PendingSnapshotSend> _pendingSnapshotSends = new();
+
+    /// <summary>Max compressed bytes handed to the transport per frame per
+    /// pending snapshot. At 16 KB/frame a ~200 KB compressed snapshot drains
+    /// in ~13 frames (~0.2 s at 60 fps) and each frame's send cost is
+    /// sub-millisecond. Deliberately well under the sustained throughput of a
+    /// modest uplink so the Steam send buffer has room to drain between
+    /// frames — see the backpressure note in
+    /// <see cref="PumpPendingSnapshotSends"/>.</summary>
+    private const int MAX_CHUNK_BYTES_PER_FRAME = 16 * 1024;
+
+    /// <summary>Size of each slice cut out of the compressed payload and
+    /// shipped as one ReliableOrdered packet. Small slices keep per-frame
+    /// granularity fine and limit the retransmit unit on packet loss.</summary>
+    private const int SNAPSHOT_CHUNK_SIZE = 16 * 1024;
 
     /// <summary>Dedicated wire-build buffer for the async snapshot emit path.
     /// Kept separate from <see cref="_payloadScratch"/> (the delta-flush
@@ -1628,56 +1698,83 @@ public static class ZdoMan
         _enumKeyCount++;
     }
 
-    /// <summary>Push a full ZDO snapshot to <paramref name="peer"/>.
+    /// <summary>Push a full ZDO snapshot to <paramref name="peer"/> as a
+    /// stream of chunked <see cref="PacketType.ZdoSnapshot"/> packets.
     ///
-    /// <para>Serialisation walks the live <c>_byId</c> registry and so must
-    /// run on the Unity main thread (no locks elsewhere — see class
-    /// summary). It costs ~50–150 ms on a typical 5-20K ZDO city: a
-    /// single-frame stall but not catastrophic.</para>
+    /// <para><b>Serialisation</b> walks the live <c>_byId</c> registry ONCE
+    /// here (must run on the Unity main thread — no locks elsewhere — but
+    /// happens a single time per joiner, not per chunk). The resulting
+    /// payload (typically 1–2 MB uncompressed) is queued on
+    /// <see cref="_pendingSnapshotSends"/> and drained chunk-by-chunk by
+    /// <see cref="PumpPendingSnapshotSends"/> at
+    /// <see cref="MAX_CHUNK_BYTES_PER_FRAME"/> per frame.</para>
     ///
-    /// <para><b>Compression</b> (zstd, level 3, 1–2 MB → 100–200 KB) used
-    /// to run on the same frame and **doubled** that stall. It is now
-    /// dispatched to the .NET thread pool via
-    /// <see cref="ZdoCompression.CompressOffThread"/>, and the actual
-    /// network send is deferred to the next frame on which the compress
-    /// Task has completed. Drained by <see cref="PumpPendingSnapshotSends"/>
-    /// from <c>CoopUpdateRunner.Update</c>.</para>
+    /// <para><b>Compression</b> (zstd-3, 1–2 MB → 100–200 KB) runs on a
+    /// thread-pool worker via <see cref="ZdoCompression.CompressOffThread"/>,
+    /// which allocates its own Compressor so the shared main-thread one is
+    /// never touched concurrently. <see cref="SerializeAllForSnapshot"/>
+    /// returns a fresh array, so the worker owns its input outright.</para>
     ///
-    /// <para>Result for the joiner: host's per-frame stall is roughly
-    /// halved at the cost of one extra frame of latency on the snapshot,
-    /// which the joiner can't see anyway (they're on a loading screen).
-    /// </para></summary>
+    /// <para><b>Wire format</b> (reuses <see cref="PacketType.ZdoSnapshot"/>
+    /// with a flags bit so the receiver needs no new dispatch branch). Every
+    /// frame carries the standard envelope
+    /// <c>flags(1) | unused(2) | uncompLen(4) | bodyLen(4) | body[bodyLen]</c>:
+    /// <list type="bullet">
+    ///   <item><description>Header chunk: flags=0x03 (compressed +
+    ///   chunked-start). Body is a zstd-compressed
+    ///   <c>uint totalZdoCount + uint totalUncompressedLen +
+    ///   uint totalCompressedLen + ushort totalChunks</c>.</description></item>
+    ///   <item><description>Data chunk: flags=0x02 (chunked-continue).
+    ///   <c>uncompLen=0</c> is the "this is a data chunk" sentinel; body is a
+    ///   raw slice of the <b>already-compressed</b> snapshot
+    ///   stream.</description></item>
+    /// </list>
+    /// The receiver appends data-chunk bodies until it holds
+    /// <c>totalCompressedLen</c> bytes, decompresses once to
+    /// <c>totalUncompressedLen</c>, and runs the standard
+    /// <see cref="RestoreFromSnapshot"/> path. Drops and retransmits are
+    /// ReliableOrdered's job; send-buffer rejections are ours (see
+    /// <see cref="PumpPendingSnapshotSends"/>).</para></summary>
     public static void SendSnapshotTo(SteamPeer peer)
     {
         if (peer == null) return;
         if (!NetworkManager.IsHost) return;
         try
         {
-            // Main-thread step: serialise the live registry. This must
-            // happen synchronously here; mutating ZDOs from a worker
-            // thread would race with the main-thread flush loop.
+            // One-shot serialise on the main thread — this walks the live
+            // registry so it cannot move off-thread. It is also the expensive
+            // half (~50-150 ms on a 20 K ZDO city); compress and send are
+            // both amortised away from this frame below.
             byte[] payload = SerializeAllForSnapshot();
             int payloadLen = payload.Length;
             int count = Count;
             int peerId = NetworkManager.GetPlayerIdByPeer(peer);
 
-            // Off-thread step: zstd-compress the serialised payload.
-            // CompressOffThread allocates its own Compressor so the
-            // shared one in ZdoCompression isn't touched concurrently.
             var compressTask = System.Threading.Tasks.Task.Run(
                 () => ZdoCompression.CompressOffThread(payload, payloadLen));
 
             _pendingSnapshotSends.Add(new PendingSnapshotSend
             {
-                Peer          = peer,
-                CompressTask  = compressTask,
-                Payload       = payload,
-                PayloadLen    = payloadLen,
-                ZdoCount      = count,
-                PeerSteamId   = peer.SteamId.m_SteamID,
-                PeerId        = peerId,
-                EnqueuedAt    = Time.unscaledTime,
+                Peer           = peer,
+                Payload        = payload,
+                PayloadLen     = payloadLen,
+                CompressTask   = compressTask,
+                Compressed     = null,
+                CompressedLen  = 0,
+                ZdoCount       = count,
+                PeerSteamId    = peer.SteamId.m_SteamID,
+                PeerId         = peerId,
+                EnqueuedAt     = Time.unscaledTime,
+                Cursor         = 0,
+                ChunksSent     = 0,
+                TotalChunks    = 0,   // known once the compressed length is
+                HeaderSent     = false,
+                LastProgressAt = Time.unscaledTime,
             });
+            Plugin.Log.LogInfo(
+                $"[ZdoMan] snapshot enqueued for {peer.SteamId.m_SteamID}: " +
+                $"{payloadLen} B uncompressed, {count} ZDOs — compressing off-thread, " +
+                $"will drain at {MAX_CHUNK_BYTES_PER_FRAME} B/frame.");
         }
         catch (Exception ex)
         {
@@ -1685,82 +1782,227 @@ public static class ZdoMan
         }
     }
 
-    /// <summary>Drain completed async snapshot compress tasks and emit
-    /// the wire packets. Called once per frame from
-    /// <c>CoopUpdateRunner.Update</c>. Safe to call when the queue is
+    /// <summary>Drain pending chunked snapshot sends. Called once per frame
+    /// from <c>CoopUpdateRunner.Update</c>. Each frame, for each pending
+    /// snapshot, emits the header chunk (once) + as many data chunks as
+    /// fit in <see cref="MAX_CHUNK_BYTES_PER_FRAME"/>. When the last data
+    /// chunk ships, the entry is finalised (peer marked world-ready, cursor
+    /// seeded) and removed from the queue. Safe to call when the queue is
     /// empty (early-returns).</summary>
     public static void PumpPendingSnapshotSends()
     {
         if (_pendingSnapshotSends.Count == 0) return;
 
+        // Iterate front-to-back: snapshot send order matters (a peer that
+        // joined first should get their snapshot first). RemoveAt(i) on a
+        // forward walk is O(N) but N is typically 0–1.
         for (int i = _pendingSnapshotSends.Count - 1; i >= 0; i--)
         {
             var p = _pendingSnapshotSends[i];
-
-            // Skip until the worker thread has finished compressing.
-            if (!p.CompressTask.IsCompleted) continue;
-
-            _pendingSnapshotSends.RemoveAt(i);
-
-            byte[] compressed;
-            try
-            {
-                compressed = p.CompressTask.Result;
-            }
-            catch (Exception ex)
-            {
-                Plugin.Log.LogWarning($"[ZdoMan] async compress task faulted for {p.PeerSteamId}: {ex.Message}");
-                continue;
-            }
+            if (p.Peer == null) { _pendingSnapshotSends.RemoveAt(i); continue; }
 
             try
             {
-                _snapshotEmitScratch.Reset();
-                byte flags = 0x01; // compressed
-                _snapshotEmitScratch.Put(flags);
-                _snapshotEmitScratch.Put((ushort)0); // uncompressedLen unused for snapshot
-                _snapshotEmitScratch.Put(p.PayloadLen);
-                _snapshotEmitScratch.Put(compressed.Length);
-                _snapshotEmitScratch.Put(compressed, 0, compressed.Length);
-
-                NetworkManager.SendTo(p.Peer, PacketType.ZdoSnapshot, _snapshotEmitScratch, DeliveryMethod.ReliableOrdered);
-
-                // The snapshot is now on the wire. Enable live delta/event
-                // traffic to this peer — ordering is guaranteed (snapshot
-                // first, then deltas) because every per-peer send path gates
-                // on WorldReady, which we only flip here, post-send.
-                NetworkManager.MarkPeerWorldReady(p.PeerId);
-
-                float elapsedMs = (Time.unscaledTime - p.EnqueuedAt) * 1000f;
-                Plugin.Log.LogInfo(
-                    $"[ZdoMan] async snapshot sent to {p.PeerSteamId}: " +
-                    $"{p.PayloadLen} → {compressed.Length} B, {p.ZdoCount} ZDOs, " +
-                    $"compress+wait={elapsedMs:F0} ms.");
-
-                // Seed the peer's per-peer DataRevision cursor with the
-                // current revision of every ZDO we just shipped. Without
-                // this, the first delta flush after the snapshot would
-                // re-include every dirty ZDO regardless of cursor — and
-                // any future reconnect-grace path would have an empty
-                // cursor, defeating the gap-fill optimisation.
-                if (p.PeerId >= 0
-                    && NetworkManager.Players != null
-                    && NetworkManager.Players.TryGetValue(p.PeerId, out var info)
-                    && info != null)
+                // ── Wait for the off-thread compress ─────────────────────
+                if (p.Compressed == null)
                 {
-                    if (info.LastSeenRev == null)
-                        info.LastSeenRev = new Dictionary<ZDOID, uint>(_byId.Count);
-                    info.LastSeenRev.Clear();
-                    foreach (var kv in _byId)
-                        info.LastSeenRev[kv.Key] = kv.Value.DataRevision;
+                    if (p.CompressTask == null)
+                    {
+                        Plugin.Log.LogWarning($"[ZdoMan] snapshot for {p.PeerSteamId} has no compress task — dropping.");
+                        _pendingSnapshotSends.RemoveAt(i);
+                        continue;
+                    }
+                    if (!p.CompressTask.IsCompleted) continue;   // still compressing; retry next frame
+
+                    byte[] compressed;
+                    try { compressed = p.CompressTask.Result; }
+                    catch (Exception ex)
+                    {
+                        Plugin.Log.LogWarning($"[ZdoMan] snapshot compress task faulted for {p.PeerSteamId}: {ex.Message}");
+                        _pendingSnapshotSends.RemoveAt(i);
+                        continue;
+                    }
+
+                    p.Compressed    = compressed;
+                    p.CompressedLen = compressed.Length;
+                    // The uncompressed payload is no longer needed — the wire
+                    // carries the compressed form. Release it so a queued
+                    // snapshot doesn't pin two multi-MB buffers.
+                    p.Payload = null;
+
+                    int dataChunks = (p.CompressedLen + SNAPSHOT_CHUNK_SIZE - 1) / SNAPSHOT_CHUNK_SIZE;
+                    p.TotalChunks    = (ushort)Math.Min(ushort.MaxValue, dataChunks + 1);
+                    p.LastProgressAt = Time.unscaledTime;
+                    _pendingSnapshotSends[i] = p;
+
+                    Plugin.Log.LogInfo(
+                        $"[ZdoMan] snapshot compressed for {p.PeerSteamId}: " +
+                        $"{p.PayloadLen} → {p.CompressedLen} B " +
+                        $"({(p.PayloadLen > 0 ? (100.0 * p.CompressedLen / p.PayloadLen) : 0):F1}%), " +
+                        $"{p.TotalChunks} chunks.");
+                }
+
+                int sentThisFrame = 0;
+                // Set false by the first rejected send this frame. A rejected
+                // slice must be re-sent — NOT skipped — so we stop the drain
+                // immediately and keep the cursor where it is.
+                bool accepted = true;
+
+                // ── Header chunk (chunk 0) ───────────────────────────────
+                // Tiny: totalZdoCount + total uncompressed len + total
+                // compressed len + chunk count, itself zstd-compressed.
+                if (!p.HeaderSent)
+                {
+                    _innerHdrScratch.Reset();
+                    _innerHdrScratch.Put((uint)p.ZdoCount);
+                    _innerHdrScratch.Put((uint)p.PayloadLen);
+                    _innerHdrScratch.Put((uint)p.CompressedLen);
+                    _innerHdrScratch.Put(p.TotalChunks);
+                    int hdrInnerLen = _innerHdrScratch.Length;
+                    byte[] hdrCompressed = ZdoCompression.Compress(_innerHdrScratch.Data, hdrInnerLen);
+
+                    _snapshotEmitScratch.Reset();
+                    // flags: bit0=compressed, bit1=chunked-start
+                    _snapshotEmitScratch.Put((byte)0x03);
+                    _snapshotEmitScratch.Put((ushort)0); // unused (legacy field)
+                    _snapshotEmitScratch.Put(hdrInnerLen);
+                    _snapshotEmitScratch.Put(hdrCompressed.Length);
+                    _snapshotEmitScratch.Put(hdrCompressed, 0, hdrCompressed.Length);
+
+                    if (NetworkManager.SendTo(p.Peer, PacketType.ZdoSnapshot, _snapshotEmitScratch, DeliveryMethod.ReliableOrdered))
+                    {
+                        p.HeaderSent = true;
+                        p.ChunksSent++;
+                        sentThisFrame += hdrCompressed.Length;
+                        p.LastProgressAt = Time.unscaledTime;
+                    }
+                    else
+                    {
+                        // Send buffer full / peer gone. Retry the header next
+                        // frame — data chunks must never precede it.
+                        accepted = false;
+                    }
+                }
+
+                // ── Data chunks (slices of the COMPRESSED payload) ───────
+                //
+                // Backpressure: Steam rejects a send once the per-connection
+                // send buffer is saturated and DROPS the message — there is no
+                // transport-level retry. Advancing the cursor past a rejected
+                // slice punches a permanent hole in the stream, so the
+                // joiner's reassembly can never complete while the host has
+                // already flipped WorldReady and started streaming deltas
+                // against a base state the client never got. Hence: only
+                // advance on an accepted send, and stop the drain for this
+                // frame on the first rejection so the buffer can breathe.
+                //
+                // Adaptive budget: when the game itself is hitching (long
+                // frames), lift the per-frame cap so the drain still finishes
+                // in reasonable wall-clock time. Capped at 4× — with real
+                // backpressure in place an over-eager burst is self-limiting,
+                // but there's no point queueing work the buffer will reject.
+                int adaptiveBudget = MAX_CHUNK_BYTES_PER_FRAME;
+                float dt = UnityEngine.Time.unscaledDeltaTime;
+                if (dt > 0.05f)
+                {
+                    float scale = UnityEngine.Mathf.Clamp(dt / 0.0166f, 1f, 4f);
+                    adaptiveBudget = (int)(MAX_CHUNK_BYTES_PER_FRAME * scale);
+                }
+
+                while (accepted && p.Cursor < p.CompressedLen && sentThisFrame < adaptiveBudget)
+                {
+                    int remaining = p.CompressedLen - p.Cursor;
+                    int chunkLen = Math.Min(SNAPSHOT_CHUNK_SIZE, remaining);
+
+                    _snapshotEmitScratch.Reset();
+                    // flags: bit1=chunked-continue only. uncompLen=0 is the
+                    // "this is a data chunk" sentinel (a header always has
+                    // uncompLen>0), and the body is a raw slice of the
+                    // already-compressed stream — not separately compressed.
+                    _snapshotEmitScratch.Put((byte)0x02);
+                    _snapshotEmitScratch.Put((ushort)0); // unused
+                    _snapshotEmitScratch.Put(0);
+                    _snapshotEmitScratch.Put(chunkLen);
+                    _snapshotEmitScratch.Put(p.Compressed, p.Cursor, chunkLen);
+
+                    if (!NetworkManager.SendTo(p.Peer, PacketType.ZdoSnapshot, _snapshotEmitScratch, DeliveryMethod.ReliableOrdered))
+                    {
+                        accepted = false;
+                        break;   // cursor deliberately NOT advanced
+                    }
+
+                    p.Cursor += chunkLen;
+                    p.ChunksSent++;
+                    sentThisFrame += chunkLen;
+                    p.LastProgressAt = Time.unscaledTime;
+                }
+
+                // Persist the mutated cursor/header fields back into the list slot.
+                _pendingSnapshotSends[i] = p;
+
+                // ── Abort a permanently wedged transfer ──────────────────
+                if (p.Cursor < p.CompressedLen
+                    && Time.unscaledTime - p.LastProgressAt > SNAPSHOT_STALL_TIMEOUT_S)
+                {
+                    Plugin.Log.LogError(
+                        $"[ZdoMan] snapshot to {p.PeerSteamId} STALLED at {p.Cursor}/{p.CompressedLen} B " +
+                        $"for {SNAPSHOT_STALL_TIMEOUT_S:F0} s — aborting. Peer stays not-world-ready " +
+                        "(no deltas will be sent to it); they must rejoin.");
+                    _pendingSnapshotSends.RemoveAt(i);
+                    continue;
+                }
+
+                // ── Finalise once the last byte is shipped ───────────────
+                if (p.Cursor >= p.CompressedLen)
+                {
+                    _pendingSnapshotSends.RemoveAt(i);
+
+                    // Enable live delta/event traffic to this peer. Ordering
+                    // is guaranteed (snapshot chunks first via ReliableOrdered,
+                    // then deltas — every per-peer send path gates on
+                    // WorldReady, which we only flip here).
+                    NetworkManager.MarkPeerWorldReady(p.PeerId);
+
+                    float elapsedMs = (Time.unscaledTime - p.EnqueuedAt) * 1000f;
+                    Plugin.Log.LogInfo(
+                        $"[ZdoMan] chunked snapshot complete for {p.PeerSteamId}: " +
+                        $"{p.PayloadLen} → {p.CompressedLen} B on the wire, {p.ZdoCount} ZDOs, " +
+                        $"{p.ChunksSent} chunks, serialize+compress+drain={elapsedMs:F0} ms.");
+
+                    // Seed the peer's per-peer DataRevision cursor with the
+                    // current revision of every ZDO we just shipped. Without
+                    // this, the first delta flush after the snapshot would
+                    // re-include every dirty ZDO regardless of cursor.
+                    if (p.PeerId >= 0
+                        && NetworkManager.Players != null
+                        && NetworkManager.Players.TryGetValue(p.PeerId, out var info)
+                        && info != null)
+                    {
+                        if (info.LastSeenRev == null)
+                            info.LastSeenRev = new Dictionary<ZDOID, uint>(_byId.Count);
+                        info.LastSeenRev.Clear();
+                        foreach (var kv in _byId)
+                            info.LastSeenRev[kv.Key] = kv.Value.DataRevision;
+                    }
                 }
             }
             catch (Exception ex)
             {
                 Plugin.Log.LogWarning($"[ZdoMan] PumpPendingSnapshotSends emit: {ex.Message}");
+                // Drop the snapshot on error — re-enqueuing risks a tight
+                // failure loop. The joiner will see no WorldReady flip and
+                // eventually time out; operator can investigate via the log.
+                _pendingSnapshotSends.RemoveAt(i);
             }
         }
     }
+
+    /// <summary>Scratch for the header chunk's tiny inner body
+    /// (totalZdoCount + totalUncompressedLen + totalCompressedLen +
+    /// totalChunks). Kept separate from
+    /// <see cref="_snapshotEmitScratch"/> so we can compress the inner
+    /// body before writing it into the emit scratch without aliasing.</summary>
+    private static readonly NetDataWriter _innerHdrScratch = new();
 
     /// <summary>Resume-from-cursor variant of <see cref="SendSnapshotTo"/>.
     /// Walks the registry and ships full state for every ZDO whose
@@ -1875,10 +2117,35 @@ public static class ZdoMan
         try
         {
             byte flags = r.GetByte();
-            ushort _ = r.GetUShort(); // unused
+            ushort _ = r.GetUShort(); // unused (legacy field)
             int uncompressedLen = r.GetInt();
             int compressedLen = r.GetInt();
-            // Bug #4: bulk-copy compressed body in one memcpy.
+
+            // Bounds-check the announced body against what's actually on the
+            // wire before allocating/copying — corrupt/truncated frames must
+            // not read past the reader's logical end (LiteNetLib reuses
+            // oversized receive buffers).
+            if (compressedLen < 0 || compressedLen > r.AvailableBytes)
+            {
+                Plugin.Log.LogWarning($"[ZdoMan] snapshot frame bad length: compLen={compressedLen} available={r.AvailableBytes} flags={flags:X2}");
+                return;
+            }
+
+            // ── Chunked snapshot stream ───────────────────────────────────
+            // bit1 (0x02) = chunked. The header chunk also has bit0 (0x01,
+            // compressed) and carries totalZdoCount + totalChunks. Data
+            // chunks are bit1 only (0x02, UNcompressed) with uncompLen=0 as
+            // the "this is a data chunk" sentinel; the receiver appends
+            // their raw body to the reassembly buffer and, once the
+            // announced total ZDO payload is complete, restores.
+            if ((flags & 0x02) != 0)
+            {
+                HandleChunkedSnapshot(flags, uncompressedLen, compressedLen, r);
+                return;
+            }
+
+            // ── Legacy atomic snapshot (forward-compat with older host) ───
+            // Single compressed-or-raw body → restore immediately.
             byte[] body = new byte[compressedLen];
             Buffer.BlockCopy(r.RawData, r.Position, body, 0, compressedLen);
             r.SkipBytes(compressedLen);
@@ -1892,6 +2159,172 @@ public static class ZdoMan
         catch (Exception ex)
         {
             Plugin.Log.LogError($"[ZdoMan] HandleSnapshot failed: {ex}");
+        }
+    }
+
+    // ── Chunked snapshot reassembly state (client side) ───────────────────
+    // Single in-flight reassembly at a time — the host sends a snapshot to
+    // one peer at a time and the client only ever receives from one host.
+    // If a new header chunk arrives mid-reassembly (host triggered a fresh
+    // snapshot, e.g. reconnect during a partial stream), the old buffer is
+    // discarded and reassembly restarts. Single-threaded (Unity main).
+    private static System.IO.MemoryStream _chunkStream;
+    private static uint _chunkExpectedZdos;
+    private static ushort _chunkExpectedChunks;
+    private static int _chunkReceivedChunks;
+    private static float _chunkStartedAt;
+    /// <summary>Total bytes of COMPRESSED payload the header announced. The
+    /// completion test is <c>_chunkStream.Length &gt;= this</c>. Byte-driven
+    /// rather than chunk-count-driven: robust to a short final chunk and to
+    /// the host changing its chunk size, and — unlike a count comparison —
+    /// it cannot stay latched true after a restore. 0 = no active
+    /// reassembly.</summary>
+    private static int _chunkExpectedCompressedLen;
+    /// <summary>Uncompressed length the header announced, handed to zstd as
+    /// the output size when the stream is complete.</summary>
+    private static int _chunkExpectedUncompressedLen;
+
+    /// <summary>Sanity cap on an announced snapshot size. A real 20 K ZDO city
+    /// serialises to 1–2 MB and compresses to 100–200 KB, so 64 MB is orders
+    /// of magnitude of headroom while still refusing a corrupt or hostile
+    /// header that would otherwise have us grow a MemoryStream until the
+    /// process dies.</summary>
+    private const int MAX_SNAPSHOT_COMPRESSED_BYTES = 64 * 1024 * 1024;
+
+    /// <summary>Drop any in-flight chunked-snapshot reassembly. Called on
+    /// completion, on a fresh header, and from <see cref="Clear"/> so a
+    /// partial stream never survives into the next session.</summary>
+    private static void ResetChunkReassembly()
+    {
+        _chunkStream?.SetLength(0);
+        _chunkExpectedZdos = 0;
+        _chunkExpectedChunks = 0;
+        _chunkReceivedChunks = 0;
+        _chunkExpectedCompressedLen = 0;
+        _chunkExpectedUncompressedLen = 0;
+    }
+
+    private static void HandleChunkedSnapshot(byte flags, int uncompressedLen, int compressedLen, NetDataReader r)
+    {
+        // Header chunk: flags == 0x03 (compressed + chunked-start). Its inner
+        // body is (uint totalZdoCount + uint totalUncompressedLen +
+        // uint totalCompressedLen + ushort totalChunks), itself zstd-compressed.
+        if (flags == 0x03)
+        {
+            byte[] body = new byte[compressedLen];
+            Buffer.BlockCopy(r.RawData, r.Position, body, 0, compressedLen);
+            r.SkipBytes(compressedLen);
+
+            byte[] hdr = ZdoCompression.Decompress(body, uncompressedLen);
+            var hr = new NetDataReader(hdr);
+            uint totalZdos     = hr.GetUInt();
+            uint totalUncomp   = hr.GetUInt();
+            uint totalComp     = hr.GetUInt();
+            ushort totalChunks = hr.GetUShort();
+
+            if (totalComp == 0 || totalComp > MAX_SNAPSHOT_COMPRESSED_BYTES
+                || totalUncomp == 0 || totalUncomp > MAX_SNAPSHOT_COMPRESSED_BYTES)
+            {
+                Plugin.Log.LogError(
+                    $"[ZdoMan] chunked snapshot header rejected: implausible lengths " +
+                    $"(uncomp={totalUncomp} comp={totalComp}, cap={MAX_SNAPSHOT_COMPRESSED_BYTES}). " +
+                    "Reassembly not started.");
+                ResetChunkReassembly();
+                return;
+            }
+
+            if (_chunkExpectedCompressedLen > 0)
+            {
+                Plugin.Log.LogWarning(
+                    $"[ZdoMan] new snapshot header while previous reassembly incomplete " +
+                    $"({_chunkStream?.Length ?? 0}/{_chunkExpectedCompressedLen} B) — discarding partial buffer.");
+            }
+
+            // (Re)initialise the reassembly buffer. Reusing the MemoryStream
+            // instance keeps its already-grown capacity across joins, avoiding
+            // a fresh multi-hundred-KB allocation each time.
+            if (_chunkStream == null) _chunkStream = new System.IO.MemoryStream();
+            else _chunkStream.SetLength(0);
+
+            _chunkExpectedZdos            = totalZdos;
+            _chunkExpectedChunks          = totalChunks;
+            _chunkExpectedCompressedLen   = (int)totalComp;
+            _chunkExpectedUncompressedLen = (int)totalUncomp;
+            _chunkReceivedChunks          = 1;
+            _chunkStartedAt               = Time.unscaledTime;
+            Plugin.Log.LogInfo(
+                $"[ZdoMan] chunked snapshot header: {totalZdos} ZDOs, {totalChunks} chunks, " +
+                $"{totalComp} B compressed → {totalUncomp} B — buffering.");
+            return;
+        }
+
+        // Data chunk: flags == 0x02, uncompLen=0 sentinel, raw slice of the
+        // compressed stream.
+        if (_chunkStream == null || _chunkExpectedCompressedLen <= 0)
+        {
+            // Data chunk with no active reassembly — a stale chunk from an
+            // aborted stream, or a header we rejected/never saw. Drop it. The
+            // host's WorldReady flip is what makes a genuinely lost header
+            // visible: the join stalls and the stall timeout logs loudly.
+            Plugin.Log.LogWarning("[ZdoMan] chunked data chunk with no active reassembly — dropping.");
+            r.SkipBytes(compressedLen);
+            return;
+        }
+
+        // Refuse to buffer past the announced total. Without this a host that
+        // under-reports its length (corrupt header, version skew, hostile
+        // peer) could grow this stream without bound.
+        if (_chunkStream.Length + compressedLen > _chunkExpectedCompressedLen)
+        {
+            Plugin.Log.LogError(
+                $"[ZdoMan] chunked snapshot overrun: have {_chunkStream.Length} B + {compressedLen} B " +
+                $"exceeds announced {_chunkExpectedCompressedLen} B — aborting reassembly.");
+            r.SkipBytes(compressedLen);
+            ResetChunkReassembly();
+            return;
+        }
+
+        // Append the slice. Write() handles capacity growth; writing into
+        // GetBuffer() directly would risk IndexOutOfRange once Length +
+        // chunkLen passes the internal buffer's capacity.
+        _chunkStream.Write(r.RawData, r.Position, compressedLen);
+        r.SkipBytes(compressedLen);
+        _chunkReceivedChunks++;
+
+        if (_chunkStream.Length < _chunkExpectedCompressedLen) return;   // more to come
+
+        {
+            byte[] compressedPayload = _chunkStream.ToArray();
+            int zdos = (int)_chunkExpectedZdos;
+            int expectUncomp = _chunkExpectedUncompressedLen;
+            int chunks = _chunkReceivedChunks;
+            float elapsedMs = (Time.unscaledTime - _chunkStartedAt) * 1000f;
+
+            // Clear reassembly state BEFORE restoring: RestoreFromSnapshot is
+            // a long call that can log/throw, and leaving the completion
+            // predicate satisfied would let a stray follow-up chunk trigger a
+            // second restore on a fragment.
+            ResetChunkReassembly();
+
+            byte[] payload;
+            try
+            {
+                payload = ZdoCompression.Decompress(compressedPayload, expectUncomp);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogError(
+                    $"[ZdoMan] chunked snapshot decompress failed ({compressedPayload.Length} B → " +
+                    $"expected {expectUncomp} B): {ex.Message} — snapshot discarded, peer must rejoin.");
+                return;
+            }
+
+            Plugin.Log.LogInfo(
+                $"[ZdoMan] chunked snapshot reassembled: {compressedPayload.Length} → {payload.Length} B, " +
+                $"{zdos} ZDOs, {chunks} chunks, {elapsedMs:F0} ms — restoring.");
+
+            try { RestoreFromSnapshot(payload); }
+            catch (Exception ex) { Plugin.Log.LogError($"[ZdoMan] chunked RestoreFromSnapshot failed: {ex}"); }
         }
     }
 }

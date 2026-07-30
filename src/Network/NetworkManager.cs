@@ -310,6 +310,22 @@ public static class NetworkManager
             return false;
         }
 
+        // World must be loaded before hosting. SoD's city-data, citizen
+        // roster, Player.Instance — all the things the ZDO snapshot, the
+        // share-code, and the twin assignment depend on — only exist once
+        // a save is loaded or a new city generated. Hosting from the main
+        // menu would leave the host with no world to replicate; the first
+        // joining client would hit null CityData and fail the handshake.
+        // The HostPanel UI already disables the Start button when
+        // !IsWorldReady, but this is the authoritative guard for any other
+        // entry point (Steam invite auto-accept, future dedicated-server
+        // path, etc.).
+        if (!SoDCoop.Sync.WorldReadyGate.IsWorldReady)
+        {
+            Plugin.Log.LogWarning("[NetworkManager] StartHost rejected: world not loaded yet. Load or generate a city first.");
+            return false;
+        }
+
         // Plugin may have loaded before SoD's SteamAPIController; retry
         // initialization here. Idempotent — no-op if already hooked.
         SteamCallbacks.Initialize();
@@ -323,6 +339,20 @@ public static class NetworkManager
         State = ConnectionState.Connecting;
         ActiveTransport = TransportKind.Steam;
 
+        // Save-Transfer hint: if the host has never saved this session, the
+        // joining client will fall back to share-code (Mode 1) which can
+        // diverge. Surface this proactively so the host knows to press Save
+        // once before friends join. (We can't auto-capture here because the
+        // SOD.Common SaveGame API is async + main-thread-bound; the existing
+        // OnAfterSave hook captures HostSavePath on the next manual save.)
+        if (string.IsNullOrEmpty(SoDCoop.Sync.SaveTransfer.HostSavePath))
+        {
+            Plugin.Log.LogWarning(
+                "[NetworkManager] Save-Transfer: host has no save file yet. Save your game once " +
+                "(Esc → Save) so joining clients get an identical world via Save-Transfer instead of " +
+                "the share-code path (which can diverge).");
+        }
+
         SteamLobby.CreateLobbyAsync();
         return true;
     }
@@ -335,6 +365,14 @@ public static class NetworkManager
         if (IsConnected || State == ConnectionState.Connecting)
         {
             Plugin.Log.LogWarning("Already connected. Disconnect first.");
+            return false;
+        }
+
+        // Same world-ready guard as StartHost — see comment there. Hosting
+        // from the main menu produces a lobby with no city to replicate.
+        if (!SoDCoop.Sync.WorldReadyGate.IsWorldReady)
+        {
+            Plugin.Log.LogWarning("[NetworkManager] StartHostIP rejected: world not loaded yet. Load or generate a city first.");
             return false;
         }
 
@@ -601,19 +639,32 @@ public static class NetworkManager
         }
     }
 
-    public static void SendTo(SteamPeer peer, PacketType type, NetDataWriter data, DeliveryMethod delivery = DeliveryMethod.ReliableOrdered)
+    /// <summary>Send one framed packet to a single peer.
+    ///
+    /// <para><b>Returns true iff the transport accepted the message into its
+    /// outgoing queue.</b> A false return is NOT cosmetic: Steam rejects sends
+    /// once the per-connection send buffer (2 MB, see
+    /// <c>SteamSocketsNative</c>) is saturated, and the message is then
+    /// dropped outright — there is no transport-level retry. Callers that
+    /// stream a payload across frames (<c>ZdoMan.PumpPendingSnapshotSends</c>,
+    /// <c>SaveTransfer.PumpPendingTransfers</c>) MUST check this and hold
+    /// their cursor so the rejected slice is re-sent next frame; advancing
+    /// blindly punches a permanent hole in the stream, which for a snapshot
+    /// means the joiner's reassembly never completes and for a save transfer
+    /// means a SHA-256 mismatch at the end.</para></summary>
+    public static bool SendTo(SteamPeer peer, PacketType type, NetDataWriter data, DeliveryMethod delivery = DeliveryMethod.ReliableOrdered)
     {
-        if (peer == null) return;
+        if (peer == null) return false;
         if (data == _sendWrapper)
         {
             Plugin.Log.LogError("[NetworkManager.SendTo] caller passed _sendWrapper as data — would alias-corrupt. Aborting.");
-            return;
+            return false;
         }
 
         _sendWrapper.Reset();
         _sendWrapper.Put((byte)type);
         _sendWrapper.Put(data.Data, 0, data.Length);
-        TransportSend(peer, _sendWrapper.Data, 0, _sendWrapper.Length, delivery);
+        return TransportSend(peer, _sendWrapper.Data, 0, _sendWrapper.Length, delivery);
     }
 
     public static void SendToHost(PacketType type, NetDataWriter data, DeliveryMethod delivery = DeliveryMethod.ReliableOrdered)
@@ -915,6 +966,12 @@ public static class NetworkManager
             _writer.Put(joinerShareCode);
         }
 
+        // Trailing capability flag: this client supports Save-Transfer
+        // (host sends its save file; client loads it via LoadGame). Older
+        // clients that don't write this field are detected by the host
+        // via AvailableBytes guard → fall back to share-code automatically.
+        _writer.Put(true); // supportsSaveTransfer
+
         SendToHost(PacketType.CharacterSubmit, _writer);
         // ↑ Bootstrapping: we use CharacterSubmit as the GUID-bearing first
         // packet because (a) it's already host→client validated and (b) it
@@ -1095,6 +1152,44 @@ public static class NetworkManager
         }
     }
 
+    /// <summary>Delivery class to use when relaying a client packet to the
+    /// other clients. Mirrors the channel the original sender used: overwrite/
+    /// position-state traffic goes Sequenced (late packets can be dropped by
+    /// the transport without head-of-line blocking the next frame), one-shot
+    /// state-transition traffic goes ReliableOrdered (must arrive in order).
+    ///
+    /// <para>Before this map existed the host forced every forwarded packet
+    /// onto ReliableOrdered, which meant a client's 20–30 Hz
+    /// <see cref="PacketType.PlayerPosition"/> relayed to other clients
+    /// stalled behind retransmits on any packet loss — a direct cause of
+    /// remote-player stutter under lossy links. Sequenced lets the transport
+    /// drop the stale position frame and apply the next one instead.</para>
+    ///
+    /// <para>Sequenced set: the per-feature Sync send sites that already use
+    /// <c>DeliveryMethod.Sequenced</c> for their client→host leg
+    /// (PlayerSync.SendPosition, InventorySync.BroadcastAction,
+    /// FootprintSync, SpatterSync, FingerprintSync).</para></summary>
+    private static DeliveryMethod ForwardDeliveryFor(PacketType type)
+    {
+        switch (type)
+        {
+            // Overwrite / position-state — latest-wins, stale frames droppable.
+            case PacketType.PlayerPosition:
+            case PacketType.PlayerAnimation:
+            case PacketType.PlayerVitals:
+            case PacketType.ItemAction:          // melee/block/counter (Sequenced at source)
+            case PacketType.FootprintAdd:
+            case PacketType.SpatterAdd:
+            case PacketType.FingerprintAdd:      // idempotent overwrite of the print set
+                return DeliveryMethod.Sequenced;
+
+            // Everything else: state transitions, one-shot events, mutations
+            // whose loss leaves a visible unrecoverable divergence.
+            default:
+                return DeliveryMethod.ReliableOrdered;
+        }
+    }
+
     /// <summary>Receives a fully-framed message from the Steam transport.
     /// Wire format: <c>byte type + payload bytes</c> (same as the LiteNetLib
     /// era; the type byte was prepended in SendToAll/SendTo/SendToHost).</summary>
@@ -1180,15 +1275,24 @@ public static class NetworkManager
                     else
                         _forwardWrapper.Put(forwardBody, 0, forwardBodyLen);
 
-                    // Best-effort: forward at the same delivery class. The
-                    // transport-level message we just received doesn't tell
-                    // us which channel was used, so default to ReliableOrdered
-                    // for forwarded traffic (matches the legacy default).
+                    // Forward at the delivery class that matches the original
+                    // sender's intent. The transport-level message we received
+                    // doesn't carry the channel, but for each forwardable
+                    // packet type we know whether the sender used Sequenced
+                    // (overwrite/position state — late packets can be dropped)
+                    // or ReliableOrdered (state transitions — must arrive).
+                    // Forcing everything through Reliable — as the old code did
+                    // — meant a client's 20-30 Hz PlayerPosition relayed to
+                    // other clients head-of-line-blocked on any packet loss:
+                    // every dropped position stalled the next several frames
+                    // of remote-player movement. Sequenced just skips the
+                    // stale frame and applies the next.
+                    DeliveryMethod fwdDelivery = ForwardDeliveryFor(packetType);
                     for (int i = 0; i < _clients.Count; i++)
                     {
                         var c = _clients[i];
                         if (c == peer) continue;
-                        TransportSend(c, _forwardWrapper.Data, 0, _forwardWrapper.Length, DeliveryMethod.ReliableOrdered);
+                        TransportSend(c, _forwardWrapper.Data, 0, _forwardWrapper.Length, fwdDelivery);
                     }
                 }
                 catch (Exception ex)
@@ -1311,6 +1415,33 @@ public static class NetworkManager
                 $"firing snapshot immediately.");
             HandleClientWorldReady(peer);
             return;
+        }
+
+        // ── Mode 3 (Save-Transfer): if the host's WorldBootstrap setting ──
+        // is SaveTransfer AND the client advertised support in its bootstrap
+        // packet, ship the host's save file instead of a share-code. The
+        // client loads it via SoD's LoadGame path → identical world by
+        // construction. Falls back to Mode 1 (share-code) if the client
+        // doesn't support it, the host setting is ShareCode, or the save
+        // file can't be read. The ZDO snapshot stays deferred until the
+        // client's save-load completes and fires ClientWorldReady (same
+        // tail as Mode 1 — WorldAutoLoad.OnWorldReadyAfterAutoLoad sends
+        // it after the load finishes).
+        bool wantSaveTransfer = CoopSettings.WorldBootstrap?.Value == WorldBootstrapMode.SaveTransfer;
+        if (wantSaveTransfer && info.SupportsSaveTransfer)
+        {
+            if (SoDCoop.Sync.SaveTransfer.SendSaveToPeer(peer))
+            {
+                Plugin.Log.LogInfo(
+                    $"[NetworkManager] Mode 3 (Save-Transfer) started for {peer.DisplayName} — " +
+                    $"save file enqueued, awaiting client load + ClientWorldReady.");
+                return;
+            }
+            // SendSaveToPeer returned false (no save file / read error) →
+            // fall through to Mode 1 share-code as a safe fallback.
+            Plugin.Log.LogWarning(
+                $"[NetworkManager] Save-Transfer requested but unavailable for {peer.DisplayName} — " +
+                $"falling back to share-code (Mode 1).");
         }
 
         // ── Auto-load (Mode 1): send WorldDescriptor so the joiner can ──
@@ -1494,6 +1625,31 @@ public static class NetworkManager
         }
 
         Plugin.Log.LogInfo($"Handshake complete. Assigned ID: {LocalPlayerId}. Players online: {playerCount}. I am '{LocalPlayerName}'. MyTwin#={MyTwinHumanID}.");
+
+        // Pre-spawn RemotePlayers for every peer already in the roster. Without
+        // this, the joiner never creates a RemotePlayer for the host (the host
+        // joined before us, so OnPlayerJoined already fired on the host's side
+        // and was NOT relayed to us). The result: the joiner doesn't see the
+        // host's avatar until the host happens to send a position update — and
+        // even then, ApplyPositionState only feeds an existing RemotePlayer.
+        // Spawning here ensures the host's avatar appears as soon as the first
+        // ZDO position delta arrives.
+        try
+        {
+            foreach (var kv in _players)
+            {
+                int pid = kv.Key;
+                var info = kv.Value;
+                if (info == null || pid == LocalPlayerId) continue;
+                if (SoDCoop.Player.RemotePlayerManager.GetPlayer(pid) == null)
+                {
+                    string n = string.IsNullOrEmpty(info.PlayerName) ? $"Player {pid}" : info.PlayerName;
+                    SoDCoop.Player.RemotePlayerManager.SpawnRemotePlayer(pid, n);
+                }
+            }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[NetworkManager] pre-spawn RemotePlayers on handshake: {ex.Message}"); }
+
         OnConnected?.Invoke();
     }
 
@@ -1652,6 +1808,15 @@ public static class NetworkManager
                     return;
                 }
             }
+
+            // Trailing capability flag: the client advertised Save-Transfer
+            // support (host ships its save file, client loads via LoadGame).
+            // Older clients that don't write this field are detected via the
+            // AvailableBytes guard and default to false → host falls back to
+            // share-code (Mode 1) automatically. Read AFTER the Mode 2 block
+            // because it's the last field in the bootstrap packet.
+            try { if (reader.AvailableBytes >= 1) info.SupportsSaveTransfer = reader.GetBool(); }
+            catch { /* mixed-version client — leave SupportsSaveTransfer=false */ }
 
             // Reconnect path: same clientGuid is in the grace window. Restore
             // the existing slot, swap in the new SteamPeer reference, send a
@@ -1904,6 +2069,16 @@ public class PlayerNetInfo
     /// <c>ClientWorldReady</c> (which the joiner won't send because
     /// WorldAutoLoad is bypassed).</summary>
     public bool SkipAutoLoad { get; set; }
+
+    /// <summary>True if this peer's client advertised Save-Transfer support
+    /// in its bootstrap <c>CharacterSubmit</c> packet. The host reads this
+    /// in <c>AssignCharacterAndCompleteHandshake</c> to decide between
+    /// Mode 3 (save-transfer: ship the host's save file) and Mode 1
+    /// (share-code city-gen) when <c>CoopSettings.WorldBootstrap</c> is
+    /// <c>SaveTransfer</c>. A peer on an older build that doesn't write
+    /// this field defaults to false → host falls back to share-code
+    /// automatically (mixed-version safety).</summary>
+    public bool SupportsSaveTransfer { get; set; }
 
     /// <summary>True once this peer has finished loading the world AND
     /// received its full ZDO snapshot — i.e. it is ready to receive and

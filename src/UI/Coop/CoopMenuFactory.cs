@@ -103,8 +103,8 @@ public static class CoopMenuFactory
         var go = new GameObject(name);
         go.transform.SetParent(parent, false);
         var rt = go.AddComponent<RectTransform>();
-        rt.sizeDelta = new(widthOverride ?? (CoopMenuTheme.PanelWidth - CoopMenuTheme.Padding * 2),
-                           CoopMenuTheme.ButtonHeight);
+        float w = widthOverride ?? (CoopMenuTheme.PanelWidth - CoopMenuTheme.Padding * 2);
+        rt.sizeDelta = new(w, CoopMenuTheme.ButtonHeight);
 
         var img = go.AddComponent<Image>();
         img.color = CoopMenuTheme.ButtonBg;
@@ -117,8 +117,32 @@ public static class CoopMenuFactory
         colors.selectedColor    = CoopMenuTheme.ButtonBgHover;
         colors.disabledColor    = new Color(CoopMenuTheme.ButtonBg.r, CoopMenuTheme.ButtonBg.g,
                                             CoopMenuTheme.ButtonBg.b, 0.4f);
+        colors.fadeDuration     = CoopMenuTheme.ButtonFadeDuration;
         btn.colors = colors;
         btn.targetGraphic = img;
+
+        // LayoutElement: when the parent is a VerticalLayoutGroup with
+        // childControlWidth=true (the standard Body stack), the LayoutGroup
+        // IGNORES sizeDelta.x and drives width from controlWidth + the
+        // element's minWidth/preferredWidth. Without an explicit
+        // LayoutElement the button's effective width collapsed to 0 in some
+        // panels (observed on HostPanel's direct-IP row). Setting
+        // preferredWidth + minWidth pins the button to its intended width
+        // regardless of the layout mode, and flexibleWidth=1 lets it grow
+        // to fill the stack when no override is given.
+        var le = go.AddComponent<LayoutElement>();
+        le.preferredHeight = CoopMenuTheme.ButtonHeight;
+        le.minHeight = CoopMenuTheme.ButtonHeight;
+        if (widthOverride.HasValue)
+        {
+            le.preferredWidth = w;
+            le.minWidth = w;
+            le.flexibleWidth = 0f;
+        }
+        else
+        {
+            le.flexibleWidth = 1f;
+        }
 
         // Text label as child.
         Label("Text", go.transform, label, CoopMenuTheme.FontSizeButton,
@@ -154,6 +178,13 @@ public static class CoopMenuFactory
         go.transform.SetParent(parent, false);
         var rt = go.AddComponent<RectTransform>();
         rt.sizeDelta = new(width, height);
+
+        // LayoutElement so VerticalLayoutGroup respects the input's intended
+        // width/height instead of collapsing it under childControlWidth.
+        var le = go.AddComponent<LayoutElement>();
+        le.preferredHeight = height;
+        le.minHeight = height;
+        le.flexibleWidth = 1f;
 
         var bg = go.AddComponent<Image>();
         bg.color = CoopMenuTheme.InputBg;

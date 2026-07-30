@@ -27,12 +27,34 @@ public sealed class CitizenResolver : IZdoResolver
         int humanId = z.GetInt(ZdoKeys.SodId, int.MinValue);
         if (humanId == int.MinValue) return;
 
+        // Snapshot-restore guard: the playtest 2026-06-16 regression (every
+        // NPC naked + crouched + falling over) was caused by the snapshot
+        // carrying outfit=0 / crouched=true / stunned=true values that the
+        // host's CitizenStatePoller had stamped DURING its own init-grace
+        // window — before SoD's CitizenOutfitController had finished
+        // initialising. Those early-write defaults got into the snapshot and
+        // were then applied verbatim on joiners.
+        //
+        // The surgical fix: skip applying cosmetic/derived keys whose value
+        // is the UNINITIALISED default. A genuine host-side transition
+        // (outfit=3 for a real citizen, crouched=true from actual gameplay)
+        // has a non-default value and is still applied. This lets real state
+        // through while swallowing the init-time noise. The per-tick
+        // CitizenStatePoller re-stamps correct values once SoD's init
+        // completes (its own diff baseline is seeded by WarmupBaseline so
+        // only genuine post-init transitions hit the wire).
+        bool inCatchup = SoDCoop.Sync.WorldReadyGate.IsInInitGrace;
+
         try
         {
             if (z.HasKey(ZdoKeys.OutfitCategory))
             {
                 byte cat = z.GetByte(ZdoKeys.OutfitCategory, 0);
-                SoDCoop.Sync.NpcOutfitSync.ApplyByHumanId(humanId, cat);
+                // cat==0 is the "None" / uninitialized outfit — applying it
+                // would strip the citizen naked. Skip only during catch-up;
+                // post-grace a real 0 (citizen genuinely undressed) is valid.
+                if (!(inCatchup && cat == 0))
+                    SoDCoop.Sync.NpcOutfitSync.ApplyByHumanId(humanId, cat);
             }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenResolver] outfit apply: {ex.Message}"); }
@@ -43,7 +65,10 @@ public sealed class CitizenResolver : IZdoResolver
             {
                 bool  restrained = z.GetBool (ZdoKeys.Restrained, false);
                 float duration   = z.GetFloat(ZdoKeys.RestrainedDuration, 0f);
-                SoDCoop.Sync.InventorySync.ApplyRestrainedByHumanId(humanId, restrained, duration);
+                // restrained=false is the default — skip during catch-up
+                // (no-one is tied up at world init).
+                if (!(inCatchup && !restrained))
+                    SoDCoop.Sync.InventorySync.ApplyRestrainedByHumanId(humanId, restrained, duration);
             }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenResolver] restrained apply: {ex.Message}"); }
@@ -53,7 +78,8 @@ public sealed class CitizenResolver : IZdoResolver
             if (z.HasKey(ZdoKeys.Stunned))
             {
                 bool stunned = z.GetBool(ZdoKeys.Stunned, false);
-                SoDCoop.Sync.InventorySync.ApplyStunnedByHumanId(humanId, stunned);
+                if (!(inCatchup && !stunned))
+                    SoDCoop.Sync.InventorySync.ApplyStunnedByHumanId(humanId, stunned);
             }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenResolver] stunned apply: {ex.Message}"); }
@@ -66,19 +92,27 @@ public sealed class CitizenResolver : IZdoResolver
             var dict = global::CityData.Instance?.citizenDictionary;
             if (dict == null || !dict.TryGetValue(humanId, out var c) || c == null) return;
 
+            // For drunk/bleeding/nourishment/hydration: skip only when BOTH
+            // (a) we're in catch-up AND (b) the value is 0/default — i.e.
+            // probably an init-time stamp of a freshly-spawned citizen. A
+            // real "citizen is bleeding 2.3" from gameplay is applied
+            // regardless of grace state.
             if (z.HasKey(ZdoKeys.Drunk))
             {
-                try { c.drunk = z.GetFloat(ZdoKeys.Drunk, 0f); } catch { }
+                float v = z.GetFloat(ZdoKeys.Drunk, 0f);
+                if (!(inCatchup && v == 0f)) try { c.drunk = v; } catch { }
             }
             if (z.HasKey(ZdoKeys.Bleeding))
             {
-                try { c.bleeding = z.GetFloat(ZdoKeys.Bleeding, 0f); } catch { }
+                float v = z.GetFloat(ZdoKeys.Bleeding, 0f);
+                if (!(inCatchup && v == 0f)) try { c.bleeding = v; } catch { }
             }
 
             // Stance — direct field write triggers SoD's animator transition.
             if (z.HasKey(ZdoKeys.Crouched))
             {
-                try { c.isCrouched = z.GetBool(ZdoKeys.Crouched, false); } catch { }
+                bool v = z.GetBool(ZdoKeys.Crouched, false);
+                if (!(inCatchup && !v)) try { c.isCrouched = v; } catch { }
             }
 
             // Vitals (food / water / HP). Whether they actually need to be
@@ -89,12 +123,16 @@ public sealed class CitizenResolver : IZdoResolver
             // Player.Instance lives below for the player's own twin.
             if (z.HasKey(ZdoKeys.Nourishment))
             {
-                try { c.nourishment = z.GetFloat(ZdoKeys.Nourishment, c.nourishment); } catch { }
+                float v = z.GetFloat(ZdoKeys.Nourishment, c.nourishment);
+                if (!(inCatchup && v <= 0f)) try { c.nourishment = v; } catch { }
             }
             if (z.HasKey(ZdoKeys.Hydration))
             {
-                try { c.hydration = z.GetFloat(ZdoKeys.Hydration, c.hydration); } catch { }
+                float v = z.GetFloat(ZdoKeys.Hydration, c.hydration);
+                if (!(inCatchup && v <= 0f)) try { c.hydration = v; } catch { }
             }
+            // currentHealth is always applied — a real HP value is gameplay-
+            // critical (combat/death sync). Even 0 is meaningful (corpse).
             if (z.HasKey(ZdoKeys.CurrentHealth))
             {
                 try { c.currentHealth = z.GetFloat(ZdoKeys.CurrentHealth, c.currentHealth); } catch { }

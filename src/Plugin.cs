@@ -375,6 +375,15 @@ public class Plugin : BasePlugin
         // doesn't carry stale state into the next world.
         WorldReadyGate.OnWorldUnready += () =>
         {
+            // Flush any batched events still in the queue before the world
+            // tears down. Without this, events enqueued by the last poller
+            // tick (citizen anim flips, speech bubbles) that hadn't hit their
+            // per-frame Pump yet would be silently dropped. They reference
+            // citizens/actors that are about to be destroyed, but Pump ships
+            // to PEERS whose worlds are still up, so the state is still
+            // meaningful on the receiving end.
+            try { SoDCoop.Zdo.ZdoEventDispatcher.PumpPendingEventBatch(); }
+            catch (System.Exception ex) { Log.LogWarning($"ZdoEventDispatcher.PumpPendingEventBatch on unready: {ex.Message}"); }
             try { ZdoMan.Clear(); } catch (System.Exception ex) { Log.LogWarning($"ZdoMan.Clear: {ex.Message}"); }
             // The citizen roster cache must drop with the world too. Its
             // count-change rebuild heuristic can't detect "same city (or a
@@ -471,9 +480,9 @@ public class CoopUpdateRunner : MonoBehaviour
         {
             Plugin.DrainPendingResume();   // ← Pause/Resume gate check (revived from archive)
             WorldReadyGate.Tick();
-            NetworkManager.Update();
+            CoopPerf.Sample("net", () => NetworkManager.Update());
             SteamLaunchArgs.TryDrain();    // ← honours +connect_lobby <id> launch arg once Steam is up
-            SyncManager.Update();
+            CoopPerf.Sample("sync", () => SyncManager.Update());
             CoopUI.Update();
             PingSystem.Update();
             // InventorySync.Update is now a no-op alias; held-item polling
@@ -481,20 +490,31 @@ public class CoopUpdateRunner : MonoBehaviour
             // SoDCoop.Sync.InventorySync.Update();
             SoDCoop.Sync.HostStatusSync.Update();
             SoDCoop.Sync.PlayerSuspicionSync.Update();
+            // Drive registered host-side pollers (doors, lights, citizens, …)
+            // BEFORE the delta flush — pollers mark ZDOs dirty + enqueue
+            // batched events, then the flush ships both in the same frame.
+            CoopPerf.Sample("pollers", () => SoDCoop.Zdo.ZdoPollerHost.Tick(Time.unscaledTime));
+            // Coalesce any batched events (citizen anim / speech / etc.) the
+            // poller tick just enqueued into one ZdoEventRpc packet per
+            // (delivery, spatial) bucket. No-op when the queue is empty.
+            CoopPerf.Sample("evbatch", () => SoDCoop.Zdo.ZdoEventDispatcher.PumpPendingEventBatch());
             // ZDO unified delta-flush: collects every dirty ZDO into one
             // batched packet at 10 Hz and ships compressed (zstd-3) when
             // payload exceeds 100 B. Replaces ~30 per-feature Broadcast
             // call sites once Phase H is complete.
-            SoDCoop.Zdo.ZdoMan.TickDeltaFlush(Time.unscaledTime);
+            CoopPerf.Sample("flush", () => SoDCoop.Zdo.ZdoMan.TickDeltaFlush(Time.unscaledTime));
             // Drain async snapshot sends — zstd of the join-time snapshot
             // now runs on the thread pool; this ships it whenever a worker
             // finishes. No-op when the queue is empty.
-            SoDCoop.Zdo.ZdoMan.PumpPendingSnapshotSends();
+            CoopPerf.Sample("snap", () => SoDCoop.Zdo.ZdoMan.PumpPendingSnapshotSends());
+            // Drain pending save-transfer sends (Mode 3 chunked host→joiner
+            // save file stream). No-op when the queue is empty — typically
+            // only non-empty for a few frames right after a peer joins while
+            // WorldBootstrap=SaveTransfer.
+            CoopPerf.Sample("save", () => SoDCoop.Sync.SaveTransfer.PumpPendingTransfers());
             // Drain amortized joiner-side resolver applies (snapshot restore /
             // post-load catch-up) at a bounded per-frame rate. No-op when empty.
-            SoDCoop.Zdo.ZdoMan.PumpPendingResolverApplies();
-            // Drive registered host-side pollers (doors, lights, citizens, …).
-            SoDCoop.Zdo.ZdoPollerHost.Tick(Time.unscaledTime);
+            CoopPerf.Sample("resolve", () => SoDCoop.Zdo.ZdoMan.PumpPendingResolverApplies());
         }
         catch (System.Exception ex)
         {
@@ -552,9 +572,40 @@ public static class CoopPerf
     private static float  _nextRollupAt;
     private static float  _lastFrameTime;
 
+    // Per-subsystem accumulators. The Sample() helper records into these so
+    // the 10s rollup can attribute the coop-layer cost to its biggest
+    // contributor — without this, "coop layer avg=350ms/frame" tells us
+    // nothing about WHICH subsystem is the culprit (playtest 2026-06-16:
+    // host stayed at 600-1000ms/frame for the whole session after a peer
+    // joined, but dirty/5s was only 55-238 — the cost was somewhere else
+    // and the aggregate counter couldn't say where).
+    private static readonly System.Collections.Generic.Dictionary<string, double> _subSum = new();
+    private static readonly System.Collections.Generic.Dictionary<string, double> _subMax = new();
+    private static readonly System.Diagnostics.Stopwatch _subSw = new();
+
     private const float ROLLUP_INTERVAL_S  = 10f;
     private const float SPIKE_THRESHOLD_S  = 0.2f;   // whole-frame spike: 200 ms
     private const double ROLLUP_MIN_MAX_MS = 1.0;    // stay silent when idle
+    // Only log subsystem breakdown when the total exceeds this — keeps idle
+    // sessions quiet.
+    private const double SUB_LOG_MIN_MS = 5.0;
+
+    /// <summary>Measure a subsystem call and fold its cost into the per-
+    /// subsystem accumulators. Use via
+    /// <c>CoopPerf.Sample("flush", () => ZdoMan.TickDeltaFlush(...))</c>.
+    /// Threading: main thread only (same as the rest of CoopPerf).</summary>
+    public static void Sample(string name, System.Action body)
+    {
+        _subSw.Restart();
+        try { body(); }
+        finally
+        {
+            _subSw.Stop();
+            double ms = _subSw.Elapsed.TotalMilliseconds;
+            _subSum[name] = (_subSum.TryGetValue(name, out var s) ? s : 0.0) + ms;
+            if (!_subMax.TryGetValue(name, out var m) || ms > m) _subMax[name] = ms;
+        }
+    }
 
     public static void FrameStart()
     {
@@ -567,12 +618,31 @@ public static class CoopPerf
             if (frameDt >= SPIKE_THRESHOLD_S)
             {
                 // _sw still holds the PREVIOUS frame's coop-layer cost.
+                // Include the per-subsystem max for the spike line so the
+                // attribution is visible on the spike (not just the rollup).
+                string topSub = TopSubsystem();
                 Plugin.Log.LogInfo(
-                    $"[CoopPerf] FRAME SPIKE {frameDt * 1000f:F0} ms — coop layer used {_sw.Elapsed.TotalMilliseconds:F1} ms of the previous frame.");
+                    $"[CoopPerf] FRAME SPIKE {frameDt * 1000f:F0} ms — coop layer used {_sw.Elapsed.TotalMilliseconds:F1} ms of the previous frame" +
+                    (string.IsNullOrEmpty(topSub) ? "" : $" (top: {topSub})."));
             }
         }
         _lastFrameTime = now;
         _sw.Restart();
+    }
+
+    /// <summary>Name + ms of the subsystem that had the largest single-frame
+    /// max this rollup window. Empty string if no subsystem has been
+    /// sampled yet.</summary>
+    private static string TopSubsystem()
+    {
+        if (_subMax.Count == 0) return "";
+        string topName = "";
+        double topMs = 0.0;
+        foreach (var kv in _subMax)
+        {
+            if (kv.Value > topMs) { topMs = kv.Value; topName = kv.Key; }
+        }
+        return topMs >= SUB_LOG_MIN_MS ? $"{topName}={topMs:F0}ms" : "";
     }
 
     public static void FrameEnd()
@@ -588,11 +658,44 @@ public static class CoopPerf
         {
             if (_frames > 0 && _maxMs >= ROLLUP_MIN_MAX_MS)
             {
+                // Per-subsystem breakdown: show sum (avg × frames) and max
+                // for each subsystem, sorted by sum descending. Only emit
+                // subsystems whose max exceeded SUB_LOG_MIN_MS so idle
+                // sessions stay quiet. This is what pinpoints the culprit
+                // when the aggregate "coop layer avg=350ms" is too coarse.
+                System.Text.StringBuilder sb = null;
+                if (_subMax.Count > 0)
+                {
+                    // Collect entries with non-trivial cost, sort by max desc.
+                    var entries = new System.Collections.Generic.List<(string name, double max, double sum)>();
+                    foreach (var kv in _subMax)
+                    {
+                        if (kv.Value >= SUB_LOG_MIN_MS)
+                        {
+                            _subSum.TryGetValue(kv.Key, out var s);
+                            entries.Add((kv.Key, kv.Value, s));
+                        }
+                    }
+                    if (entries.Count > 0)
+                    {
+                        entries.Sort((a, b) => b.max.CompareTo(a.max));
+                        sb = new System.Text.StringBuilder(" [");
+                        for (int i = 0; i < entries.Count; i++)
+                        {
+                            if (i > 0) sb.Append(' ');
+                            // name=maxMs/avgMs (avg = sum / frames)
+                            sb.Append($"{entries[i].name}={entries[i].max:F0}/{(entries[i].sum / _frames):F1}ms");
+                        }
+                        sb.Append(']');
+                    }
+                }
                 Plugin.Log.LogInfo(
-                    $"[CoopPerf] 10s: coop layer avg={_sumMs / _frames:F2} ms/frame, max={_maxMs:F1} ms, frames={_frames}");
+                    $"[CoopPerf] 10s: coop layer avg={_sumMs / _frames:F2} ms/frame, max={_maxMs:F1} ms, frames={_frames}{sb}");
             }
             _nextRollupAt = now + ROLLUP_INTERVAL_S;
             _maxMs = 0; _sumMs = 0; _frames = 0;
+            _subSum.Clear();
+            _subMax.Clear();
         }
     }
 }

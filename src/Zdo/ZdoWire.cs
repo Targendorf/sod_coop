@@ -65,7 +65,13 @@ public static class ZdoWire
             case ZdoValueType.Blob:       {
                 int len = r.GetInt();
                 byte[] buf = new byte[len];
-                for (int i = 0; i < len; i++) buf[i] = r.GetByte();
+                // Bulk copy: the writer uses w.Put(b, 0, len), so the reader
+                // must mirror it with a single BlockCopy instead of a per-byte
+                // GetByte() loop. On snapshot restores with many blob keys
+                // (evidence dataKeys, fingerprints) the loop was an O(len)
+                // method-dispatch cost per blob — BlockCopy is a single memcpy.
+                if (len > 0) Buffer.BlockCopy(r.RawData, r.Position, buf, 0, len);
+                r.SkipBytes(len);
                 target.Set(key, buf);
                 break;
             }
@@ -92,8 +98,10 @@ public static class ZdoWire
             case ZdoValueType.Vector3:    r.GetFloat(); r.GetFloat(); r.GetFloat(); break;
             case ZdoValueType.Quaternion: r.GetFloat(); r.GetFloat(); r.GetFloat(); r.GetFloat(); break;
             case ZdoValueType.Blob:       {
+                // Bulk skip: read length then SkipBytes, mirroring the writer's
+                // bulk Put. Per-byte GetByte() loop was O(len) dispatches.
                 int len = r.GetInt();
-                for (int i = 0; i < len; i++) r.GetByte();
+                r.SkipBytes(len);
                 break;
             }
             case ZdoValueType.ULong:      r.GetULong(); break;

@@ -3,6 +3,60 @@ using BepInEx.Configuration;
 namespace SoDCoop;
 
 /// <summary>
+/// How the host's world is reproduced on a joining client. Set per-host via
+/// the Coop menu; read in <c>NetworkManager.AssignCharacterAndCompleteHandshake</c>
+/// to decide between the two bootstrap paths.
+/// </summary>
+public enum WorldBootstrapMode
+{
+    /// <summary><b>Default.</b> Host sends its full save file to the joiner
+    /// via a chunked reliable stream; the joiner loads it through SoD's
+    /// normal Load Game path. Guarantees an identical world (every NPC
+    /// schedule, every door state, every murder state) by construction —
+    /// no ZDO snapshot can drift because the worlds start byte-identical.
+    /// Tutorial is skipped automatically (loading a save never fires
+    /// ChapterIntro.OnGameStart). Costs one save-file transfer on first
+    /// join; re-syncs automatically when the host saves again.</summary>
+    SaveTransfer = 0,
+
+    /// <summary>Legacy fast-connect path. Host sends only a share-code
+    /// (seed + city size + name); the joiner regenerates the city locally
+    /// via SoD's "Generate from Share Code" pipeline. Cheaper connect (no
+    /// file transfer) but the two worlds can diverge on any non-
+    /// deterministic SoD state (NPC schedule jitter, murder RNG, citizen
+    /// roster ordering) that the ZDO snapshot doesn't cover. Tutorial
+    /// suppression relies on <c>JoinedSessionActive</c> Harmony patches.</summary>
+    ShareCode = 1,
+}
+
+/// <summary>
+/// NPC animation sync mode for the CitizenAnimationPoller. Controls how
+/// per-citizen idle/arms animation states (sweeping, cooking, typing, etc.)
+/// propagate from host to clients.
+/// </summary>
+public enum CitizenAnimSyncMode
+{
+    /// <summary>Disabled — the poller never runs. SoD's deterministic AI
+    /// computes the same animation states on every client from the same
+    /// seed, so no network sync is needed. Best performance; minor visual
+    /// divergence when a player interacts with an NPC (the NPC's idle
+    /// pose may lag behind its dialogue / state until the schedule
+    /// naturally re-converges).</summary>
+    Disabled = 0,
+
+    /// <summary>Automatic — the poller scans only NPCs within cull range
+    /// (~150m) of connected players, so only ~30-50 citizens per tick
+    /// instead of all 336. Balances visual accuracy near players with low
+    /// host-side cost. Recommended default.</summary>
+    Auto = 1,
+
+    /// <summary>Fixed Hz — the poller scans ALL citizens at the configured
+    /// rate (see CitizenAnimSyncHz). Most visually accurate, highest cost.
+    /// Use only on powerful host machines with few players.</summary>
+    FixedHz = 2,
+}
+
+/// <summary>
 /// Persistent user preferences for the coop mod's overlays.
 ///
 /// Storage: BepInEx writes / reads <c>BepInEx/config/com.sodcoop.mod.cfg</c>
@@ -68,6 +122,44 @@ public static class CoopSettings
     /// </summary>
     public static ConfigEntry<bool> UnpatchAtSaveLoad;
 
+    /// <summary>How a joining client acquires the host's world. See
+    /// <see cref="WorldBootstrapMode"/> for the trade-off between
+    /// <see cref="WorldBootstrapMode.SaveTransfer"/> (identical-world
+    /// guarantee, one file transfer on join) and
+    /// <see cref="WorldBootstrapMode.ShareCode"/> (fast connect, may
+    /// diverge). Host-side setting — the host's choice applies to every
+    /// joining client. Clients that don't support SaveTransfer fall back
+    /// to ShareCode automatically.</summary>
+    public static ConfigEntry<WorldBootstrapMode> WorldBootstrap;
+
+    /// <summary>Only relevant when <see cref="WorldBootstrap"/> =
+    /// <see cref="WorldBootstrapMode.SaveTransfer"/>. When true, the
+    /// client accepts incoming save transfers (first-join + live re-sync
+    /// when the host saves) without prompting. When false, a dialog asks
+    /// the player before overwriting their world with the host's save —
+    /// useful when a client wants to preserve their own progress in a
+    /// world that diverged from the host's.</summary>
+    public static ConfigEntry<bool> SaveTransferAutoAccept;
+
+    /// <summary>Host-side, opt-in. Capture a fresh save before shipping it to a
+    /// joining client, so the base world the joiner loads matches the host's
+    /// live state exactly rather than the state at the host's last save/load.
+    /// Off by default: it calls <c>SaveStateController.CaptureSaveStateAsync</c>
+    /// mid-session, and it is not yet confirmed by playtest that doing so
+    /// leaves the game's notion of "current save" untouched. The capture always
+    /// writes to a dedicated coop file and never over the player's own
+    /// saves.</summary>
+    public static ConfigEntry<bool> SaveTransferForceSaveOnJoin;
+
+    /// <summary>How NPC idle/arms animation states (sweeping, cooking, typing,
+    /// etc.) are synced from host to clients. <see cref="CitizenAnimSyncMode"/>
+    /// for options.</summary>
+    public static ConfigEntry<CitizenAnimSyncMode> CitizenAnimSync;
+
+    /// <summary>When CitizenAnimSync = FixedHz, the scan rate for the
+    /// CitizenAnimationPoller. 1 = cheapest, 5 = smoothest.</summary>
+    public static ConfigEntry<int> CitizenAnimSyncHz;
+
     public static void Initialize(ConfigFile config)
     {
         ShowStatusHUD = config.Bind(
@@ -105,5 +197,37 @@ public static class CoopSettings
             "polling fallbacks after the first load. Set this to true only if save-load becomes " +
             "noticeably slow after a future patch-set expansion. Restart not required — takes " +
             "effect on the next save-load event.");
+
+        WorldBootstrap = config.Bind(
+            "Networking", "WorldBootstrap", WorldBootstrapMode.SaveTransfer,
+            "How a joining client acquires the host's world. SaveTransfer (default): host sends " +
+            "its save file, client loads it — identical world guaranteed, tutorial auto-skipped. " +
+            "ShareCode: client regenerates the city from a seed share-code — faster connect but " +
+            "the two worlds may diverge on non-deterministic SoD state. Host-side setting.");
+
+        SaveTransferAutoAccept = config.Bind(
+            "Networking", "SaveTransferAutoAccept", true,
+            "When WorldBootstrap=SaveTransfer: automatically accept incoming save transfers " +
+            "(first-join + live re-sync when host saves) without prompting. Set false to get a " +
+            "confirmation dialog before the host's save overwrites your world.");
+
+        SaveTransferForceSaveOnJoin = config.Bind(
+            "Networking", "SaveTransferForceSaveOnJoin", false,
+            "When WorldBootstrap=SaveTransfer: capture a fresh save right before shipping it to a " +
+            "joining client, so their base world matches your live state exactly instead of your last " +
+            "save/load. Writes to a dedicated coop file — never over your own saves. Off by default " +
+            "because saving mid-session this way is not yet playtest-verified; leave it off and just " +
+            "save before friends join for the same result.");
+
+        CitizenAnimSync = config.Bind(
+            "Performance", "CitizenAnimSync", CitizenAnimSyncMode.Auto,
+            "NPC animation sync (host → clients). Disabled: no sync (best perf, minor visual " +
+            "divergence near NPCs you interact with). Auto (default): scan only NPCs near connected " +
+            "players (~30-50 instead of 336). FixedHz: scan ALL NPCs at the rate below (most " +
+            "accurate, highest cost).");
+
+        CitizenAnimSyncHz = config.Bind(
+            "Performance", "CitizenAnimSyncHz", 2,
+            "When CitizenAnimSync=FixedHz: scan rate in Hz (1-5). Lower = cheaper.");
     }
 }

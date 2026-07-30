@@ -28,9 +28,19 @@ public static class ZdoBootstrap
         ZdoResolverRegistry.Register(new CitizenResolver());
         CitizenStatePoller.Register();
         // Per-citizen idle/arms anim state (host → clients via ZdoEventRpc).
-        // No resolver needed: ZdoEvents.OnCitizenAnimState applies directly to
-        // the receiver's live citizen via SetIdleAnimationState + SetArmsBoolState.
-        CitizenAnimationPoller.Register();
+        // Mode is configurable via CoopSettings.CitizenAnimSync:
+        //   Disabled — no poller, SoD AI is deterministic from the same seed.
+        //   Auto (default) — spatial-culled scan near connected peers.
+        //   FixedHz — full roster scan at configured rate.
+        {
+            var mode = CoopSettings.CitizenAnimSync?.Value ?? CitizenAnimSyncMode.Auto;
+            if (mode != CitizenAnimSyncMode.Disabled)
+            {
+                int hz = CoopSettings.CitizenAnimSyncHz?.Value ?? 2;
+                hz = UnityEngine.Mathf.Clamp(hz, 1, 5);
+                CitizenAnimationPoller.Register(hz);
+            }
+        }
         // Game-wide reputation (socialCredit). Host authoritative; receivers
         // stamp into their own GameplayController via ZdoEvents.OnSocialCredit.
         SocialCreditPoller.Register();
@@ -102,7 +112,7 @@ public static class ZdoBootstrap
         PollerHealthCheck.RegisterProbe(LightPoller.NAME,               LightPoller.ProbeBody);
         PollerHealthCheck.RegisterProbe(SwitchPoller.NAME,              SwitchPoller.ProbeBody);
         PollerHealthCheck.RegisterProbe(CitizenStatePoller.NAME,        CitizenStatePoller.ProbeBody);
-        PollerHealthCheck.RegisterProbe(CitizenAnimationPoller.NAME,    CitizenAnimationPoller.ProbeBody);
+        // CitizenAnimationPoller disabled — see comment above.
         PollerHealthCheck.RegisterProbe(SocialCreditPoller.NAME,        SocialCreditPoller.ProbeBody);
         PollerHealthCheck.RegisterProbe(SpeechBubblePoller.NAME,        SpeechBubblePoller.ProbeBody);
         PollerHealthCheck.RegisterProbe(PhoneCallPoller.NAME,           PhoneCallPoller.ProbeBody);

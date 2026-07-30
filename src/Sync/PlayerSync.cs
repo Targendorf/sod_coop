@@ -53,6 +53,17 @@ public class PlayerSync
 
     public void Update()
     {
+        // ZDO path owns outgoing position/vitals when the flag is on. The
+        // LocalPlayerPoller writes Pos/Rot/Velocity/Dead/CurrentHealth into
+        // the LocalPlayer ZDO at its tick rate, and LocalPlayerResolver on
+        // every other peer feeds those into RemotePlayer.ApplyPositionFromZdo.
+        // Shipping the SAME state a second time via 30 Hz PlayerPosition +
+        // 1 Hz PlayerVitals packets doubled bandwidth + send syscalls for
+        // the hottest stream in the mod — a direct cause of the lag reports.
+        // OnPacketReceived stays live below as the forward-compat receive
+        // path for mixed-version peers that still ship the old packets.
+        if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForPlayerState) return;
+
         if (!NetworkManager.IsConnected) return;
         if (NetworkManager.LocalPlayerId < 0) return;
 
@@ -199,6 +210,14 @@ public class PlayerSync
 
     public void OnPacketReceived(PacketType type, NetDataReader reader, int senderId)
     {
+        // ZDO path owns player state. Drop legacy PlayerPosition/PlayerVitals
+        // packets — LocalPlayerResolver feeds RemotePlayer.ApplyPositionFromZdo
+        // from the LocalPlayer ZDO. Accepting both paths produced conflicting
+        // position streams: host log showed `teleported (Δ=520m) [zdo]` AND
+        // `teleported (Δ=1951m)` (legacy, no [zdo]) for the same peer, which
+        // broke interpolation and made players invisible to each other.
+        if (SoDCoop.Zdo.ZdoFeatureFlags.UseZdoForPlayerState) return;
+
         if (type == PacketType.PlayerPosition)
         {
             var packet = new PlayerPositionPacket();

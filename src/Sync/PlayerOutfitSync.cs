@@ -82,6 +82,22 @@ public static class NpcOutfitSync
     /// <c>CitizenOutfitController.SetCurrentOutfit</c> argument shape.</summary>
     public static void ApplyByHumanId(int humanId, byte category)
     {
+        // Guard: category 0 (None/uninitialised) would strip the citizen
+        // naked. This happens when CitizenStatePoller stamps the ZDO during
+        // host's init-grace before CitizenOutfitController has finished its
+        // own initialisation — the resulting 0 leaks into the snapshot and
+        // makes every NPC naked on the client (playtest 2026-06-23). Skip
+        // it; the real outfit value arrives on the next poller tick once
+        // SoD's init completes.
+        if (category == 0) return;
+
+        // Guard: during init-grace the client's wardrobe presets may not be
+        // loaded yet. SoD logs "Cannot find work/outdoorsCasual/bed outfit"
+        // and leaves the citizen naked. Defer outfit application until after
+        // the grace window closes — the CitizenStatePoller re-stamps the
+        // correct value on its next post-grace tick.
+        if (SoDCoop.Sync.WorldReadyGate.IsInInitGrace) return;
+
         try
         {
             var dict = global::CityData.Instance?.citizenDictionary;

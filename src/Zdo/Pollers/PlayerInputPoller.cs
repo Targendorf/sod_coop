@@ -67,6 +67,13 @@ public static class PlayerInputPoller
     /// patches on FirstPersonItemController.PickUpItem / EmptySlot.</summary>
     private static readonly System.Collections.Generic.HashSet<int> _lastSlotIds = new();
 
+    /// <summary>Per-tick scratch set of currently-held slot IDs. Reused across
+    /// ticks (Clear() at the top of the slot-diff block) instead of allocating
+    /// a fresh HashSet 30 times per second — that was a steady ~1800
+    /// Gen0 allocations/minute feeding the GC and producing periodic hitches.
+    /// Single-threaded (Unity main), so safe as a static singleton.</summary>
+    private static readonly System.Collections.Generic.HashSet<int> _curSlotIdsScratch = new();
+
     public static void Register() => ZdoPollerHost.RegisterAnyPeer(NAME, 1f / TICK_HZ, Tick);
 
     /// <summary>Probe-time entry point used by <see cref="PollerHealthCheck"/>.
@@ -122,7 +129,10 @@ public static class PlayerInputPoller
             // PickUpItem and EmptySlot post-save-load, when patches are dead.
             try
             {
-                var curSlotIds = new System.Collections.Generic.HashSet<int>();
+                // Reuse the static scratch instead of allocating a fresh
+                // HashSet 30 times per second.
+                _curSlotIdsScratch.Clear();
+                var curSlotIds = _curSlotIdsScratch;
                 var slots = fpc.slots;
                 if (slots != null)
                 {

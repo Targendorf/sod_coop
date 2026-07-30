@@ -270,12 +270,170 @@ public static class WorldAutoLoad
         }
     }
 
-    /// <summary>Reset for re-use on next session.</summary>
+    /// <summary>Reset for re-use on next session. Called from
+    /// <c>SyncManager.OnDisconnected</c>.
+    ///
+    /// <para>Unsubscribing <see cref="OnWorldReadyAfterAutoLoad"/> is the load-
+    /// bearing part: it normally self-unsubscribes when it fires, so a join
+    /// that ABORTS before WorldReady leaves it armed. It would then fire on the
+    /// player's next single-player world load — where
+    /// <see cref="IsBootstrappingWorld"/> is still true — and run
+    /// <c>ApplyAllToLiveWorld</c> plus a <c>ClientWorldReady</c> send for a
+    /// session that no longer exists.</para></summary>
     public static void Reset()
     {
         IsBootstrappingWorld = false;
+        // Session-scoped: must not outlive the session it describes. The
+        // tutorial-suppression consumers additionally require
+        // `IsConnected && !IsHost`, so a stale true was survivable — but the
+        // flag is documented as "until the session ends" and this is what
+        // actually ends it.
+        JoinedSessionActive = false;
         Pending = default;
         WorldReadyGate.OnWorldReady -= OnWorldReadyAfterAutoLoad;
+    }
+
+    // ── Save-Transfer bootstrap (Mode 3) ────────────────────────────────
+    //
+    // The save-transfer path replaces the share-code city-gen step with a
+    // host-sent save file that the joiner loads via SoD's normal Load Game
+    // pipeline. Both paths share the SAME WorldReady→ClientWorldReady tail:
+    // WorldReadyGate flips when CityData+citizens+Player exist (true for
+    // save-load exactly as it is for new-city-gen), and OnWorldReadyAfterAutoLoad
+    // handles the catch-up + host notification identically.
+    //
+    // What save-transfer needs from WorldAutoLoad is the setup half that
+    // normally lives in TriggerSoDGeneration: set the two bootstrapping
+    // flags (so tutorial-suppression patches see them), apply the 3
+    // intro-suppression layers, and subscribe the WorldReady handler. The
+    // actual LoadGame() call lives in SaveTransfer.cs because it needs the
+    // transferred file's FileInfo, which this class doesn't know about.
+
+    /// <summary>Prepare the joiner for a save-transfer load: set the
+    /// bootstrapping flags, apply tutorial suppression, and arm the
+    /// WorldReady handler that will fire <c>ClientWorldReady</c> to the
+    /// host once the save finishes loading. The caller (SaveTransfer.cs)
+    /// is then responsible for invoking
+    /// <c>MainMenuController.LoadCityInfo(fileInfo)</c> +
+    /// <c>MainMenuController.LoadGame()</c>.
+    ///
+    /// <para><b>Tutorial suppression is required for the save-load path
+    /// too.</b> <c>CityConstructor</c>'s end-of-load finalize fires
+    /// <c>ChapterIntro.OnGameStart</c> regardless of new-vs-load (see the
+    /// doc on <c>ChapterIntro_OnGameStart_Patch</c>), so without setting
+    /// <see cref="JoinedSessionActive"/> + the 3 suppression layers here,
+    /// the joiner would get the tutorial cinematic and be parked ~484 m
+    /// off-map — exactly the regression WorldAutoLoad was built to
+    /// prevent.</para>
+    ///
+    /// <para>Returns true on success; false if <see cref="MainMenuController.Instance"/>
+    /// isn't ready yet (caller should retry or fall back to share-code).</para></summary>
+    public static bool BeginSaveTransferLoad() => BeginSaveTransferLoad(allowReload: false);
+
+    /// <summary>Save-Transfer load entry. <paramref name="allowReload"/>
+    /// distinguishes two caller contexts:
+    /// <list type="bullet">
+    ///   <item><c>false</c> (default, first-join): the client is on the
+    ///   main menu. Refuses if <see cref="WorldReadyGate.IsWorldReady"/>
+    ///   is already true (defensive — a second descriptor shouldn't
+    ///   clobber an in-flight load).</item>
+    ///   <item><c>true</c> (Phase 4 live re-sync): the client is IN GAME
+    ///   and the host just pushed a new save. We MUST reload even though
+    ///   the world is up — skipping the guard is the whole point. The
+    ///   <see cref="WorldReadyGate.OnWorldReady"/> handler is re-armed so
+    ///   it fires again after the reload (it auto-unsubscribes after one
+    ///   fire, so re-subscribing is required for the second load to
+    ///   notify the host via <c>ClientWorldReady</c>).</item>
+    /// </list></summary>
+    public static bool BeginSaveTransferLoad(bool allowReload)
+    {
+        try
+        {
+            if (!allowReload && WorldReadyGate.IsWorldReady)
+            {
+                Plugin.Log.LogWarning(
+                    "[WorldAutoLoad] BeginSaveTransferLoad: already in a city — save-transfer load skipped.");
+                return false;
+            }
+
+            // Mirror OnDescriptorReceived's flag setup so every downstream
+            // consumer (patches, snapshot apply gate, character-submit
+            // suppression) sees the same joiner state as a share-code join.
+            // For resync, JoinedSessionActive is already true (set at first
+            // join) — re-setting is a harmless no-op. IsBootstrappingWorld
+            // MUST be re-set so OnWorldReadyAfterAutoLoad doesn't early-
+            // return on its `if (!IsBootstrappingWorld) return;` guard.
+            IsBootstrappingWorld = true;
+            JoinedSessionActive = true;
+
+            // Subscribe the shared WorldReady handler BEFORE the load kicks
+            // off — CityConstructor may fire it synchronously inside
+            // LoadGame() on fast machines and we'd miss it otherwise. The
+            // handler auto-unsubscribes after one fire, so on resync this
+            // re-arm is what lets the post-reload WorldReady notify the host.
+            WorldReadyGate.OnWorldReady -= OnWorldReadyAfterAutoLoad;
+            WorldReadyGate.OnWorldReady += OnWorldReadyAfterAutoLoad;
+
+            // Three tutorial-suppression layers (same as TriggerSoDGeneration
+            // steps 2.5). The Harmony patches already gate on
+            // JoinedSessionActive, which we just set — but layers 1 & 2
+            // (Game.skipIntro, clearing askToEnableTutorial on chapter
+            // presets) act before the patches' gate has a chance, so they
+            // must be applied here too.
+            ApplyTutorialSuppression();
+
+            Plugin.Log.LogInfo("[WorldAutoLoad] BeginSaveTransferLoad — flags set, tutorial suppressed, WorldReady handler armed.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogError($"[WorldAutoLoad] BeginSaveTransferLoad: {ex}");
+            IsBootstrappingWorld = false;
+            return false;
+        }
+    }
+
+    /// <summary>The two tutorial-suppression layers that don't depend on
+    /// Harmony patches: <c>Game.skipIntro</c> and clearing
+    /// <c>askToEnableTutorial</c> on every chapter preset. Factored out of
+    /// TriggerSoDGeneration so the save-transfer path (BeginSaveTransferLoad)
+    /// can reuse it without duplicating the try/catch scaffolding. The third
+    /// layer (ChapterIntro_OnGameStart_Patch) keys on JoinedSessionActive,
+    /// which the caller must set before calling this.</summary>
+    private static void ApplyTutorialSuppression()
+    {
+        try
+        {
+            var game = global::Game.Instance;
+            if (game != null)
+            {
+                game.skipIntro = true;
+                Plugin.Log.LogInfo("[WorldAutoLoad] Game.skipIntro=true (intro suppression, layer 1).");
+            }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[WorldAutoLoad] Game.skipIntro: {ex.Message}"); }
+
+        try
+        {
+            var cc = global::ChapterController.Instance;
+            var all = cc?.allChapters;
+            if (all != null)
+            {
+                int cleared = 0;
+                for (int i = 0; i < all.Count; i++)
+                {
+                    var preset = all[i];
+                    if (preset == null) continue;
+                    if (preset.askToEnableTutorial)
+                    {
+                        preset.askToEnableTutorial = false;
+                        cleared++;
+                    }
+                }
+                Plugin.Log.LogInfo($"[WorldAutoLoad] cleared askToEnableTutorial on {cleared} chapter preset(s) (layer 2).");
+            }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[WorldAutoLoad] askToEnableTutorial clear: {ex.Message}"); }
     }
 }
 

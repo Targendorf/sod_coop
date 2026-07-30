@@ -75,8 +75,328 @@ public static class ZdoEventDispatcher
     /// the loading screen is still up.</para>
     /// </summary>
     public static void Send(string name, NetDataWriter payload, DeliveryMethod delivery = DeliveryMethod.ReliableOrdered, UnityEngine.Vector3? originPos = null)
+        => Send(name, payload, delivery, originPos, batch: false);
+
+    /// <summary>Frame-batched variant for hot-path poller-driven events
+    /// (citizen anim state, speech bubbles, NPC damage). When
+    /// <paramref name="batch"/> is true the event is appended to
+    /// <see cref="_pendingBatch"/> instead of being shipped immediately;
+    /// <see cref="PumpPendingEventBatch"/> (called once per frame from
+    /// <c>CoopUpdateRunner.Update</c>) coalesces every queued event into a
+    /// single <c>ZdoEventRpc</c> packet with a count prefix.
+    ///
+    /// <para>Why: each <see cref="Send"/> used to issue its own
+    /// <see cref="NetworkManager.SendTo"/>/<see cref="NetworkManager.SendToAll"/>
+    /// = one Steam-socket send. Pollers easily generate dozens of events per
+    /// frame (CitizenAnimationPoller caps at 32/tick × 5 Hz = up to 160
+    /// individual packets/sec). Each tiny packet (~8–30 B) paid the full
+    /// per-send syscall + Steam frame overhead AND never crossed the 100 B
+    /// zstd threshold so nothing compressed. Batching collapses N sends into
+    /// one, lets the combined payload compress, and bounds per-frame send
+    /// count to O(1) regardless of how chatty the pollers are.</para>
+    ///
+    /// <para>Cold events (chat, ping, money, evidence, case-board, one-shot
+    /// game events) pass <c>batch: false</c> and ship immediately — their
+    /// latency is user-visible and they're rare enough that per-packet
+    /// overhead is irrelevant.</para>
+    ///
+    /// <para>Thread safety: same as the rest of the dispatcher — Unity main
+    /// thread only. <see cref="PumpPendingEventBatch"/> is the sole drainer,
+    /// called from the Update cascade.</para></summary>
+    public static void Send(string name, NetDataWriter payload, DeliveryMethod delivery, UnityEngine.Vector3? originPos, bool batch)
     {
         if (!NetworkManager.HasPeers) return;
+
+        if (batch)
+        {
+            EnqueueBatch(name, payload, delivery, originPos);
+            return;
+        }
+
+        ShipSingle(name, payload, delivery, originPos);
+    }
+
+    // ── Frame batching state ──────────────────────────────────────────────
+    //
+    // Hot-path events from pollers (CitizenAnimationPoller, SpeechBubblePoller,
+    // NpcDamagePoller, spatter/footprint) are queued here instead of shipped
+    // immediately. PumpPendingEventBatch (once per frame) walks the queue and
+    // emits ONE ZdoEventRpc packet per (delivery-class, spatial-class) bucket
+    // — collapsing N per-frame sends into O(1) sends.
+    //
+    // Single-threaded (Unity main); all access is from Send (poller tick) and
+    // PumpPendingEventBatch (Update cascade), never concurrent.
+
+    private struct PendingEvent
+    {
+        public int NameHash;
+        public byte[] Body;       // captured payload bytes (length = BodyLen)
+        public int BodyLen;
+        public DeliveryMethod Delivery;
+        public bool HasOrigin;
+        public UnityEngine.Vector3 Origin;
+    }
+
+    private static readonly List<PendingEvent> _pendingBatch = new();
+
+    /// <summary>Capture <paramref name="payload"/> into a pooled buffer and
+    /// queue it for the next <see cref="PumpPendingEventBatch"/>.
+    ///
+    /// <para>Bodies are rented from <see cref="System.Buffers.ArrayPool{T}"/>
+    /// and returned in <see cref="DrainPendingBatch"/>. The queue's whole point
+    /// is cutting per-event overhead, and the batchable senders are the
+    /// chattiest paths in the mod (CitizenAnimationPoller alone caps at 32
+    /// events/tick × 5 Hz = up to 160/s), so a fresh <c>new byte[]</c> per
+    /// event would trade the send-count win for steady Gen0 churn. Rented
+    /// buffers are usually larger than <c>BodyLen</c>, hence every consumer
+    /// slices by <c>BodyLen</c> and never by <c>Body.Length</c>.</para></summary>
+    private static void EnqueueBatch(string name, NetDataWriter payload, DeliveryMethod delivery, UnityEngine.Vector3? originPos)
+    {
+        int nameHash = Hash32.Of(name);
+        int bodyLen = payload?.Length ?? 0;
+        byte[] body = bodyLen > 0
+            ? System.Buffers.ArrayPool<byte>.Shared.Rent(bodyLen)
+            : System.Array.Empty<byte>();
+        if (bodyLen > 0) System.Buffer.BlockCopy(payload.Data, 0, body, 0, bodyLen);
+
+        _pendingBatch.Add(new PendingEvent
+        {
+            NameHash = nameHash,
+            Body = body,
+            BodyLen = bodyLen,
+            Delivery = delivery,
+            HasOrigin = originPos.HasValue,
+            Origin = originPos ?? UnityEngine.Vector3.zero,
+        });
+    }
+
+    /// <summary>Return every queued event's pooled body and empty the queue.
+    /// Must run even on an exception mid-drain, or the rented buffers leak out
+    /// of the pool for the rest of the session.</summary>
+    private static void ReleasePendingBatch()
+    {
+        for (int i = 0; i < _pendingBatch.Count; i++)
+        {
+            var body = _pendingBatch[i].Body;
+            if (body != null && body.Length > 0)
+                System.Buffers.ArrayPool<byte>.Shared.Return(body);
+        }
+        _pendingBatch.Clear();
+    }
+
+    /// <summary>Flush any queued batchable events. Called once per frame
+    /// from <c>CoopUpdateRunner.Update</c> after <c>ZdoPollerHost.Tick</c>
+    /// (so every poller's events for this frame are in the queue) and before
+    /// <c>ZdoMan.TickDeltaFlush</c>. Emits at most a handful of
+    /// <c>ZdoEventRpc</c> packets regardless of how many events queued: one
+    /// per (delivery, spatial) bucket, with per-peer culling preserved for
+    /// spatial events. No-op when the queue is empty.</summary>
+    public static void PumpPendingEventBatch()
+    {
+        if (_pendingBatch.Count == 0) return;
+        try { DrainPendingBatch(); }
+        catch (Exception ex) { Plugin.Log.LogError($"[ZdoEventDispatcher] PumpPendingEventBatch: {ex.Message}"); }
+        // Release + clear unconditionally: a bucket that threw mid-build must
+        // not leave its rented bodies out of the pool, and a retained event
+        // would be re-sent next frame.
+        finally { ReleasePendingBatch(); }
+    }
+
+    /// <summary>Drain <see cref="_pendingBatch"/> into bucketed batched
+    /// frames and ship them. Four buckets — the cross of
+    /// {ReliableOrdered, Sequenced} × {spatial, non-spatial} — each becomes
+    /// at most one packet per flush. Spatial buckets are dispatched per-peer
+    /// (each event's origin tested against the peer's cull radius); a peer
+    /// only receives the subset of the bucket that's in its range. Non-
+    /// spatial buckets go to every world-ready peer.</summary>
+    private static void DrainPendingBatch()
+    {
+        // Partition the queue into the four (delivery, spatial) buckets.
+        // We don't sort — just four linear passes selecting matching entries.
+        // Bucket sizes are bounded by the queue, which itself is bounded by
+        // per-frame poller output (typically a few dozen).
+        DrainBatchBucket(DeliveryMethod.ReliableOrdered, spatial: false);
+        DrainBatchBucket(DeliveryMethod.ReliableOrdered, spatial: true);
+        DrainBatchBucket(DeliveryMethod.Sequenced,       spatial: false);
+        DrainBatchBucket(DeliveryMethod.Sequenced,       spatial: true);
+
+        // The queue is released + cleared by PumpPendingEventBatch's finally,
+        // so nothing is done here. Any event that didn't match a bucket (e.g.
+        // an Unreliable delivery we don't currently emit) is dropped — none of
+        // the current batchable Send* callers use Unreliable.
+    }
+
+    /// <summary>Build and ship the batched frame for one bucket. Selects
+    /// events from <see cref="_pendingBatch"/> whose (Delivery, HasOrigin)
+    /// matches this bucket. Per-peer culling is applied for spatial buckets:
+    /// each peer receives a per-peer frame containing only the in-range
+    /// events. Non-spatial buckets emit one frame broadcast to every world-
+    /// ready peer.</summary>
+    private static void DrainBatchBucket(DeliveryMethod delivery, bool spatial)
+    {
+        // Count matching entries first so we can skip the bucket entirely if
+        // empty (no frame, no send) and pre-size the scratch.
+        int matchCount = 0;
+        for (int i = 0; i < _pendingBatch.Count; i++)
+        {
+            var e = _pendingBatch[i];
+            if (e.Delivery == delivery && e.HasOrigin == spatial) matchCount++;
+        }
+        if (matchCount == 0) return;
+
+        if (!NetworkManager.IsHost)
+        {
+            // Joiner: one peer (host, always ready). Build one frame with ALL
+            // matching events (no culling — joiner has no other peers to cull
+            // against and the host re-broadcasts via the generic relay).
+            BuildBatchFrame(delivery, spatial, _pendingBatch, peerPos: null);
+            NetworkManager.SendToAll(PacketType.ZdoEventRpc, _scratchOut, delivery);
+            _eventSent     += 1;
+            _eventSentBytes += _scratchOut.Length;
+            return;
+        }
+
+        // Host. Non-spatial bucket: one frame → every world-ready peer.
+        // Spatial bucket: per-peer frame (only in-range events included).
+        var clients = NetworkManager.Clients;
+        if (spatial)
+        {
+            for (int i = 0; i < clients.Count; i++)
+            {
+                var peer = clients[i];
+                if (peer == null) continue;
+                int peerId = NetworkManager.GetPlayerIdByPeer(peer);
+                if (peerId < 0) continue;
+                if (NetworkManager.Players == null
+                    || !NetworkManager.Players.TryGetValue(peerId, out var info)
+                    || info == null
+                    || !info.WorldReady
+                    || !info.HasKnownPosition)
+                {
+                    _eventCullSkip += matchCount;
+                    continue;
+                }
+
+                BuildBatchFrame(delivery, spatial, _pendingBatch, peerPos: info.LastKnownPosition);
+                if (_batchFrameEventCount == 0)
+                {
+                    // Whole bucket was out of range for this peer — no send.
+                    _eventCullSkip += matchCount;
+                    continue;
+                }
+                NetworkManager.SendTo(peer, PacketType.ZdoEventRpc, _scratchOut, delivery);
+                _eventSent++;
+                _eventSentBytes += _scratchOut.Length;
+                _eventCullSkip += (matchCount - _batchFrameEventCount);
+            }
+        }
+        else
+        {
+            BuildBatchFrame(delivery, spatial, _pendingBatch, peerPos: null);
+            int frameLen = _scratchOut.Length;
+            for (int i = 0; i < clients.Count; i++)
+            {
+                var peer = clients[i];
+                if (peer == null) continue;
+                int peerId = NetworkManager.GetPlayerIdByPeer(peer);
+                if (peerId < 0) continue;
+                if (NetworkManager.Players == null
+                    || !NetworkManager.Players.TryGetValue(peerId, out var info)
+                    || info == null
+                    || !info.WorldReady)
+                    continue;
+
+                NetworkManager.SendTo(peer, PacketType.ZdoEventRpc, _scratchOut, delivery);
+                _eventSent++;
+                _eventSentBytes += frameLen;
+            }
+        }
+    }
+
+    /// <summary>Number of events written into <see cref="_scratchOut"/> by
+    /// the most recent <see cref="BuildBatchFrame"/> call. Lets the caller
+    /// detect "bucket was entirely out of range for this peer → skip send".</summary>
+    private static int _batchFrameEventCount;
+
+    /// <summary>Build a batched <c>ZdoEventRpc</c> frame into
+    /// <see cref="_scratchOut"/>. Wire layout (flags bit2 = batched):
+    /// <code>
+    ///   byte flags            (bit0=compressed, bit2=batched)
+    ///   int  innerLen         (decompressed body length)
+    ///   int  payloadLen       (= compressed length if bit0 set)
+    ///   byte[payloadLen]
+    ///     ushort eventCount
+    ///     repeat eventCount × { int nameHash; int bodyLen; byte[bodyLen] body }
+    /// </code>
+    /// For spatial buckets (<paramref name="peerPos"/> non-null), each event
+    /// is culled against <paramref name="peerPos"/> before being written —
+    /// only in-range events end up in this peer's frame.</summary>
+    private static void BuildBatchFrame(DeliveryMethod delivery, bool spatial, List<PendingEvent> src, UnityEngine.Vector3? peerPos)
+    {
+        // Inner body first (so we can decide on compression once we know its
+        // length), then wrap with the flags/length header.
+        _innerScratch.Reset();
+        ushort written = 0;
+        float radiusSq = ZdoMan.CULL_RADIUS_M * ZdoMan.CULL_RADIUS_M;
+        for (int i = 0; i < src.Count; i++)
+        {
+            var e = src[i];
+            if (e.Delivery != delivery || e.HasOrigin != spatial) continue;
+
+            if (spatial && peerPos.HasValue)
+            {
+                var p = peerPos.Value;
+                float dx = e.Origin.x - p.x;
+                float dz = e.Origin.z - p.z;
+                if (dx * dx + dz * dz > radiusSq) continue; // out of range for this peer
+            }
+
+            _innerScratch.Put(e.NameHash);
+            _innerScratch.Put(e.BodyLen);
+            if (e.BodyLen > 0) _innerScratch.Put(e.Body, 0, e.BodyLen);
+            written++;
+        }
+
+        // Count prefix sits at the START of the inner body.
+        // Patch it in: write count into the first 2 bytes by rebuilding with
+        // a prefix. Cheaper alternative: prepend via a temporary. Since this
+        // runs at most a few times per frame we just rebuild into a second
+        // scratch with the count prefix.
+        _batchInnerPrefixScratch.Reset();
+        _batchInnerPrefixScratch.Put(written);
+        if (_innerScratch.Length > 0)
+            _batchInnerPrefixScratch.Put(_innerScratch.Data, 0, _innerScratch.Length);
+
+        int innerLen = _batchInnerPrefixScratch.Length;
+        bool compress = innerLen >= COMPRESSION_THRESHOLD;
+
+        _scratchOut.Reset();
+        byte flags = 0x04; // bit2 = batched
+        if (compress) flags |= 0x01;
+        _scratchOut.Put(flags);
+        _scratchOut.Put(innerLen);
+
+        if (compress)
+        {
+            byte[] compressed = ZdoCompression.Compress(_batchInnerPrefixScratch.Data, innerLen);
+            _scratchOut.Put(compressed.Length);
+            _scratchOut.Put(compressed, 0, compressed.Length);
+        }
+        else
+        {
+            _scratchOut.Put(innerLen);
+            _scratchOut.Put(_batchInnerPrefixScratch.Data, 0, innerLen);
+        }
+
+        _batchFrameEventCount = written;
+    }
+
+    /// <summary>Immediate (non-batched) ship path — the original per-event
+    /// Send logic, extracted so the batch=false branch reads cleanly. Used
+    /// for cold events (chat, ping, money, evidence, case-board) where
+    /// latency is user-visible and per-packet overhead is irrelevant.</summary>
+    private static void ShipSingle(string name, NetDataWriter payload, DeliveryMethod delivery, UnityEngine.Vector3? originPos)
+    {
         BuildFrame(name, payload);
 
         // Per-peer cull on the host for spatial events. We deliberately
@@ -279,16 +599,68 @@ public static class ZdoEventDispatcher
                     inner = new NetDataReader(body, 0, bodyLen);
                 }
 
-                int nameHash = inner.GetInt();
-                if (_byNameHash.TryGetValue(nameHash, out var entry))
+                // Bit2 = batched frame. The inner body starts with a ushort
+                // event count, followed by that many (int nameHash, int
+                // bodyLen, byte[bodyLen]) triples. Each triple is dispatched
+                // to its handler in order. Single-event frames (bit2 clear)
+                // take the legacy path below.
+                if ((flags & 0x04) != 0)
+                {
+                    int evCount = inner.GetUShort();
+                    for (int ei = 0; ei < evCount; ei++)
+                    {
+                        int nameHash = inner.GetInt();
+                        int evBodyLen = inner.GetInt();
+                        if (evBodyLen > inner.AvailableBytes)
+                        {
+                            Plugin.Log.LogWarning($"[ZdoEventDispatcher] truncated batched event #{ei} from sender {senderId}: evBodyLen={evBodyLen} > available={inner.AvailableBytes}");
+                            break;
+                        }
+                        if (_byNameHash.TryGetValue(nameHash, out var entry))
+                        {
+                            // Hand the handler a sub-reader bounded to exactly
+                            // this event's body so it can't accidentally read
+                            // into the next event's nameHash. Same ArrayPool
+                            // contract as single-event path: consume sync,
+                            // don't retain past the call.
+                            //
+                            // NOTE the third ctor arg is the ABSOLUTE END
+                            // offset, not a length: LiteNetLib's SetSource does
+                            // `_position = offset; _dataSize = maxSize;` and
+                            // reports `AvailableBytes = _dataSize - _position`.
+                            // Passing a bare length here made AvailableBytes
+                            // under-report by `Position` (and go NEGATIVE from
+                            // the second event onward — measured -18 on a
+                            // 2-event batch). Reads still landed on the right
+                            // bytes, so the current fixed-shape handlers
+                            // happened to work, but any handler using the
+                            // version-tolerant `if (r.AvailableBytes >= 1)`
+                            // pattern used elsewhere in this codebase would
+                            // silently skip its trailing fields.
+                            var evReader = new NetDataReader(inner.RawData, inner.Position, inner.Position + evBodyLen);
+                            inner.SkipBytes(evBodyLen);
+                            try { entry.handler(evReader, senderId); }
+                            catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEventDispatcher] batched handler '{entry.name}' from sender {senderId}: {ex.Message}"); }
+                        }
+                        else
+                        {
+                            Plugin.Log.LogWarning($"[ZdoEventDispatcher] unknown event hash {nameHash:X8} from sender {senderId} (batched #{ei})");
+                            inner.SkipBytes(evBodyLen);
+                        }
+                    }
+                    return;
+                }
+
+                int nameHash2 = inner.GetInt();
+                if (_byNameHash.TryGetValue(nameHash2, out var entry2))
                 {
                     // Handler runs synchronously here, before the finally
                     // returns the pooled buffer that 'inner' may wrap.
-                    entry.handler(inner, senderId);
+                    entry2.handler(inner, senderId);
                 }
                 else
                 {
-                    Plugin.Log.LogWarning($"[ZdoEventDispatcher] unknown event hash {nameHash:X8} from sender {senderId}");
+                    Plugin.Log.LogWarning($"[ZdoEventDispatcher] unknown event hash {nameHash2:X8} from sender {senderId}");
                 }
             }
             finally
@@ -304,6 +676,14 @@ public static class ZdoEventDispatcher
 
     private static readonly NetDataWriter _scratchOut   = new();
     private static readonly NetDataWriter _innerScratch = new();
+    /// <summary>Second-stage inner body scratch for the batched path. The
+    /// batched frame needs a count prefix at the START of the inner body,
+    /// but events are appended as we discover them — so we write events
+    /// into <see cref="_innerScratch"/> first, then prefix the count here
+    /// when wrapping. Kept separate so the single-event
+    /// <see cref="BuildFrame"/> path (which owns <see cref="_innerScratch"/>)
+    /// can't collide with an in-flight batch build.</summary>
+    private static readonly NetDataWriter _batchInnerPrefixScratch = new();
 
     // ── Bandwidth stats (rolling 5 s window, sampled by ZdoMan's stats tick) ─
     // _eventSent      = total per-peer SendTo / SendToAll fan-out count

@@ -704,5 +704,28 @@ public enum PacketType : byte
     /// </summary>
     ClientWorldReady     = 206,
 
+    /// <summary>Host → joining client: header of a chunked save-file
+    /// transfer. Body: <c>uint saveSize + ushort totalChunks + byte[32]
+    /// sha256</c>. The client initialises a reassembly buffer and waits
+    /// for the following <see cref="SaveTransferChunk"/> packets. Sent
+    /// instead of <see cref="WorldDescriptor"/> when the host's
+    /// <c>CoopSettings.WorldBootstrap</c> is SaveTransfer AND the client
+    /// advertised support in its bootstrap packet.</summary>
+    SaveTransferHeader   = 207,
+
+    /// <summary>Host → client: one raw chunk of the save file. Body:
+    /// <c>ushort chunkIndex + ushort chunkLen + byte[chunkLen]</c>. The
+    /// client appends <c>chunkLen</c> bytes to its reassembly buffer; once
+    /// all <c>totalChunks</c> arrive and the SHA-256 matches, it writes
+    /// the file to disk and invokes SoD's Load Game path.</summary>
+    SaveTransferChunk    = 208,
+
+    /// <summary>Client → host: "save received and load started" ACK. Body:
+    /// empty. Sent after the client has verified the SHA-256 and kicked
+    /// off <c>MainMenuController.LoadGame()</c>. The host uses this to
+    /// know the peer is mid-load (and, in Phase 4 live re-sync, that the
+    /// re-sync was accepted rather than silently dropped).</summary>
+    SaveTransferComplete = 209,
+
     #endregion
 }
