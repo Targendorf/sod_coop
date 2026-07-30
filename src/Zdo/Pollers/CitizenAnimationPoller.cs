@@ -139,48 +139,9 @@ public static class CitizenAnimationPoller
 
             if (scanCount == 0) return;
 
-            // Cold-start guard: if the baseline for these citizens is empty
-            // (first tick after warmup or after a roster change), re-seed
-            // silently and skip broadcasting to avoid a burst.
-            // In Auto mode we check only the citizens we're about to scan.
-            bool needReseed = false;
-            if (mode == CitizenAnimSyncMode.Auto)
-            {
-                // Auto: check if any of the spatially-selected citizens lack
-                // a baseline entry.
-                for (int ci = 0; ci < scanCount; ci++)
-                {
-                    if (scanIds[ci] != 0 && !_last.ContainsKey(scanIds[ci]))
-                    { needReseed = true; break; }
-                }
-            }
-            else
-            {
-                // FixedHz: original half-roster heuristic.
-                needReseed = (_last.Count < scanCount / 2);
-            }
-
-            if (needReseed)
-            {
-                for (int ci = 0; ci < scanCount; ci++)
-                {
-                    var cc = scanCitizens[ci];
-                    if (cc == null) continue;
-                    int cid = scanIds[ci];
-                    if (cid == 0) continue;
-                    global::CitizenAnimationController cac;
-                    try { cac = cc.animationController; } catch { continue; }
-                    if (cac == null) continue;
-                    byte cidle, carms;
-                    try { cidle = (byte)cac.idleAnimationState; }     catch { continue; }
-                    try { carms = (byte)cac.armsBoolAnimationState; } catch { continue; }
-                    _last[cid] = (cidle, carms);
-                }
-                return;
-            }
-
             int sent = 0;
             int suppressed = 0;
+            int seeded = 0;
             for (int ci = 0; ci < scanCount; ci++)
             {
                 var c = scanCitizens[ci];
@@ -196,8 +157,28 @@ public static class CitizenAnimationPoller
                 try { idle = (byte)ac.idleAnimationState; }       catch { continue; }
                 try { arms = (byte)ac.armsBoolAnimationState; }   catch { continue; }
 
-                if (_last.TryGetValue(id, out var prev) && prev.idle == idle && prev.arms == arms)
+                // Per-citizen cold start: a citizen we have no baseline for
+                // gets seeded and NOT broadcast (the snapshot already carries
+                // authoritative state, and broadcasting the whole roster at
+                // once would flood the event channel).
+                //
+                // This replaces a GLOBAL all-or-nothing reseed pass that was a
+                // permanent trap in Auto mode: the pass `continue`d without
+                // writing a baseline whenever a citizen's animationController
+                // was null, while the gate that triggered it asked "does ANY
+                // in-range citizen lack a baseline?". One such citizen in range
+                // meant the gate stayed true forever, so every tick reseeded
+                // and returned early — the poller paid its full scan cost and
+                // never shipped a single animation delta. Auto is the DEFAULT
+                // mode, so NPC animation sync was dead by default.
+                if (!_last.TryGetValue(id, out var prev))
+                {
+                    _last[id] = (idle, arms);
+                    seeded++;
                     continue;
+                }
+
+                if (prev.idle == idle && prev.arms == arms) continue;
 
                 _last[id] = (idle, arms);
 
@@ -215,8 +196,10 @@ public static class CitizenAnimationPoller
                 catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenAnimationPoller] send {id}: {ex.Message}"); }
             }
 
-            if (sent > 0 || suppressed > 0)
-                Plugin.Log.LogDebug($"[CitizenAnimationPoller] tick ({mode}, {scanCount} citizens): {sent} delta(s){(suppressed > 0 ? $", {suppressed} suppressed" : "")}");
+            if (sent > 0 || suppressed > 0 || seeded > 0)
+                Plugin.Log.LogDebug(
+                    $"[CitizenAnimationPoller] tick ({mode}, {scanCount} citizens): {sent} delta(s)" +
+                    $"{(suppressed > 0 ? $", {suppressed} suppressed" : "")}{(seeded > 0 ? $", {seeded} seeded" : "")}");
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenAnimationPoller] tick: {ex.Message}"); }
     }
@@ -259,7 +242,18 @@ public static class CitizenAnimationPoller
                 var nearZdos = SpatialGrid.Query(info.LastKnownPosition, SoDCoop.Zdo.ZdoMan.CULL_RADIUS_M);
                 for (int z = 0; z < nearZdos.Count; z++)
                 {
-                    int sodId = nearZdos[z].GetInt(ZdoKeys.SodId, int.MinValue);
+                    var nz = nearZdos[z];
+                    // MUST filter by type. SpatialGrid indexes every ZDO with a
+                    // host position — doors, lights, switches, computers — not
+                    // just citizens, and their __sodId values live in unrelated
+                    // ID spaces that collide freely with humanIDs. Without this
+                    // check the "citizens near a peer" set was really "citizens
+                    // whose humanID happens to equal some nearby door's or
+                    // light's id", i.e. an arbitrary subset: animations synced
+                    // for NPCs nobody was looking at and stayed frozen for the
+                    // ones right in front of the player.
+                    if (nz.ZdoTypeTag != ZdoTypeTag.Citizen) continue;
+                    int sodId = nz.GetInt(ZdoKeys.SodId, int.MinValue);
                     if (sodId != int.MinValue) inRangeIds.Add(sodId);
                 }
             }

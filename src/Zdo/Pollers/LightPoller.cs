@@ -27,6 +27,12 @@ public static class LightPoller
     private static readonly List<int> _lightIds = new();
     private static readonly List<LightController> _lightControllers = new();
 
+    /// <summary>Lights examined per tick by the reconciliation sweep. At 10 Hz,
+    /// 256/tick covers a few thousand lights every ~1-2 s at a fraction of the
+    /// interop cost of walking the whole cache each tick.</summary>
+    private const int SWEEP_PER_TICK = 256;
+    private static int _sweepCursor;
+
     /// <summary>O(1) "is this Interactable backed by a LightController?" lookup,
     /// shared with <see cref="WorldStateSync.IsLightInteractable"/> and
     /// <see cref="SwitchPoller"/>. Populated as a side-effect of the LightPoller's
@@ -85,6 +91,7 @@ public static class LightPoller
         _lightControllers.Clear();
         _lightInteractableIds.Clear();
         _scannedTo = 0;
+        _sweepCursor = 0;
     }
 
     private static void Tick(float now)
@@ -125,11 +132,23 @@ public static class LightPoller
                 _scannedTo = dir.Count;
             }
 
-            // Per-tick: just iterate the cached LightControllers — no Unity
-            // component lookups. ZdoMan.GetOrCreateBySodId is O(1) via the
-            // (tag, sodId) lookup index.
-            for (int i = 0; i < _lightControllers.Count; i++)
+            // ── Amortized reconciliation sweep ────────────────────────────
+            // Only SWEEP_PER_TICK lights per tick, wrapping around, instead of
+            // the whole cache. A city has thousands of lights and the old loop
+            // read a null check + isOn on every one at 10 Hz — the same class
+            // of per-tick IL2CPP cost that held pollers at 700-1600 ms/frame
+            // (playtest 2026-06-23).
+            //
+            // LightController.SetOn is Harmony-patched and broadcasts every
+            // switch the moment it happens, so this loop is reconciliation
+            // only: it exists to converge state a patch could have missed, for
+            // which full coverage every couple of seconds is ample.
+            int lightSweep = Math.Min(SWEEP_PER_TICK, _lightControllers.Count);
+            for (int n = 0; n < lightSweep; n++)
             {
+                if (_sweepCursor >= _lightControllers.Count) _sweepCursor = 0;
+                int i = _sweepCursor++;
+
                 var light = _lightControllers[i];
                 if (light == null) continue; // Unity destroyed — drop next tick.
                 int id = _lightIds[i];

@@ -37,6 +37,12 @@ public static class DoorPoller
     /// rebuild on the first tick.</summary>
     private static int _cachedCount = -1;
 
+    /// <summary>Doors examined per tick by the reconciliation sweep. At 10 Hz,
+    /// 256/tick covers a few thousand doors every ~1-2 s at a fraction of the
+    /// interop cost of walking the whole cache each tick.</summary>
+    private const int SWEEP_PER_TICK = 256;
+    private static int _sweepCursor;
+
     public static void Register()
     {
         ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick);
@@ -50,6 +56,7 @@ public static class DoorPoller
         _doorIds.Clear();
         _doors.Clear();
         _cachedCount = -1;
+        _sweepCursor = 0;
     }
 
     private static void Tick(float now)
@@ -89,8 +96,26 @@ public static class DoorPoller
                 _cachedCount = dict.Count;
             }
 
-            for (int i = 0; i < _doors.Count; i++)
+            // ── Amortized reconciliation sweep ────────────────────────────
+            // Walk only SWEEP_PER_TICK doors per tick, wrapping around, rather
+            // than the whole cache. A SoD city has thousands of doors and the
+            // old loop read isClosed + isLocked + a null check on every one at
+            // 10 Hz — tens of thousands of IL2CPP calls per tick on the host
+            // main thread, which is the class of cost that held pollers at
+            // 700-1600 ms/frame (playtest 2026-06-23).
+            //
+            // Real-time response does not depend on this loop: NewDoor.OnOpen,
+            // OnClose and SetLocked are all Harmony-patched and broadcast the
+            // instant they fire, whoever opened the door. The sweep only has to
+            // guarantee eventual convergence for state a patch could have
+            // missed (patch paused during load, or a path that bypasses the
+            // setters), so full coverage every few seconds is ample.
+            int doorSweep = Math.Min(SWEEP_PER_TICK, _doors.Count);
+            for (int n = 0; n < doorSweep; n++)
             {
+                if (_sweepCursor >= _doors.Count) _sweepCursor = 0;
+                int i = _sweepCursor++;
+
                 var door = _doors[i];
                 if (door == null) continue; // Unity destroyed — rebuild picks it up on next count change.
                 int id = _doorIds[i];

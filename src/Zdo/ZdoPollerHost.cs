@@ -34,6 +34,19 @@ public static class ZdoPollerHost
         public WarmupCallback Warmup;
         public float Interval;
         public float NextAt;
+        /// <summary>True for pollers registered via <see cref="Register"/>
+        /// (host-only). False for <see cref="RegisterAnyPeer"/>. Kept on the
+        /// entry so both kinds can live in ONE scheduling list — see the
+        /// starvation note on <see cref="Tick"/>.</summary>
+        public bool HostOnly;
+
+        // ── Per-poller cost accounting (rolled up every 10 s) ────────────
+        public double SumMs;
+        public double MaxMs;
+        public int    Runs;
+        /// <summary>Frames this poller was due but skipped for budget. A
+        /// non-zero count here is the signal that sync is being throttled.</summary>
+        public int    Skips;
     }
 
     private static readonly List<Entry> _hostPollers   = new();
@@ -46,14 +59,38 @@ public static class ZdoPollerHost
     /// post-baseline reality.</summary>
     private static bool _hadPeers;
 
-    /// <summary>Max poller callbacks invoked per frame across ALL pollers (any-
-    /// peer + host). When the game is hitching, multiple intervals elapse in a
-    /// single long frame, so many pollers are "due" at once. Without a cap,
-    /// running them all re-stalls the next frame → death spiral. The cap
-    /// spreads the work across frames instead. 3/frame = enough headroom for
-    /// 60 FPS steady state (3 callbacks = ~5-15ms) while keeping a hitch frame
-    /// from spiraling.</summary>
-    private const int MAX_POLLERS_PER_FRAME = 3;
+    /// <summary>Per-frame wall-clock budget for ALL poller callbacks combined.
+    /// The scheduler runs due pollers, most-overdue first, until this is spent.
+    ///
+    /// <para>Replaces a fixed "max 3 callbacks per frame" cap that broke sync
+    /// in two ways. First, it was blind to cost: three cheap pollers and three
+    /// 200 ms pollers both counted as "3". Second, and worse, it interacted with
+    /// list order — any-peer pollers were scanned before host-only ones, so
+    /// once three any-peer callbacks fired, EVERY host poller (doors, lights,
+    /// citizen state, animations — the entire world sync) was skipped, and the
+    /// skip still pushed <c>NextAt</c> forward, so a starved poller never
+    /// accumulated any priority to make up for it. On a host that was already
+    /// hitching, world sync could stay starved indefinitely while the profiler
+    /// showed the cap "working".</para>
+    ///
+    /// <para>A time budget plus most-overdue-first selection fixes both: cost
+    /// is bounded in the unit that actually matters, and a poller that loses a
+    /// frame becomes MORE overdue and therefore wins the next one. 6 ms leaves
+    /// a 60 FPS frame (16.6 ms) most of its budget for the game itself.</para></summary>
+    private const double POLLER_BUDGET_MS = 6.0;
+
+    /// <summary>Emit the per-poller cost rollup this often. Answers "which
+    /// poller is the expensive one" — the aggregate <c>pollers=700ms</c> bucket
+    /// in CoopPerf covers ~25 pollers and cannot say which.</summary>
+    private const float COST_ROLLUP_INTERVAL_S = 10f;
+    private static float _nextCostRollupAt;
+
+    private static readonly System.Diagnostics.Stopwatch _pollSw = new();
+
+    /// <summary>Single scheduling list holding both host-only and any-peer
+    /// pollers, so neither kind can systematically starve the other. Rebuilt
+    /// only when a poller registers.</summary>
+    private static readonly List<Entry> _schedule = new();
 
     /// <summary>Register a host-only poller. Most pollers (door, light,
     /// vmail, etc.) use this — the host owns the world simulation and
@@ -66,7 +103,9 @@ public static class ZdoPollerHost
     public static void Register(string name, float intervalSeconds, PollerCallback cb, WarmupCallback warmup = null)
     {
         if (cb == null) return;
-        _hostPollers.Add(new Entry { Name = name, Callback = cb, Warmup = warmup, Interval = intervalSeconds, NextAt = 0f });
+        var e = new Entry { Name = name, Callback = cb, Warmup = warmup, Interval = intervalSeconds, NextAt = 0f, HostOnly = true };
+        _hostPollers.Add(e);
+        _schedule.Add(e);
     }
 
     /// <summary>Register a poller that runs on every peer (host AND clients).
@@ -76,7 +115,9 @@ public static class ZdoPollerHost
     public static void RegisterAnyPeer(string name, float intervalSeconds, PollerCallback cb, WarmupCallback warmup = null)
     {
         if (cb == null) return;
-        _anyPeerPollers.Add(new Entry { Name = name, Callback = cb, Warmup = warmup, Interval = intervalSeconds, NextAt = 0f });
+        var e = new Entry { Name = name, Callback = cb, Warmup = warmup, Interval = intervalSeconds, NextAt = 0f, HostOnly = false };
+        _anyPeerPollers.Add(e);
+        _schedule.Add(e);
     }
 
     public static void Tick(float now)
@@ -129,37 +170,108 @@ public static class ZdoPollerHost
             return;
         }
 
-        // Any-peer pollers fire on every machine.
-        // Adaptive skipping: when the game is already hitching (unscaledDeltaTime
-        // >> poller interval), multiple pollers can be "due" at once. Running all
-        // of them in a single frame re-stalls the next frame, which makes even
-        // more pollers due — a death spiral (playtest 2026-06-23: host held at
-        // 1.4 FPS for the entire session, pollers=700-1600ms/frame). Cap the
-        // number of poller callbacks per frame so coop layer cost stays bounded
-        // regardless of how many intervals elapsed.
-        int fired = 0;
-        for (int i = 0; i < _anyPeerPollers.Count; i++)
+        // ── Budgeted, fair scheduling ────────────────────────────────────
+        //
+        // Walk the single schedule list picking the MOST OVERDUE due poller
+        // each round, run it, and stop once POLLER_BUDGET_MS is spent. A
+        // poller that loses a frame keeps its NextAt, so its overdue-ness
+        // grows and it wins a later round — no poller can be starved by list
+        // position or by a chattier neighbour.
+        //
+        // Selection is a linear scan per pick (~25 entries), repeated only a
+        // few times per frame: cheaper than sorting, and allocation-free.
+        bool isHost = NetworkManager.IsHost;
+        double spentMs = 0.0;
+        int ran = 0;
+
+        while (true)
         {
-            var p = _anyPeerPollers[i];
-            if (now < p.NextAt) continue;
-            if (fired >= MAX_POLLERS_PER_FRAME) { p.NextAt = now + p.Interval; continue; }
-            p.NextAt = now + p.Interval;
-            fired++;
-            try { p.Callback(now); }
-            catch (Exception ex) { Plugin.Log.LogError($"[ZdoPollerHost] {p.Name}: {ex.Message}"); }
+            Entry pick = null;
+            float bestOverdue = -1f;
+            for (int i = 0; i < _schedule.Count; i++)
+            {
+                var p = _schedule[i];
+                if (p.HostOnly && !isHost) continue;
+                float overdue = now - p.NextAt;
+                if (overdue < 0f) continue;             // not due yet
+                if (overdue > bestOverdue) { bestOverdue = overdue; pick = p; }
+            }
+            if (pick == null) break;                    // nothing due
+
+            // Always run at least ONE poller per frame even if the budget is
+            // already blown by a single expensive callback — otherwise a
+            // poller that costs more than the whole budget would never run
+            // again, which is precisely the silent-desync failure mode this
+            // scheduler exists to prevent.
+            if (ran > 0 && spentMs >= POLLER_BUDGET_MS)
+            {
+                // Everything still due is deferred, NOT skipped: leave NextAt
+                // alone so it stays due and gains priority next frame.
+                for (int i = 0; i < _schedule.Count; i++)
+                {
+                    var p = _schedule[i];
+                    if (p.HostOnly && !isHost) continue;
+                    if (now >= p.NextAt) p.Skips++;
+                }
+                break;
+            }
+
+            pick.NextAt = now + pick.Interval;
+            _pollSw.Restart();
+            try { pick.Callback(now); }
+            catch (Exception ex) { Plugin.Log.LogError($"[ZdoPollerHost] {pick.Name}: {ex.Message}"); }
+            finally
+            {
+                _pollSw.Stop();
+                double ms = _pollSw.Elapsed.TotalMilliseconds;
+                spentMs += ms;
+                pick.SumMs += ms;
+                pick.Runs++;
+                if (ms > pick.MaxMs) pick.MaxMs = ms;
+                ran++;
+            }
         }
 
-        // Host-only pollers — same adaptive cap.
-        if (!NetworkManager.IsHost) return;
-        for (int i = 0; i < _hostPollers.Count; i++)
+        LogCostRollup(now);
+    }
+
+    /// <summary>Emit a per-poller cost + deferral breakdown every
+    /// <see cref="COST_ROLLUP_INTERVAL_S"/>, sorted by max cost. This is what
+    /// turns CoopPerf's single <c>pollers=700ms</c> bucket into a named
+    /// culprit; <c>defer</c> counts show whether the budget is throttling sync
+    /// and which pollers are losing.</summary>
+    private static void LogCostRollup(float now)
+    {
+        if (now < _nextCostRollupAt)
         {
-            var p = _hostPollers[i];
-            if (now < p.NextAt) continue;
-            if (fired >= MAX_POLLERS_PER_FRAME) { p.NextAt = now + p.Interval; continue; }
-            p.NextAt = now + p.Interval;
-            fired++;
-            try { p.Callback(now); }
-            catch (Exception ex) { Plugin.Log.LogError($"[ZdoPollerHost] {p.Name}: {ex.Message}"); }
+            if (_nextCostRollupAt == 0f) _nextCostRollupAt = now + COST_ROLLUP_INTERVAL_S;
+            return;
+        }
+        _nextCostRollupAt = now + COST_ROLLUP_INTERVAL_S;
+
+        // Only report pollers whose max single run was non-trivial, so an idle
+        // session stays quiet.
+        System.Text.StringBuilder sb = null;
+        int deferTotal = 0;
+        for (int i = 0; i < _schedule.Count; i++)
+        {
+            var p = _schedule[i];
+            deferTotal += p.Skips;
+            if (p.MaxMs >= 1.0)
+            {
+                sb ??= new System.Text.StringBuilder();
+                if (sb.Length > 0) sb.Append(' ');
+                sb.Append($"{p.Name}={p.MaxMs:F0}/{(p.Runs > 0 ? p.SumMs / p.Runs : 0):F1}ms×{p.Runs}");
+                if (p.Skips > 0) sb.Append($"(defer{p.Skips})");
+            }
+            p.SumMs = 0; p.MaxMs = 0; p.Runs = 0; p.Skips = 0;
+        }
+
+        if (sb != null)
+        {
+            Plugin.Log.LogInfo(
+                $"[ZdoPollerHost] 10s per-poller max/avg×runs: {sb}" +
+                (deferTotal > 0 ? $" — TOTAL DEFERRED {deferTotal} (budget {POLLER_BUDGET_MS:F0}ms/frame is throttling sync)" : ""));
         }
     }
 
