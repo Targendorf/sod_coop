@@ -395,6 +395,10 @@ public class Plugin : BasePlugin
             // session — a total citizen-sync outage with no errors logged.
             try { SoDCoop.Zdo.Pollers.CitizenRosterCache.Reset(); }
             catch (System.Exception ex) { Log.LogWarning($"CitizenRosterCache.Reset: {ex.Message}"); }
+            // Same lifetime rule as the citizen roster: the cached Evidence
+            // references belong to the world being torn down.
+            try { SoDCoop.Zdo.Pollers.EvidenceRosterCache.Reset(); }
+            catch (System.Exception ex) { Log.LogWarning($"EvidenceRosterCache.Reset: {ex.Message}"); }
             // Forget which twin we hid — the reload rebuilds the citizen rig
             // with its renderers back on, so the hide has to be re-applied.
             try { SoDCoop.Sync.TwinManager.ResetOwnTwinHidden(); }

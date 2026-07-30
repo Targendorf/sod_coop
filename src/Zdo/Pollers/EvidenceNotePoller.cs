@@ -29,6 +29,12 @@ public static class EvidenceNotePoller
     /// entry idempotently.</summary>
     private static readonly Dictionary<string, int> _baseline = new();
 
+    /// <summary>Evidence entries hashed per tick. At 5 Hz, 64/tick covers a few
+    /// thousand pieces of evidence every handful of seconds while costing a
+    /// fixed sliver of a frame instead of the whole city walk.</summary>
+    private const int SWEEP_PER_TICK = 64;
+    private static int _sweepCursor;
+
     public static void Register() => ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick, WarmupBaseline);
 
     /// <summary>Pre-seed <see cref="_baseline"/> with the current note hash
@@ -76,15 +82,30 @@ public static class EvidenceNotePoller
     {
         try
         {
-            var gc = GameplayController.Instance;
-            if (gc == null) return;
-            var dict = gc.evidenceDictionary;
-            if (dict == null) return;
+            // Amortized sweep over a managed cache instead of enumerating the
+            // live Il2Cpp dictionary every tick.
+            //
+            // The old loop walked every piece of evidence in the city at 5 Hz,
+            // marshalling each string key and hashing every note character by
+            // character. Measured on the 2026-07-30 playtest: 259 ms per tick
+            // on average, the single most expensive poller, and a large part of
+            // why the host's coop layer sat at ~197 ms per frame (~5 FPS).
+            //
+            // Notes only change when a player writes one, so there is nothing
+            // to gain from re-hashing the whole city 5 times a second. Walking
+            // a bounded slice per tick keeps the same detection with a fixed,
+            // small per-frame cost.
+            if (!EvidenceRosterCache.TryGetRoster(out var ids, out var evidence)) return;
 
-            foreach (var kv in dict)
+            int total = evidence.Count;
+            int sweep = Math.Min(SWEEP_PER_TICK, total);
+            for (int n = 0; n < sweep; n++)
             {
-                string evId = kv.Key;
-                var ev = kv.Value;
+                if (_sweepCursor >= total) _sweepCursor = 0;
+                int idx = _sweepCursor++;
+
+                string evId = ids[idx];
+                var ev = evidence[idx];
                 if (ev == null || string.IsNullOrEmpty(evId)) continue;
 
                 var notes = ev.notes;

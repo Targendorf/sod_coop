@@ -53,6 +53,23 @@ public static class EvidenceCreationPoller
     /// real SoD-field-deref path.</summary>
     internal static void ProbeBody(float now) => TickInner(now);
 
+    /// <summary>evidenceDictionary.Count as of the previous tick. Drives the
+    /// count-change fast path — see TickInner.</summary>
+    private static int _lastCount = -1;
+
+    /// <summary>How often to do a full walk regardless of Count, catching a
+    /// create-and-destroy that lands inside a single tick and leaves the total
+    /// unchanged. Rare enough that 10 s is ample.</summary>
+    private const float RECONCILE_INTERVAL_S = 10f;
+    private static float _nextReconcileAt;
+
+    private static void RefreshSnapshot(Il2CppSystem.Collections.Generic.Dictionary<string, global::Evidence> dict)
+    {
+        _last.Clear();
+        foreach (var kv in dict)
+            if (!string.IsNullOrEmpty(kv.Key)) _last.Add(kv.Key);
+    }
+
     private static void TickInner(float now)
     {
         try
@@ -65,9 +82,45 @@ public static class EvidenceCreationPoller
             if (!_initialized)
             {
                 _initialized = true;
-                _last.Clear();
-                foreach (var kv in dict)
-                    if (!string.IsNullOrEmpty(kv.Key)) _last.Add(kv.Key);
+                RefreshSnapshot(dict);
+                // Seed the fast-path baseline too, or the very next tick would
+                // read _lastCount == -1, think the dictionary grew by
+                // thousands, and do the full broadcast walk it just skipped.
+                _lastCount = dict.Count;
+                _nextReconcileAt = now + RECONCILE_INTERVAL_S;
+                return;
+            }
+
+            // Count-change fast path.
+            //
+            // New evidence can only exist if the dictionary GREW. The old code
+            // did two full enumerations of it every tick regardless — one
+            // inside BroadcastNewEvidenceSince and one to refresh the snapshot
+            // — and each pass marshals every Il2Cpp string key into a freshly
+            // allocated managed string. On the 2026-07-30 playtest that cost
+            // 224 ms per tick on average at 5 Hz, a large part of the ~197 ms
+            // per frame the coop layer was burning on the host (~5 FPS).
+            //
+            // A single int compare replaces both walks in the steady state,
+            // which is essentially always: evidence is created by player
+            // actions, not continuously.
+            int count = dict.Count;
+            bool grew = count > _lastCount;
+            bool changed = count != _lastCount;
+            _lastCount = count;
+
+            // Periodic reconcile catches the one case Count cannot see: an
+            // item created and another destroyed within the same tick, leaving
+            // the total unchanged.
+            bool reconcileDue = now >= _nextReconcileAt;
+            if (reconcileDue) _nextReconcileAt = now + RECONCILE_INTERVAL_S;
+
+            if (!grew && !reconcileDue)
+            {
+                // Nothing new. Only resync the snapshot when the count moved
+                // (i.e. something was destroyed), so the common path does no
+                // enumeration at all.
+                if (changed) RefreshSnapshot(dict);
                 return;
             }
 
@@ -76,9 +129,7 @@ public static class EvidenceCreationPoller
             try { Sync.EvidenceSync.BroadcastNewEvidenceSince(_last); }
             catch (Exception ex) { Plugin.Log.LogWarning($"[EvidenceCreationPoller] broadcast: {ex.Message}"); }
 
-            _last.Clear();
-            foreach (var kv in dict)
-                if (!string.IsNullOrEmpty(kv.Key)) _last.Add(kv.Key);
+            RefreshSnapshot(dict);
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[EvidenceCreationPoller] tick: {ex.Message}"); }
     }

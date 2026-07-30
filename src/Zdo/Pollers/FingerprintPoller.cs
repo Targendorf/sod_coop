@@ -29,6 +29,12 @@ public static class FingerprintPoller
     public const string NAME = "fingerprints";
 
     private static readonly Dictionary<int, int> _lastCount = new();
+
+    /// <summary>Cached interactables examined per tick by the sweep. At 5 Hz,
+    /// 128/tick covers a large print-bearing set every few seconds at a fixed
+    /// per-frame cost.</summary>
+    private const int SWEEP_PER_TICK = 128;
+    private static int _sweepCursor;
     private static uint _seq = 1;
 
     /// <summary>Cached references to interactables that ever had — or could
@@ -95,8 +101,24 @@ public static class FingerprintPoller
                 _scannedTo = dir.Count;
             }
 
-            for (int idx = 0; idx < _interactables.Count; idx++)
+            // Amortized sweep. The cache holds every interactable that has ever
+            // had a fingerprint collection allocated, which on a lived-in city
+            // is a large set, and the old loop read `inter.df` plus its Count on
+            // every one of them at 5 Hz. Measured on the 2026-07-30 playtest:
+            // 226 ms per tick on average — one of the three pollers holding the
+            // host's coop layer at ~197 ms per frame (~5 FPS).
+            //
+            // Prints appear from player actions, so a bounded slice per tick
+            // detects them just as well at a fixed small cost. Interactable.
+            // AddNewDynamicFingerprint is Harmony-patched as well, so real-time
+            // response never depended on this loop.
+            int total = _interactables.Count;
+            int sweep = Math.Min(SWEEP_PER_TICK, total);
+            for (int n = 0; n < sweep; n++)
             {
+                if (_sweepCursor >= total) _sweepCursor = 0;
+                int idx = _sweepCursor++;
+
                 var inter = _interactables[idx];
                 if (inter == null) continue;
                 int interId = _ids[idx];

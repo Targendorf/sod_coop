@@ -406,6 +406,20 @@ public static class NetworkManager
 
         int hostTwin = 0;
         try { hostTwin = global::Player.Instance?.humanID ?? 0; } catch { }
+        // Diagnostic: clients resolve the host's body through this id
+        // (RemotePlayer.TryResolveTwin). When it is 0 — or points at something
+        // absent from citizenDictionary — the host falls back to the stand-in
+        // clone on every client, which renders fine but is invisible to those
+        // clients' game AI. The 2026-07-30 playtest hit exactly that and the
+        // log could not say which of the two it was.
+        try
+        {
+            bool inRoster = false;
+            var cd = global::CityData.Instance?.citizenDictionary;
+            if (cd != null && hostTwin > 0) inRoster = cd.TryGetValue(hostTwin, out var _);
+            Plugin.Log.LogInfo($"[NetworkManager] host twin humanID={hostTwin} inCitizenDictionary={inRoster}");
+        }
+        catch { }
         _players[LocalPlayerId] = new PlayerNetInfo
         {
             PlayerId = LocalPlayerId,
@@ -558,6 +572,20 @@ public static class NetworkManager
         // alongside everyone else's via the standard packet path.
         int hostTwin = 0;
         try { hostTwin = global::Player.Instance?.humanID ?? 0; } catch { }
+        // Diagnostic: clients resolve the host's body through this id
+        // (RemotePlayer.TryResolveTwin). When it is 0 — or points at something
+        // absent from citizenDictionary — the host falls back to the stand-in
+        // clone on every client, which renders fine but is invisible to those
+        // clients' game AI. The 2026-07-30 playtest hit exactly that and the
+        // log could not say which of the two it was.
+        try
+        {
+            bool inRoster = false;
+            var cd = global::CityData.Instance?.citizenDictionary;
+            if (cd != null && hostTwin > 0) inRoster = cd.TryGetValue(hostTwin, out var _);
+            Plugin.Log.LogInfo($"[NetworkManager] host twin humanID={hostTwin} inCitizenDictionary={inRoster}");
+        }
+        catch { }
 
         _players[LocalPlayerId] = new PlayerNetInfo
         {

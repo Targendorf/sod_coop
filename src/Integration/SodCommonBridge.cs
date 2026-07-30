@@ -115,6 +115,7 @@ public static class SodCommonBridge
                     // Shared citizen roster cache (used by all per-citizen
                     // pollers) — same stale-reference concern as DoorPoller.
                     SoDCoop.Zdo.Pollers.CitizenRosterCache.Reset();
+                    SoDCoop.Zdo.Pollers.EvidenceRosterCache.Reset();
                     // UnpatchSelf so SoD's save-load runs without IL2CPP wrapper
                     // trampoline marshalling cost on patched methods. Empirically
                     // this brought save-load from 200s+ → ~50s in Phase 1 logs.

@@ -2342,6 +2342,25 @@ public static class GamePatches
            && SoDCoop.Network.NetworkManager.IsConnected
            && !SoDCoop.Network.NetworkManager.IsHost;
 
+    /// <summary>Breadcrumb only — <b>this no longer skips the original</b>.
+    ///
+    /// <para><b>The 2026-07-30 playtest reversed the diagnosis this patch was
+    /// built on.</b> It used to <c>return false</c> for a joiner, on the theory
+    /// that the tutorial cinematic was what dragged the player ~484 m off-map.
+    /// It is the other way round: the player BEGINS in the intro staging area,
+    /// and <c>ChapterIntro.OnGameStart</c> is the override that runs
+    /// <c>SetUpMission</c>, assigns <c>apartment</c> / <c>apartmentEntrance</c>,
+    /// spawns the starting clues and PLACES the player in the city. Skipping it
+    /// skipped the placement, so the joiner simply never left staging — which
+    /// is exactly what the playtest showed: both players ~400 m outside the map
+    /// and unable to see each other, while the log cheerfully reported
+    /// "suppressing ChapterIntro.OnGameStart".</para>
+    ///
+    /// <para>Tutorial suppression does not need this hammer. Layers 1 and 2 —
+    /// <c>Game.skipIntro = true</c> and clearing <c>askToEnableTutorial</c> on
+    /// the chapter presets — are SoD's own switches for it, and the same
+    /// playtest log confirms both applied cleanly on the joiner. Being placed
+    /// in the world is not optional; a tutorial prompt is.</para></summary>
     [HarmonyPatch(typeof(global::ChapterIntro), nameof(global::ChapterIntro.OnGameStart))]
     public static class ChapterIntro_OnGameStart_Patch
     {
@@ -2350,25 +2369,20 @@ public static class GamePatches
         {
             try
             {
-                if (!IsJoinerSuppressingIntro())
-                {
-                    // Loud-ish breadcrumb (Info, fires at most once per load):
-                    // the previous playtest could not distinguish "prefix never
-                    // fired" from "gate was false". Never again.
-                    Plugin.Log.LogInfo(
-                        $"[Patch.ChapterIntro] OnGameStart passthrough (joinedSession={WorldAutoLoad.JoinedSessionActive} " +
-                        $"connected={SoDCoop.Network.NetworkManager.IsConnected} isHost={SoDCoop.Network.NetworkManager.IsHost}) — normal flow.");
-                    return true; // host / solo / re-load — normal flow
-                }
+                bool joiner = IsJoinerSuppressingIntro();
                 Plugin.Log.LogInfo(
-                    "[Patch.ChapterIntro] coop joiner — suppressing ChapterIntro.OnGameStart " +
-                    "(no tutorial cinematic; case state will arrive via EvidenceSync).");
-                return false; // skip original
+                    $"[Patch.ChapterIntro] OnGameStart running (joiner={joiner} " +
+                    $"joinedSession={WorldAutoLoad.JoinedSessionActive} " +
+                    $"connected={SoDCoop.Network.NetworkManager.IsConnected} " +
+                    $"isHost={SoDCoop.Network.NetworkManager.IsHost}).");
+
+                // ALWAYS let the original run — see the note below.
+                return true;
             }
             catch (System.Exception ex)
             {
                 Plugin.Log.LogWarning($"ChapterIntro.OnGameStart patch: {ex.Message}");
-                return true; // on any error, let the original run so we don't half-start
+                return true;
             }
         }
     }
