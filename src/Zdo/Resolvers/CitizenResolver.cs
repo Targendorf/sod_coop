@@ -115,6 +115,24 @@ public sealed class CitizenResolver : IZdoResolver
                 if (!(inCatchup && !v)) try { c.isCrouched = v; } catch { }
             }
 
+            // Sleep / bed. CitizenStatePoller has been shipping both of these
+            // on every slow tick since the cadence split, but NOTHING read them
+            // on the receiving side — the keys crossed the wire, sat in the ZDO
+            // and in every snapshot, and were dropped. A citizen asleep in bed
+            // on the host stayed awake and standing for the joiner. Same
+            // direct-field-write treatment as Crouched above: SoD's animator
+            // and AI read these on their next tick.
+            if (z.HasKey(ZdoKeys.InBed))
+            {
+                bool v = z.GetBool(ZdoKeys.InBed, false);
+                if (!(inCatchup && !v)) try { c.isInBed = v; } catch { }
+            }
+            if (z.HasKey(ZdoKeys.Asleep))
+            {
+                bool v = z.GetBool(ZdoKeys.Asleep, false);
+                if (!(inCatchup && !v)) try { c.isAsleep = v; } catch { }
+            }
+
             // Vitals (food / water / HP). Whether they actually need to be
             // mirrored onto the local citizen is mostly cosmetic — SoD's own
             // gameplay loop on the host drives the live values. We mirror so
