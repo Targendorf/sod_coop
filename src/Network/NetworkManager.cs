@@ -1584,6 +1584,44 @@ public static class NetworkManager
         }
     }
 
+    /// <summary>Host-only. Mark a peer as NOT world-ready, stopping all live
+    /// per-peer delta / event / ownership / citizen-position sends to it until
+    /// its next snapshot ships.
+    ///
+    /// <para><b>Why this has to exist.</b> <see cref="PlayerNetInfo.WorldReady"/>
+    /// used to be set true in exactly one place and never cleared, so a peer
+    /// stayed "ready" forever once it had been ready once. Two paths take a
+    /// peer's world away underneath that flag:</para>
+    /// <list type="bullet">
+    ///   <item><description><b>Live save-transfer re-sync</b> — the host pushes
+    ///   a fresh save, the client calls LoadGame and spends the next 30-110 s
+    ///   with no world at all, while the host happily keeps streaming deltas at
+    ///   it.</description></item>
+    ///   <item><description><b>Reconnect</b> — the restored slot carries the
+    ///   previous session's <c>WorldReady == true</c>, so the host resumes
+    ///   streaming the instant the peer is re-registered, before the resume
+    ///   delta or snapshot that seeds those ZDOs has shipped.</description></item>
+    /// </list>
+    /// <para>Both reproduce exactly the failure the gate was introduced to fix:
+    /// deltas arriving at a peer that cannot apply them, wasted main-thread
+    /// serialise on the host and a reliable-channel head-of-line stall.</para></summary>
+    internal static void MarkPeerWorldNotReady(int peerId, string reason)
+    {
+        if (peerId < 0) return;
+        if (_players.TryGetValue(peerId, out var info) && info != null && info.WorldReady)
+        {
+            info.WorldReady = false;
+            Plugin.Log.LogInfo(
+                $"[NetworkManager] peer {peerId} ('{info.PlayerName}') is NO LONGER WorldReady ({reason}) — " +
+                $"live delta/event traffic suspended until its next snapshot ships.");
+        }
+    }
+
+    /// <summary>Host-only convenience: clear the world-ready flag for the peer
+    /// behind <paramref name="peer"/>.</summary>
+    internal static void MarkPeerWorldNotReady(SteamPeer peer, string reason)
+        => MarkPeerWorldNotReady(GetPlayerIdByPeer(peer), reason);
+
     #endregion
 
     #region Packet Handlers
@@ -1835,6 +1873,14 @@ public static class NetworkManager
                 _peerToPlayerId[peer] = existingId;
                 if (!_clients.Contains(peer)) _clients.Add(peer);
 
+                // The restored slot still carries the PREVIOUS session's
+                // WorldReady=true. Clear it before the peer is re-registered
+                // for sends, or the per-peer flush starts streaming deltas the
+                // moment _clients contains this peer again — ahead of the
+                // resume-delta / snapshot below that seeds the ZDOs those
+                // deltas refer to. Re-armed once the resume actually ships.
+                MarkPeerWorldNotReady(existingId, "reconnect — awaiting resume/snapshot");
+
                 _writer.Reset();
                 _writer.Put(existingId);
                 _writer.Put(_players.Count);
@@ -1864,8 +1910,20 @@ public static class NetworkManager
                 try
                 {
                     bool delivered = SoDCoop.Zdo.ZdoMan.SendDeltaSinceCursorTo(peer);
-                    if (!delivered)
+                    if (delivered)
+                    {
+                        // The cursor-delta path ships synchronously and is the
+                        // peer's complete catch-up, so it — unlike the chunked
+                        // snapshot, which arms the flag from its own pump —
+                        // must re-arm WorldReady itself. Without this the peer
+                        // would stay suspended by the clear above and never
+                        // receive another delta.
+                        MarkPeerWorldReady(existingId);
+                    }
+                    else
+                    {
                         SoDCoop.Zdo.ZdoMan.SendSnapshotTo(peer);
+                    }
                 }
                 catch (Exception ex)
                 {

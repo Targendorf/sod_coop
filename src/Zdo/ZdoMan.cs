@@ -1739,6 +1739,27 @@ public static class ZdoMan
     {
         if (peer == null) return;
         if (!NetworkManager.IsHost) return;
+
+        // One chunked stream per peer at a time. The receiver has a SINGLE
+        // reassembly buffer, so two concurrent streams to the same peer would
+        // interleave their chunks on the wire and be spliced together into
+        // garbage — reassembly would still "complete" on byte count and hand
+        // RestoreFromSnapshot a corrupt payload. Reachable whenever
+        // ClientWorldReady arrives twice: a live save-transfer re-sync, a
+        // reconnect that races the first snapshot, or a client that re-arms its
+        // WorldReady handler.
+        for (int i = 0; i < _pendingSnapshotSends.Count; i++)
+        {
+            if (ReferenceEquals(_pendingSnapshotSends[i].Peer, peer))
+            {
+                Plugin.Log.LogWarning(
+                    $"[ZdoMan] snapshot already in flight for {peer.SteamId.m_SteamID} " +
+                    $"({_pendingSnapshotSends[i].Cursor}/{_pendingSnapshotSends[i].CompressedLen} B sent) — " +
+                    "ignoring duplicate request rather than interleaving two streams.");
+                return;
+            }
+        }
+
         try
         {
             // One-shot serialise on the main thread — this walks the live

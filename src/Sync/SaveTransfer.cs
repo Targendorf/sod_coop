@@ -917,6 +917,17 @@ public static class SaveTransfer
     public static void HandleComplete(NetDataReader r, int senderId)
     {
         Plugin.Log.LogInfo($"[SaveTransfer] client {senderId} ACKed save transfer + started load.");
+
+        // This ACK means "I have begun LoadGame" — the client is about to spend
+        // 30-110 s with no world at all. Suspend live traffic to it until its
+        // post-reload ClientWorldReady triggers a fresh snapshot, which re-arms
+        // the flag. Without this the host keeps streaming deltas, ZDO events,
+        // ownership transfers and citizen positions at a peer that cannot apply
+        // any of them — wasted host main-thread serialise plus a reliable-channel
+        // head-of-line stall, i.e. exactly the failure the WorldReady gate was
+        // introduced to fix, reintroduced through the live re-sync path.
+        try { NetworkManager.MarkPeerWorldNotReady(senderId, "save-transfer reload started"); }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[SaveTransfer] HandleComplete: {ex.Message}"); }
     }
 
     /// <summary>Drop all in-flight state. Called on disconnect / world
