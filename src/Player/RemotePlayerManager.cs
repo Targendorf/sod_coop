@@ -286,6 +286,40 @@ public static class RemotePlayerManager
         }
     }
 
+    /// <summary>Show or hide a remote player's stand-in body — the cloned
+    /// citizen visual plus the capsule fallback — while leaving the nametag
+    /// label and the RemotePlayer wrapper itself alone.
+    ///
+    /// <para>Used when the player's TWIN citizen takes over as the visible
+    /// body (see <c>RemotePlayer.DriveTwin</c>). The stand-in is a stripped
+    /// clone of a RANDOM citizen picked by seed — it was built before twins
+    /// existed and is not the player's actual character. The twin is: it
+    /// carries their chosen appearance, name and outfit, and it is a real
+    /// <c>Human</c> the game's AI can perceive. Showing both would put two
+    /// bodies in the same spot.</para></summary>
+    public static void SetStandInVisualVisible(int playerId, bool visible)
+    {
+        try
+        {
+            if (_citizenVisuals.TryGetValue(playerId, out var v) && v != null && v.activeSelf != visible)
+                v.SetActive(visible);
+
+            if (_players.TryGetValue(playerId, out var rp) && rp != null && rp.gameObject != null)
+            {
+                for (int i = 0; i < rp.gameObject.transform.childCount; i++)
+                {
+                    var child = rp.gameObject.transform.GetChild(i);
+                    if (child == null || child.name != "CapsuleVisual") continue;
+                    if (child.gameObject.activeSelf != visible) child.gameObject.SetActive(visible);
+                }
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"[RemotePlayerManager] SetStandInVisualVisible({playerId},{visible}): {ex.Message}");
+        }
+    }
+
     private static GameObject FindCapsuleChild(GameObject root)
     {
         if (root == null) return null;

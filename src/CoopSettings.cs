@@ -158,6 +158,13 @@ public static class CoopSettings
     /// seed — the movement execution is not. See <c>CitizenPositionSync</c>.</summary>
     public static ConfigEntry<bool> SyncCitizenPositions;
 
+    /// <summary>Use a remote player's TWIN citizen as their body instead of the
+    /// stand-in clone. On by default: the twin is a real <c>Human</c> the game's
+    /// AI can actually perceive, and it carries the player's real appearance,
+    /// name and outfit — the stand-in is a stripped clone of a random citizen
+    /// that no NPC can see. See the design note on <c>RemotePlayer.DriveTwin</c>.</summary>
+    public static ConfigEntry<bool> RemotePlayerUsesTwinBody;
+
     /// <summary>How NPC idle/arms animation states (sweeping, cooking, typing,
     /// etc.) are synced from host to clients. <see cref="CitizenAnimSyncMode"/>
     /// for options.</summary>
@@ -225,6 +232,12 @@ public static class CoopSettings
             "save/load. Writes to a dedicated coop file — never over your own saves. Off by default " +
             "because saving mid-session this way is not yet playtest-verified; leave it off and just " +
             "save before friends join for the same result.");
+
+        RemotePlayerUsesTwinBody = config.Bind(
+            "Networking", "RemotePlayerUsesTwinBody", true,
+            "Show a remote player as their twin citizen — their real character, which the game's AI " +
+            "can see and react to — instead of the old stand-in clone of a random citizen that NPCs " +
+            "cannot perceive at all. Turn off to go back to the stand-in body.");
 
         SyncCitizenPositions = config.Bind(
             "Networking", "SyncCitizenPositions", true,

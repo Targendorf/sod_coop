@@ -290,11 +290,189 @@ public class RemotePlayer : MonoBehaviour
         }
 
         // Direct position assignment — interpolation already smoothed it.
+        // The wrapper transform stays authoritative for nametags, map markers
+        // and CurrentPosition even when the twin is the visible body.
         transform.position = targetPos;
         // Slight rotation easing to mask packet jitter on yaw.
         transform.rotation = Quaternion.Slerp(transform.rotation, targetRot, Time.unscaledDeltaTime * ROTATION_LERP_SPEED);
 
-        DriveAnimator();
+        // Prefer the twin citizen as this player's body. Falls back to the
+        // stand-in clone when no twin is assigned yet.
+        if (!DriveTwin(targetPos))
+            DriveAnimator();
+    }
+
+    // ── Twin-driven body ────────────────────────────────────────────────
+    //
+    // A remote player needs to be TWO things at once: something you can see,
+    // and something the game's AI can perceive. The original design solved
+    // those with two separate objects — this RemotePlayer wrapper carrying a
+    // stripped clone of a random citizen for the visuals, and a frozen "twin"
+    // citizen for everything logical (forensics attribution, suspicion flags,
+    // outfit, the player's chosen name and appearance).
+    //
+    // Splitting them is the bug. The clone is not an Actor, so SoD's AI cannot
+    // see it at all; the twin is an Actor but never moved, so NPC perception,
+    // trespass reactions and witness logic all ran against a body standing
+    // wherever it was first claimed. PlayerSuspicionSync exists purely to paper
+    // over that, pushing the trespass FLAGS to the host's twin because the
+    // POSITION could not be trusted.
+    //
+    // Every established co-op mod for a singleplayer game converges on the
+    // opposite pattern: ONE entity per remote player, which is a real engine
+    // actor, with its local AI disabled and its transform driven by the
+    // network. Skyrim Together is explicit about it — remote players "operate
+    // like NPCs" there, to the point that a standing player can give away a
+    // sneaking one to the AI, which is only possible because the remote player
+    // is a genuine perceivable actor at a genuine position.
+    //
+    // So the twin becomes the body. It is already a real Human in
+    // citizenDictionary with the player's actual appearance, it is already
+    // frozen by TwinManager (ai.enabled = false) so nothing fights us for the
+    // transform, and driving it from the interpolation this class already
+    // computes costs nothing extra. The stand-in clone is hidden while a twin
+    // is available, so there is exactly one body.
+    //
+    // Only OTHER players' twins are driven, which this class gives us for free:
+    // a RemotePlayer only ever exists for a remote peer. The local player is
+    // represented by Player.Instance, which the AI already perceives normally —
+    // moving your own twin would spawn a duplicate of you.
+
+    private global::Human _twin;
+    private float _nextTwinResolveAt;
+    private Animator _twinAnimator;
+    private bool _twinAnimResolved;
+    private bool _standInHidden;
+    private int _twinMoveSpeedHash = -1;
+    private int _twinWalkSpeedHash = -1;
+
+    /// <summary>Drive this player's twin citizen to <paramref name="targetPos"/>
+    /// and feed its locomotion animation. Returns true when the twin took over
+    /// as the body, false when the caller should keep using the stand-in.</summary>
+    [HideFromIl2Cpp]
+    private bool DriveTwin(Vector3 targetPos)
+    {
+        // Downed players hand their body to the corpse system, which detaches
+        // the STAND-IN visual and gives it physics. That path needs the stand-in
+        // back — driving the twin here would leave an invisible corpse on the
+        // floor while the twin stayed upright. Same restore when the feature is
+        // switched off at runtime.
+        if (IsDown || CoopSettings.RemotePlayerUsesTwinBody?.Value == false)
+        {
+            RestoreStandIn();
+            return false;
+        }
+
+        try
+        {
+            if (_twin == null)
+            {
+                // Throttled: the twin id arrives with the handshake, but a
+                // position packet can outrace it, and the citizen itself may
+                // not exist until the world finishes loading.
+                float now = Time.unscaledTime;
+                if (now < _nextTwinResolveAt) return false;
+                _nextTwinResolveAt = now + 2f;
+                if (!TryResolveTwin()) return false;
+            }
+
+            var t = _twin.transform;
+            if (t == null) { _twin = null; return false; }
+
+            // TwinManager froze the AI, so nothing else writes this transform.
+            t.position = targetPos;
+            t.rotation = transform.rotation;
+
+            if (!_standInHidden)
+            {
+                RemotePlayerManager.SetStandInVisualVisible(PlayerId, false);
+                _standInHidden = true;
+                Plugin.Log.LogInfo(
+                    $"[RemotePlayer] {PlayerName} is now driven through twin citizen #{_twin.humanID} — " +
+                    "stand-in clone hidden, game AI can perceive this player.");
+            }
+
+            DriveTwinAnimator();
+            return true;
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"[RemotePlayer] DriveTwin({PlayerName}): {ex.Message}");
+            _twin = null;
+            return false;
+        }
+    }
+
+    /// <summary>Put the stand-in body back on screen after the twin stops
+    /// driving (player downed, or the feature switched off mid-session).</summary>
+    [HideFromIl2Cpp]
+    private void RestoreStandIn()
+    {
+        if (!_standInHidden) return;
+        _standInHidden = false;
+        RemotePlayerManager.SetStandInVisualVisible(PlayerId, true);
+    }
+
+    [HideFromIl2Cpp]
+    private bool TryResolveTwin()
+    {
+        int twinId = 0;
+        if (NetworkManager.Players != null
+            && NetworkManager.Players.TryGetValue(PlayerId, out var info)
+            && info != null)
+        {
+            twinId = info.TwinHumanID;
+        }
+        if (twinId <= 0) return false;
+
+        var dict = global::CityData.Instance?.citizenDictionary;
+        if (dict == null) return false;
+        if (!dict.TryGetValue(twinId, out var human) || human == null) return false;
+
+        _twin = human;
+        _twinAnimResolved = false;
+        _twinAnimator = null;
+        return true;
+    }
+
+    /// <summary>Feed the twin's locomotion parameters from the interpolated
+    /// speed. Its AI is frozen and therefore publishes no speed of its own, so
+    /// without this the body slides along in its idle pose — the same artefact
+    /// the stand-in path hit and fixed by driving BOTH parameters.</summary>
+    [HideFromIl2Cpp]
+    private void DriveTwinAnimator()
+    {
+        try
+        {
+            if (!_twinAnimResolved)
+            {
+                _twinAnimResolved = true;
+                try { _twinAnimator = _twin.GetComponentInChildren<Animator>(); } catch { _twinAnimator = null; }
+                if (_twinAnimator != null)
+                {
+                    _twinMoveSpeedHash = Animator.StringToHash("moveSpeed");
+                    _twinWalkSpeedHash = Animator.StringToHash("walkAnimSpeed");
+                }
+            }
+            if (_twinAnimator == null) return;
+
+            float speed = 0f;
+            if (_buffer.Count >= 2)
+            {
+                var a = _buffer[_buffer.Count - 2];
+                var b = _buffer[_buffer.Count - 1];
+                float dt = Mathf.Max(b.ArrivalTime - a.ArrivalTime, 0.01f);
+                speed = Vector3.Distance(a.Position, b.Position) / dt;
+            }
+            else if (_buffer.Count == 1)
+            {
+                speed = _buffer[_buffer.Count - 1].Velocity.magnitude;
+            }
+
+            _twinAnimator.SetFloat(_twinMoveSpeedHash, speed);
+            _twinAnimator.SetFloat(_twinWalkSpeedHash, Mathf.Clamp01(speed / 1.5f));
+        }
+        catch { /* animator missing or odd — position still syncs */ }
     }
 
     /// <summary>
