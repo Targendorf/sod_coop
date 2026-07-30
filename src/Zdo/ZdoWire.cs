@@ -64,6 +64,20 @@ public static class ZdoWire
             case ZdoValueType.Quaternion: target.Set(key, new Quaternion(r.GetFloat(), r.GetFloat(), r.GetFloat(), r.GetFloat())); break;
             case ZdoValueType.Blob:       {
                 int len = r.GetInt();
+                // Bounds-check before allocating or copying. This was the last
+                // unbounded length read on the ZDO wire: a corrupt or truncated
+                // frame could hand us a negative length (allocation throws), a
+                // huge one (OOM), or one that merely exceeds what is actually on
+                // the wire — and that last case is the dangerous one, because
+                // BlockCopy would silently splice in whatever the transport's
+                // POOLED receive buffer happened to hold from a previous packet.
+                // Throwing here is deliberate: ApplyDeltaBatch catches it, and a
+                // frame whose length prefixes are wrong is not safely parseable
+                // past this point anyway, so continuing would apply garbage to
+                // live ZDOs.
+                if (len < 0 || len > r.AvailableBytes)
+                    throw new InvalidOperationException(
+                        $"ZdoWire.ReadValueInto: blob length {len} out of range (available {r.AvailableBytes})");
                 byte[] buf = new byte[len];
                 // Bulk copy: the writer uses w.Put(b, 0, len), so the reader
                 // must mirror it with a single BlockCopy instead of a per-byte
@@ -101,6 +115,13 @@ public static class ZdoWire
                 // Bulk skip: read length then SkipBytes, mirroring the writer's
                 // bulk Put. Per-byte GetByte() loop was O(len) dispatches.
                 int len = r.GetInt();
+                // Same bounds check as ReadValueInto. SkipBytes past the logical
+                // end leaves the reader positioned inside the pooled buffer's
+                // stale tail, so every subsequent value in the frame would be
+                // decoded from another packet's leftovers instead of failing.
+                if (len < 0 || len > r.AvailableBytes)
+                    throw new InvalidOperationException(
+                        $"ZdoWire.SkipValue: blob length {len} out of range (available {r.AvailableBytes})");
                 r.SkipBytes(len);
                 break;
             }

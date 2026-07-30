@@ -81,6 +81,8 @@ public class TimeSync
             Hour     = info.Hour,
             Minute   = info.Minute,
             IsPaused = IsGamePaused(),
+            DayInt   = info.DayInt,
+            Month    = info.Month,
         };
 
         _writer.Reset();
@@ -160,10 +162,57 @@ public class TimeSync
                 session.gameTime = Mathf.Lerp(current, target, SMOOTH_RATE);
             }
             // else within noise — do nothing
+
+            ApplyDate(packet, session);
         }
         catch (System.Exception ex)
         {
             Plugin.Log.LogError($"TimeSync.ApplyTimePacket: {ex.Message}");
+        }
+    }
+
+    /// <summary>Correct the client's DATE to the host's, when it differs.
+    ///
+    /// <para><b>Why this is not optional.</b> The clock sync above writes only
+    /// <c>gameTime</c> — minutes since midnight. The date lives in separate
+    /// fields (<c>dayInt</c>, <c>day</c>, <c>month</c>) and was never touched.
+    /// Snapping <c>gameTime</c> across midnight does not run SoD's own rollover,
+    /// so a client that gets corrected backwards or forwards over 00:00 silently
+    /// fails to advance its day — and each such crossing compounds. Once the two
+    /// machines sit on different WEEKDAYS, SoD's citizens run entirely different
+    /// daily schedules, so every NPC in the city is somewhere else. Invisible in
+    /// logs, permanent, and gets worse the longer a session runs.</para>
+    ///
+    /// <para>Only written on an actual mismatch: this fires at the 2 Hz sync
+    /// rate and stamping identical values every tick would be pointless churn on
+    /// fields the game also writes.</para></summary>
+    private void ApplyDate(TimeSyncPacket packet, SessionData session)
+    {
+        // -1 means the sender is an older build that doesn't carry the date.
+        if (packet.DayInt < 0) return;
+
+        try
+        {
+            if (session.dayInt != packet.DayInt)
+            {
+                int before = session.dayInt;
+                session.dayInt = packet.DayInt;
+                Plugin.Log.LogInfo(
+                    $"[TimeSync] date corrected: dayInt {before} → {packet.DayInt} " +
+                    "(client had drifted onto a different day; NPC schedules are weekday-driven).");
+            }
+
+            // day / month are the calendar presentation of dayInt. They are
+            // plain fields, so setting dayInt alone can leave them stale.
+            if ((int)session.day != packet.Day)
+                session.day = (global::SessionData.WeekDay)packet.Day;
+
+            if (packet.Month >= 0 && (int)session.month != packet.Month)
+                session.month = (global::SessionData.Month)packet.Month;
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"[TimeSync] ApplyDate: {ex.Message}");
         }
     }
 
@@ -179,12 +228,17 @@ public class TimeSync
                 float gt     = session.gameTime;   // minutes since midnight (float)
                 int   hour   = ((int)(gt / 60f)) % 24;
                 int   minute = ((int)gt) % 60;
+                int dayInt = -1, month = -1;
+                try { dayInt = session.dayInt; } catch { }
+                try { month  = (int)session.month; } catch { }
                 return new GameTimeInfo
                 {
                     GameMinutes = gt,
                     Day         = (int)session.day,
                     Hour        = hour,
                     Minute      = minute,
+                    DayInt      = dayInt,
+                    Month       = month,
                 };
             }
         }
@@ -200,7 +254,9 @@ public class TimeSync
 public struct GameTimeInfo
 {
     public float GameMinutes;   // session.gameTime (minutes since midnight, float)
-    public int   Day;
+    public int   Day;           // session.day — WeekDay enum, not a counter
     public int   Hour;
     public int   Minute;
+    public int   DayInt;        // session.dayInt — absolute day counter (-1 = unknown)
+    public int   Month;         // session.month enum (-1 = unknown)
 }

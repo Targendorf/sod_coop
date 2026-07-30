@@ -318,12 +318,29 @@ public struct TimeSyncPacket : INetPacket
 {
     public PacketType Type => PacketType.TimeSync;
     
+    /// <summary><c>SessionData.gameTime</c> — minutes since midnight.</summary>
     public float GameTime;
+    /// <summary><c>SessionData.day</c> — the WeekDay ENUM (Mon..Sun), not a
+    /// counter. Display/diagnostics plus the weekday NPC schedules key off.</summary>
     public int Day;
     public int Hour;
     public int Minute;
     public bool IsPaused;
-    
+    /// <summary><c>SessionData.dayInt</c> — the absolute day counter. This is
+    /// the authoritative date field; <see cref="Day"/> and <see cref="Month"/>
+    /// are the calendar presentation of it.
+    ///
+    /// <para>Added because the clock sync only ever wrote
+    /// <c>gameTime</c> (minutes since midnight) and left the DATE alone. A
+    /// client whose clock gets snapped across midnight does not run SoD's own
+    /// rollover, so its day silently fails to advance and the two machines end
+    /// up on different weekdays — where SoD's citizens follow entirely
+    /// different schedules. That desynchronises where every NPC in the city is,
+    /// permanently and invisibly.</para></summary>
+    public int DayInt;
+    /// <summary><c>SessionData.month</c> enum.</summary>
+    public int Month;
+
     public void Serialize(NetDataWriter writer)
     {
         writer.Put(GameTime);
@@ -331,8 +348,10 @@ public struct TimeSyncPacket : INetPacket
         writer.Put(Hour);
         writer.Put(Minute);
         writer.Put(IsPaused);
+        writer.Put(DayInt);
+        writer.Put(Month);
     }
-    
+
     public void Deserialize(NetDataReader reader)
     {
         GameTime = reader.GetFloat();
@@ -340,6 +359,11 @@ public struct TimeSyncPacket : INetPacket
         Hour = reader.GetInt();
         Minute = reader.GetInt();
         IsPaused = reader.GetBool();
+        // Trailing fields — a peer on an older build doesn't write them.
+        // Leave them at -1 ("unknown") so the apply side skips the date
+        // correction rather than stamping a bogus day 0 / January.
+        DayInt = reader.AvailableBytes >= 4 ? reader.GetInt() : -1;
+        Month  = reader.AvailableBytes >= 4 ? reader.GetInt() : -1;
     }
 }
 
