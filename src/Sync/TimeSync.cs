@@ -43,6 +43,12 @@ public class TimeSync
     // one of them at LogInfo floods BepInEx's console — 120 lines/min just for
     // time sync, and the BepInEx writer is noticeably hot in IL2CPP. Coalesce
     // identical-day snaps into one log line per 5 seconds.
+    /// <summary>How often the snap-verification probe may log. Once per 30 s is
+    /// enough to diagnose a clock that refuses to be set without becoming spam
+    /// in its own right.</summary>
+    private const float CLOCK_PROBE_INTERVAL_S = 30f;
+    private float _nextClockProbeAt;
+
     private const float SNAP_LOG_INTERVAL_S = 5f;
     private float _lastSnapLogTime = -SNAP_LOG_INTERVAL_S;
     private int   _snapsSinceLog;
@@ -129,6 +135,38 @@ public class TimeSync
                 // Large drift — snap immediately.
                 session.gameTime = target;
                 _snapsSinceLog++;
+
+                // Verify the write actually stuck.
+                //
+                // The 2026-07-30 client log snapped ~28 times with a CONSTANT
+                // 5.4 minute drift and the same displayed time each round. A
+                // constant drift is the tell: if the client's clock were simply
+                // running while the host's stood still, the drift would GROW
+                // between snaps. Staying put means the snap is being undone —
+                // i.e. gameTime is derived from, or overwritten by, something
+                // else each frame. SessionData also carries decimalClock and
+                // dayProgress, so one of those is likely the real master.
+                //
+                // This dump names it: if readback != target the write is being
+                // reverted, and the three values together say which field the
+                // game is actually driving.
+                float probeNow = Time.unscaledTime;
+                if (_nextClockProbeAt <= probeNow)
+                {
+                    _nextClockProbeAt = probeNow + CLOCK_PROBE_INTERVAL_S;
+                    try
+                    {
+                        float readBack = session.gameTime;
+                        float dec = 0f, prog = 0f;
+                        try { dec  = session.decimalClock; } catch { }
+                        try { prog = session.dayProgress; } catch { }
+                        Plugin.Log.LogInfo(
+                            $"[TimeSync/Probe] wrote gameTime={target:F2} readback={readBack:F2} " +
+                            $"(stuck={Mathf.Abs(readBack - target) < 0.01f}) drift={drift:F2} " +
+                            $"decimalClock={dec:F4} dayProgress={prog:F4} hostDayInt={packet.DayInt}");
+                    }
+                    catch { }
+                }
 
                 // Throttle: log at most every SNAP_LOG_INTERVAL_S, or when the
                 // displayed Day/Hour/Minute changes (so the player still gets

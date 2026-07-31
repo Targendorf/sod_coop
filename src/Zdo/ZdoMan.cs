@@ -662,7 +662,12 @@ public static class ZdoMan
                     $"culled/5s={_stats_culled} cursorSkip/5s={_stats_cursorSkip} " +
                     $"bytes/5s={_stats_bytesSent} (rel={_stats_relBytes} seq={_stats_seqBytes}) " +
                     $"ev/5s={evSent} evCull/5s={evCullSkip} evBytes/5s={evBytes} " +
-                    $"peers={NetworkManager.Clients.Count}");
+                    // Clients.Count is the HOST's roster and is always 0 on a
+                    // joiner, so this line used to report peers=0 on a perfectly
+                    // healthy client while NetStats on the same machine said
+                    // peers=1 — misleading in exactly the situation you read the
+                    // log for. A joiner has one peer whenever it is connected.
+                    $"peers={(NetworkManager.IsHost ? NetworkManager.Clients.Count : (NetworkManager.IsConnected ? 1 : 0))}");
             }
             _stats_dirtyCount = 0;
             _stats_pendingResent = 0;

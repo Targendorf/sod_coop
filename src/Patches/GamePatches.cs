@@ -2118,9 +2118,16 @@ public static class GamePatches
             if (now - _lastWarnAt > WARN_THROTTLE_S)
             {
                 _lastWarnAt = now;
+                // First line only. Il2CppException.Message embeds a full
+                // "--- BEGIN IL2CPP STACK TRACE ---" block, so logging it raw
+                // turned each of these into a six-line entry for a condition we
+                // already understand, expect and deliberately swallow.
+                string msg = __exception.Message ?? "";
+                int nl = msg.IndexOf('\n');
+                if (nl >= 0) msg = msg.Substring(0, nl).TrimEnd('\r');
                 Plugin.Log.LogWarning(
                     $"[SideJob.SetJobState] swallowed exception on client skeleton jobID={jobID}: " +
-                    $"{__exception.GetType().Name}: {__exception.Message} — " +
+                    $"{__exception.GetType().Name}: {msg} — " +
                     $"state authority is host-side; client skeleton refs aren't fully initialised.");
             }
             return null; // suppress

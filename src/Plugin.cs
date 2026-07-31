@@ -589,6 +589,12 @@ public static class CoopPerf
     private static float  _nextRollupAt;
     private static float  _lastFrameTime;
 
+    // Frame spikes are counted here and reported once per rollup instead of
+    // one log line each — see FrameStart.
+    private static int    _spikeCount;
+    private static double _worstSpikeMs;
+    private static double _worstSpikeCoopMs;
+
     // Per-subsystem accumulators. The Sample() helper records into these so
     // the 10s rollup can attribute the coop-layer cost to its biggest
     // contributor — without this, "coop layer avg=350ms/frame" tells us
@@ -634,13 +640,21 @@ public static class CoopPerf
             float frameDt = now - _lastFrameTime;
             if (frameDt >= SPIKE_THRESHOLD_S)
             {
-                // _sw still holds the PREVIOUS frame's coop-layer cost.
-                // Include the per-subsystem max for the spike line so the
-                // attribution is visible on the spike (not just the rollup).
-                string topSub = TopSubsystem();
-                Plugin.Log.LogInfo(
-                    $"[CoopPerf] FRAME SPIKE {frameDt * 1000f:F0} ms — coop layer used {_sw.Elapsed.TotalMilliseconds:F1} ms of the previous frame" +
-                    (string.IsNullOrEmpty(topSub) ? "" : $" (top: {topSub})."));
+                // Counted, not logged. One line per spike is fine when spikes
+                // are rare and useless when they are not: on the 2026-07-30
+                // playtest the host sat at ~5 FPS, so EVERY frame tripped the
+                // threshold and this single statement produced 763 of the
+                // log's 1420 lines — 54% of the file, drowning the errors the
+                // log exists to surface. The 10 s rollup below reports the
+                // count and the worst offender, which is all the per-spike
+                // line ever really carried.
+                _spikeCount++;
+                double spikeMs = frameDt * 1000.0;
+                if (spikeMs > _worstSpikeMs)
+                {
+                    _worstSpikeMs = spikeMs;
+                    _worstSpikeCoopMs = _sw.Elapsed.TotalMilliseconds;
+                }
             }
         }
         _lastFrameTime = now;
@@ -706,11 +720,15 @@ public static class CoopPerf
                         sb.Append(']');
                     }
                 }
+                string spikes = _spikeCount > 0
+                    ? $", spikes={_spikeCount} worst={_worstSpikeMs:F0}ms(coop {_worstSpikeCoopMs:F0}ms)"
+                    : "";
                 Plugin.Log.LogInfo(
-                    $"[CoopPerf] 10s: coop layer avg={_sumMs / _frames:F2} ms/frame, max={_maxMs:F1} ms, frames={_frames}{sb}");
+                    $"[CoopPerf] 10s: coop layer avg={_sumMs / _frames:F2} ms/frame, max={_maxMs:F1} ms, frames={_frames}{spikes}{sb}");
             }
             _nextRollupAt = now + ROLLUP_INTERVAL_S;
             _maxMs = 0; _sumMs = 0; _frames = 0;
+            _spikeCount = 0; _worstSpikeMs = 0; _worstSpikeCoopMs = 0;
             _subSum.Clear();
             _subMax.Clear();
         }
