@@ -37,6 +37,11 @@ public class MainPanel : CoopPanelBase
         CoopMenuFactory.MenuButton("Profiles", Body,
             L.Get("main.btn.profiles"),
             () => CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Profiles));
+        CoopMenuFactory.MenuButton("Appearance", Body,
+            L.Get("main.btn.appearance"),
+            () => CoopMenuController.OpenActiveProfileAppearance());
+        WrappedBodyLabel(L.Get("main.appearance.hint"),
+            CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelMuted);
 
         Spacer(12f);
 

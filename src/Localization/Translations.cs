@@ -177,6 +177,8 @@ public static class Translations
 
         // Profile management
         ["main.btn.profiles"]      = "👤  Manage profiles",
+        ["main.btn.appearance"]    = "🎭  My appearance",
+        ["main.appearance.hint"]   = "How you look to the other players: face, hair, build, clothes. Saved to the active profile and sent when you join. In a session: menu (F9) → Customize appearance. The 3D preview appears once any save has been loaded this launch.",
         ["main.profile.none"]      = "No active profile — pick one to play.",
         ["main.profile.active"]    = "Playing as: <b>{0}</b>\n<i>{1}</i>",
         ["main.sessions.header"]   = "Recent sessions",
@@ -383,6 +385,8 @@ public static class Translations
 
         // Profile management
         ["main.btn.profiles"]      = "👤  Мои персонажи",
+        ["main.btn.appearance"]    = "🎭  Моя внешность",
+        ["main.appearance.hint"]   = "Как тебя видят другие игроки: лицо, волосы, телосложение, одежда. Сохраняется в активный профиль и отправляется при входе. В сессии: меню (F9) → Настроить внешность. 3D-превью появится, когда за этот запуск будет загружен любой сейв.",
         ["main.profile.none"]      = "Нет активного персонажа — выбери одного.",
         ["main.profile.active"]    = "Играешь за: <b>{0}</b>\n<i>{1}</i>",
         ["main.sessions.header"]   = "Недавние сессии",

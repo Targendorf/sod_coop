@@ -377,6 +377,15 @@ public static class CoopMenuController
 
     private static SoDCoop.Player.AppearanceConfig LoadKnownAppearance()
     {
+        // The active profile is where every confirm persists the local
+        // player's look. Without it a CLIENT opened "Customize" on the default
+        // look — any tweak then silently threw away the one it was wearing.
+        try
+        {
+            var prof = SoDCoop.Player.ProfileStore.Active;
+            if (prof != null && prof.Appearance.IsCustomized) return prof.Appearance;
+        }
+        catch { }
         try
         {
             if (Network.NetworkManager.IsHost)
@@ -388,6 +397,30 @@ public static class CoopMenuController
         }
         catch { }
         return SoDCoop.Player.AppearanceConfig.Default;
+    }
+
+    /// <summary>Main menu "Appearance": edit the ACTIVE profile's look directly —
+    /// before it took Profiles → pick → Edit → Edit appearance → Save → Save.
+    /// Creates a profile first when there is none.</summary>
+    public static void OpenActiveProfileAppearance()
+    {
+        var prof = SoDCoop.Player.ProfileStore.Active;
+        if (prof == null)
+        {
+            prof = SoDCoop.Player.ProfileStore.Create(
+                SoDCoop.Localization.L.Get("profiles.unnamed"), "", "", SoDCoop.Player.AppearanceConfig.Default);
+            SoDCoop.Player.ProfileStore.SetActive(prof.Id);
+        }
+        var target = prof;
+        OpenAppearanceForProfileEdit(target.Appearance,
+            onConfirm: cfg =>
+            {
+                target.Appearance = cfg;
+                SoDCoop.Player.ProfileStore.Save(target);
+                if (Network.NetworkManager.IsConnected) SoDCoop.Sync.AppearanceSync.PublishOwn(cfg);
+                ShowPanel(Network.NetworkManager.IsConnected ? PanelKind.Lobby : PanelKind.Main);
+            },
+            onCancel: () => ShowPanel(Network.NetworkManager.IsConnected ? PanelKind.Lobby : PanelKind.Main));
     }
 
     /// <summary>Set by <c>CreateCharacterPanel</c> just before submitting so the

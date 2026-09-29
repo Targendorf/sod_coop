@@ -616,12 +616,10 @@ public class AppearancePanel : CoopPanelBase
             }
 
             // ── In-session ──
-            // 1. Apply locally to our Player.Instance.outfitController so
-            //    mirrors / 3rd-person show the new look immediately.
-            ApplyToLocalPlayer(_cfg);
-
-            // 2. Broadcast to host (host applies on its twin and re-broadcasts).
-            AppearanceSync.BroadcastLocal(_cfg);
+            // 1+2. Apply to our own body (mirrors / 3rd person) and send it to
+            //      everyone — the host's own look included, which used to be
+            //      dropped by every client.
+            AppearanceSync.PublishOwn(_cfg);
 
             // 3. Persist into the active profile so it survives reconnects /
             //    next session.
@@ -666,23 +664,6 @@ public class AppearancePanel : CoopPanelBase
                 _statusLabel.text = $"Error: {ex.Message}";
                 _statusLabel.color = CoopMenuTheme.LabelError;
             }
-        }
-    }
-
-    private static void ApplyToLocalPlayer(AppearanceConfig cfg)
-    {
-        try
-        {
-            var p = global::Player.Instance;
-            if (p != null)
-            {
-                var ctrl = p.outfitController;
-                if (ctrl != null) cfg.ApplyTo(ctrl);
-            }
-        }
-        catch (Exception ex)
-        {
-            Plugin.Log.LogWarning($"AppearancePanel.ApplyToLocalPlayer: {ex.Message}");
         }
     }
 

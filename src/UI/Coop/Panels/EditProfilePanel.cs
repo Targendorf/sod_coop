@@ -1,4 +1,5 @@
 using System;
+using SoDCoop.Network;
 using SoDCoop.Localization;
 using SoDCoop.Player;
 using SoDCoop.Sync;
@@ -163,8 +164,15 @@ public class EditProfilePanel : CoopPanelBase
                 : _scratchDisplay.Trim();
             _editing.FirstName  = (_scratchFirst ?? "").Trim();
             _editing.Surname    = (_scratchSur   ?? "").Trim();
+            bool lookChanged = !_editing.Appearance.ToBytes().AsSpan().SequenceEqual(_scratchAppearance.ToBytes());
             _editing.Appearance = _scratchAppearance;
             ProfileStore.Save(_editing);
+
+            // The active profile IS the player in a running session: a new look
+            // saved here goes on our body and to everyone, instead of waiting
+            // for the next join.
+            if (lookChanged && NetworkManager.IsConnected && ProfileStore.Active?.Id == _editing.Id)
+                AppearanceSync.PublishOwn(_scratchAppearance);
 
             SetStatus(L.Get("editprofile.status.saved"), CoopMenuTheme.LabelOk);
             CoopMenuController.ShowPanel(CoopMenuController.PanelKind.Profiles);

@@ -42,9 +42,28 @@ public static class AppearanceSync
     //  Outbound — client confirms appearance
     // ─────────────────────────────────────────────────────────────────────
 
+    /// <summary>The local player changed their look: show it on our own
+    /// body and send it to everyone. The one entry point for every UI path
+    /// (lobby "Customize", editing the active profile while connected).</summary>
+    public static void PublishOwn(AppearanceConfig cfg)
+    {
+        try
+        {
+            var ctrl = global::Player.Instance?.outfitController;
+            if (ctrl != null) cfg.ApplyTo(ctrl);
+        }
+        catch (System.Exception ex) { Plugin.Log.LogWarning($"AppearanceSync.PublishOwn local apply: {ex.Message}"); }
+        BroadcastLocal(cfg);
+    }
+
     /// <summary>
-    /// Send local-player appearance to host. Host then forwards (with twin
-    /// remap) to other peers and persists.
+    /// Send local-player appearance to everyone. From a client it goes to the
+    /// host, which applies, persists and forwards it (with twin remap).
+    ///
+    /// <para>From the HOST it goes straight to the clients, so it must carry
+    /// the host's own body id: it used to carry 0 like a client's, clients
+    /// resolve the body from that field alone, and every host appearance
+    /// change was dropped with "no twin for sender".</para>
     /// </summary>
     public static void BroadcastLocal(AppearanceConfig cfg)
     {
@@ -56,7 +75,7 @@ public static class AppearanceSync
             var packet = new PlayerAppearancePacket
             {
                 SenderId    = NetworkManager.LocalPlayerId,
-                TwinHumanId = 0,
+                TwinHumanId = NetworkManager.IsHost ? OwnBodyId() : 0,
                 Config      = cfg,
             };
 
@@ -88,6 +107,11 @@ public static class AppearanceSync
             int twin = NetworkManager.IsHost
                 ? TwinManager.GetTwinHumanIDForSender(p.SenderId)
                 : p.TwinHumanId;
+            // Older senders left the body id out; the roster has it.
+            if (twin <= 0 && !NetworkManager.IsHost
+                && NetworkManager.Players != null
+                && NetworkManager.Players.TryGetValue(p.SenderId, out var sender) && sender != null)
+                twin = sender.TwinHumanID;
 
             if (twin <= 0)
             {
@@ -126,19 +150,25 @@ public static class AppearanceSync
         if (humanId <= 0) return;
         try
         {
+            // The body under this id is OUR player on a machine that shares
+            // the host's player id (TwinManager.IsLocalPlayerHuman) — dressing
+            // it would dress us. The RemotePlayer's stand-in body gets it below.
             var dict = global::CityData.Instance?.citizenDictionary;
-            if (dict == null) return;
-            if (!dict.TryGetValue(humanId, out var human) || human == null) return;
-            var ctrl = human.outfitController;
-            if (ctrl == null) return;
-
-            IsApplyingRemote = true;
-            try
+            if (dict != null && !TwinManager.IsLocalPlayerHuman(humanId)
+                && dict.TryGetValue(humanId, out var human) && human != null)
             {
-                cfg.ApplyTo(ctrl);
-                Plugin.Log.LogDebug($"[AppearanceSync] applied appearance to twin humanID={humanId} (custom={cfg.IsCustomized})");
+                var ctrl = human.outfitController;
+                if (ctrl != null)
+                {
+                    IsApplyingRemote = true;
+                    try
+                    {
+                        cfg.ApplyTo(ctrl);
+                        Plugin.Log.LogDebug($"[AppearanceSync] applied appearance to twin humanID={humanId} (custom={cfg.IsCustomized})");
+                    }
+                    finally { IsApplyingRemote = false; }
+                }
             }
-            finally { IsApplyingRemote = false; }
 
             // Also apply to the RemotePlayer avatar for this peer so the
             // in-world body (the cloned citizen visual the player actually
@@ -253,12 +283,52 @@ public static class AppearanceSync
                 NetworkManager.SendTo(peer, PacketType.PlayerAppearance, _writer);
                 sent++;
             }
+            // The host's own look. It has no CharacterStore record (the host
+            // never submits a character to itself), so it was never in this
+            // snapshot: a joiner always saw the host's body in its seeded
+            // clothes. It lives in the host's active profile.
+            try
+            {
+                var own = SoDCoop.Player.ProfileStore.Active?.Appearance ?? AppearanceConfig.Default;
+                int body = OwnBodyId();
+                if (own.IsCustomized && body > 0)
+                {
+                    var p = new PlayerAppearancePacket
+                    {
+                        SenderId    = NetworkManager.LocalPlayerId,
+                        TwinHumanId = body,
+                        Config      = own,
+                    };
+                    _writer.Reset();
+                    p.Serialize(_writer);
+                    NetworkManager.SendTo(peer, PacketType.PlayerAppearance, _writer);
+                    sent++;
+                }
+            }
+            catch (System.Exception ex) { Plugin.Log.LogWarning($"AppearanceSync host self snapshot: {ex.Message}"); }
+
             if (sent > 0) Plugin.Log.LogInfo($"[AppearanceSync] sent {sent} appearance snapshot(s) to peer {peer.SteamId.m_SteamID}.");
         }
         catch (System.Exception ex)
         {
             Plugin.Log.LogWarning($"AppearanceSync.SendSnapshotTo: {ex.Message}");
         }
+    }
+
+    /// <summary>This machine's body id in the shared world: the host's is its
+    /// player's own humanID, a client's is the twin the host assigned.</summary>
+    private static int OwnBodyId()
+    {
+        try
+        {
+            if (NetworkManager.Players != null
+                && NetworkManager.Players.TryGetValue(NetworkManager.LocalPlayerId, out var me)
+                && me != null && me.TwinHumanID > 0)
+                return me.TwinHumanID;
+            if (NetworkManager.IsHost) return global::Player.Instance?.humanID ?? 0;
+            return NetworkManager.MyTwinHumanID;
+        }
+        catch { return 0; }
     }
 
     private static int ResolvePlayerIdForGuid(string clientGuid)
