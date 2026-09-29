@@ -68,6 +68,14 @@ public static class ZdoKeys
     public static readonly int Appearance         = Hash32.Of("appearance");
     public static readonly int Drunk              = Hash32.Of("drunk");
     public static readonly int Bleeding           = Hash32.Of("bleeding");
+    /// <summary>Citizen pose: <c>CitizenAnimationController.idleAnimationState</c>
+    /// (sitting, phone, leaning, cooking, …) and <c>armsBoolAnimationState</c>
+    /// (typing, smoking, reading, cuffed, …), as bytes.</summary>
+    public static readonly int AnimIdle           = Hash32.Of("animIdle");
+    public static readonly int AnimArms           = Hash32.Of("animArms");
+    /// <summary>Citizen is in combat (<c>NewAIController.inCombat</c>) — fists
+    /// up / weapon stance on the animator.</summary>
+    public static readonly int InCombat           = Hash32.Of("inCombat");
 
     // ── Forensics ──
     public static readonly int InteractableId     = Hash32.Of("interactableId");

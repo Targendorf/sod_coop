@@ -36,16 +36,18 @@ public static class ZdoBootstrap
         SoDCoop.Sync.WorldEditSync.Register();
         // Client → host hits on citizens and other players' bodies.
         SoDCoop.Sync.NpcHitSync.Register();
-        // Per-citizen idle/arms anim state (host → clients via ZdoEventRpc).
+        // Per-citizen pose (idle/arms anim state, in bed) → Citizen ZDO keys.
         // Mode is configurable via CoopSettings.CitizenAnimSync:
-        //   Disabled — no poller, SoD AI is deterministic from the same seed.
-        //   Auto (default) — spatial-culled scan near connected peers.
+        //   Disabled — no poller.
+        //   Auto (default) — spatial-culled scan near connected peers, 4 Hz.
         //   FixedHz — full roster scan at configured rate.
         {
             var mode = CoopSettings.CitizenAnimSync?.Value ?? CitizenAnimSyncMode.Auto;
             if (mode != CitizenAnimSyncMode.Disabled)
             {
-                int hz = CoopSettings.CitizenAnimSyncHz?.Value ?? 2;
+                int hz = mode == CitizenAnimSyncMode.Auto
+                    ? CitizenAnimationPoller.AUTO_HZ
+                    : (CoopSettings.CitizenAnimSyncHz?.Value ?? 2);
                 hz = UnityEngine.Mathf.Clamp(hz, 1, 5);
                 CitizenAnimationPoller.Register(hz);
             }

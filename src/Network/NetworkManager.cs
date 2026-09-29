@@ -69,8 +69,12 @@ public static class NetworkManager
     /// host ships its city file before the save; the bootstrap lists the
     /// client's city files; new world-edit / npc-interest events; item drops
     /// carry their position. A v2 client would take the city file for a save
-    /// and try to load it, so the versions must not mix.</summary>
-    public const int PROTOCOL_VERSION = 3;
+    /// and try to load it, so the versions must not mix.
+    /// v4 (2026-09-29): CitizenPositions packets start with the host's sample
+    /// time; player transform samples carry __posTime; citizen pose moved from
+    /// events to Citizen ZDO keys. A v3 client would read the time header as
+    /// a citizen count.</summary>
+    public const int PROTOCOL_VERSION = 4;
 
     /// <summary>
     /// Seconds we keep a disconnected player's slot alive waiting for them to

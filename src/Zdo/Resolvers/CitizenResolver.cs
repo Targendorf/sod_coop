@@ -108,30 +108,20 @@ public sealed class CitizenResolver : IZdoResolver
                 if (!(inCatchup && v == 0f)) try { c.bleeding = v; } catch { }
             }
 
-            // Stance — direct field write triggers SoD's animator transition.
-            if (z.HasKey(ZdoKeys.Crouched))
-            {
-                bool v = z.GetBool(ZdoKeys.Crouched, false);
-                if (!(inCatchup && !v)) try { c.isCrouched = v; } catch { }
-            }
+            // Stance (crouch) is part of the pose below. A player twin's pose
+            // comes from that player's own LocalPlayer ZDO (LocalPlayerResolver),
+            // not from here: the host's copy of its OWN twin is a hidden,
+            // frozen body that reports "standing" forever.
 
-            // Sleep / bed. CitizenStatePoller has been shipping both of these
-            // on every slow tick since the cadence split, but NOTHING read them
-            // on the receiving side — the keys crossed the wire, sat in the ZDO
-            // and in every snapshot, and were dropped. A citizen asleep in bed
-            // on the host stayed awake and standing for the joiner. Same
-            // direct-field-write treatment as Crouched above: SoD's animator
-            // and AI read these on their next tick.
-            if (z.HasKey(ZdoKeys.InBed))
-            {
-                bool v = z.GetBool(ZdoKeys.InBed, false);
-                if (!(inCatchup && !v)) try { c.isInBed = v; } catch { }
-            }
-            if (z.HasKey(ZdoKeys.Asleep))
-            {
-                bool v = z.GetBool(ZdoKeys.Asleep, false);
-                if (!(inCatchup && !v)) try { c.isAsleep = v; } catch { }
-            }
+            // Pose — idle / arms animation state, in bed, asleep. Only for the
+            // citizens driven from the host (the ones near this player): their
+            // local AI is off, so nothing here poses them but this. A citizen
+            // this machine's AI still runs is posed by that AI; stamping the
+            // host's "sitting" or "in bed" onto someone it is walking down a
+            // street would only fight it. CitizenPositionSync applies the pose
+            // from this ZDO when it takes a citizen over.
+            if (SoDCoop.Sync.CitizenPositionSync.IsDriven(humanId))
+                ApplyPose(c, z);
 
             // Vitals (food / water / HP). Whether they actually need to be
             // mirrored onto the local citizen is mostly cosmetic — SoD's own
@@ -188,5 +178,83 @@ public sealed class CitizenResolver : IZdoResolver
             }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenResolver] death apply: {ex.Message}"); }
+    }
+
+    /// <summary>Combat stance last applied per citizen (client).</summary>
+    private static readonly System.Collections.Generic.Dictionary<int, bool> _combatApplied = new();
+
+    /// <summary>Forget what was applied to <paramref name="humanId"/> — it is
+    /// being taken over fresh (its local AI may have changed its state since).</summary>
+    public static void ForgetPose(int humanId) => _combatApplied.Remove(humanId);
+
+    /// <summary>Put <paramref name="c"/> in the pose the host's copy is in:
+    /// crouch, idle animation (sitting, phone, leaning, cooking…), arms state (typing,
+    /// smoking, reading…), in bed, asleep. Each goes through SoD's own setter
+    /// — the calls its AI makes — and only when it differs, so re-applying on
+    /// every delta doesn't restart an animation.
+    ///
+    /// <para><b>What this replaced.</b> The pose travelled as a one-off event,
+    /// sent only when it CHANGED and only to peers near the citizen at that
+    /// moment; citizens a peer hadn't been near were silently seeded without
+    /// a send. So anyone who sat down, went to bed or picked up the phone while
+    /// the client was elsewhere stood there idle when the client arrived —
+    /// until they happened to change pose again, which for someone at a desk
+    /// is hours. As ZDO keys the pose is state: it is in the join snapshot and
+    /// in the catch-up a peer gets on entering the area. Bed state was a bare
+    /// field write, which the animator never sees; SetInBed is what lays the
+    /// body down.</para></summary>
+    public static void ApplyPose(global::Human c, Zdo z)
+    {
+        if (c == null || z == null) return;
+        try
+        {
+            var ac = c.animationController;
+            if (ac != null)
+            {
+                if (z.HasKey(ZdoKeys.AnimIdle))
+                {
+                    var v = (global::CitizenAnimationController.IdleAnimationState)z.GetByte(ZdoKeys.AnimIdle, 0);
+                    if (ac.idleAnimationState != v) ac.SetIdleAnimationState(v);
+                }
+                if (z.HasKey(ZdoKeys.AnimArms))
+                {
+                    var v = (global::CitizenAnimationController.ArmsBoolSate)z.GetByte(ZdoKeys.AnimArms, 0);
+                    if (ac.armsBoolAnimationState != v) ac.SetArmsBoolState(v);
+                }
+                if (z.HasKey(ZdoKeys.InCombat))
+                {
+                    // The animator exposes no getter for it — remember what we
+                    // set, so a delta that didn't touch it doesn't re-set it.
+                    int humanId = z.GetInt(ZdoKeys.SodId, 0);
+                    bool v = z.GetBool(ZdoKeys.InCombat, false);
+                    if (!_combatApplied.TryGetValue(humanId, out bool was) || was != v)
+                    {
+                        ac.SetInCombat(v);
+                        _combatApplied[humanId] = v;
+                    }
+                }
+            }
+        }
+        catch (Exception ex) { Plugin.Log.LogDebug($"[CitizenResolver] pose anim: {ex.Message}"); }
+
+        try
+        {
+            if (z.HasKey(ZdoKeys.Crouched))
+            {
+                bool v = z.GetBool(ZdoKeys.Crouched, false);
+                if (c.isCrouched != v) c.SetCrouched(v);
+            }
+            if (z.HasKey(ZdoKeys.InBed))
+            {
+                bool v = z.GetBool(ZdoKeys.InBed, false);
+                if (c.isInBed != v) c.SetInBed(v, z.GetBool(ZdoKeys.LowBed, false));
+            }
+            if (z.HasKey(ZdoKeys.Asleep))
+            {
+                bool v = z.GetBool(ZdoKeys.Asleep, false);
+                if (c.isAsleep != v) c.isAsleep = v;
+            }
+        }
+        catch (Exception ex) { Plugin.Log.LogDebug($"[CitizenResolver] pose bed: {ex.Message}"); }
     }
 }

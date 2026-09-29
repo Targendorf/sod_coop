@@ -62,9 +62,11 @@ public static class CitizenPositionSync
 {
     // ── Tunables ────────────────────────────────────────────────────────
 
-    /// <summary>Send rate. Matches the ZDO delta flush; the receiver
-    /// interpolates, so this does not need to be frame rate.</summary>
-    public const float SYNC_HZ = 10f;
+    /// <summary>Send rate. The receiver interpolates, so this does not need to
+    /// be frame rate — but at 10 Hz a pedestrian turning a corner visibly cut
+    /// it, and the render delay (about one send interval plus jitter) was a
+    /// quarter of a second. 15 Hz costs ~11 KB/s for 40 citizens.</summary>
+    public const float SYNC_HZ = 15f;
     public const string POLLER_NAME = "npc-pos";
 
     /// <summary>Radius around a peer whose citizens get position sync.
@@ -75,23 +77,36 @@ public static class CitizenPositionSync
     /// street and any interior.</summary>
     private const float SYNC_RADIUS_M = 60f;
 
-    /// <summary>Entries per packet. 60 × 18 B + 1 ≈ 1081 B keeps us under the
+    /// <summary>Entries per packet. 60 × 18 B + 5 ≈ 1085 B keeps us under the
     /// ~1200 B practical limit for an unreliable datagram, so a busy street
     /// splits across packets instead of being fragmented by the transport.</summary>
     private const int MAX_ENTRIES_PER_PACKET = 60;
 
-    /// <summary>Render this far behind the newest snapshot so there is always a
-    /// later sample to interpolate towards.
+    /// <summary>Render delay bounds. Playback runs behind the HOST's clock by an
+    /// adaptive delay — one send interval plus twice the smoothed lateness,
+    /// see <see cref="RemoteClock"/>.
     ///
-    /// <para>Must cover at least two send intervals. At <see cref="SYNC_HZ"/>
-    /// = 10 that is 100 ms apart, so the original 120 ms left only 1.2
-    /// intervals of slack: any packet arriving even slightly late — and these
-    /// go out Sequenced, unreliable and with no retransmit — left no sample
-    /// newer than the render time, so the citizen stalled on its last known
-    /// position and then jumped when the next one landed. 250 ms gives 2.5
-    /// intervals and rides out a dropped packet. The added latency is
-    /// irrelevant for ambient pedestrians; the stutter was not.</para></summary>
-    private const float INTERP_DELAY_S = 0.25f;
+    /// <para><b>What this replaced:</b> a fixed 250 ms behind the ARRIVAL time
+    /// of the newest sample, interpolating between only the two newest
+    /// samples. Those two are one send interval apart and the newer one had
+    /// just arrived, so "250 ms ago" was always before the older one: the
+    /// blend factor clamped to 0 every frame and each citizen sat on its
+    /// previous sample, then jumped to the next — pedestrians moved in 10 Hz
+    /// steps. The delay was raised from 120 ms precisely to smooth them, and
+    /// made it worse.</para></summary>
+    private const float MIN_DELAY_S = 0.09f;
+    private const float MAX_DELAY_S = 0.40f;
+
+    /// <summary>Samples kept per citizen: ~0.4 s at <see cref="SYNC_HZ"/>,
+    /// enough to cover <see cref="MAX_DELAY_S"/>.</summary>
+    private const int SAMPLE_CAP = 8;
+
+    /// <summary>Longest we coast past the newest sample on its velocity when
+    /// the next one is late.</summary>
+    private const float MAX_EXTRAPOLATION_S = 0.12f;
+
+    /// <summary>Smoothing rate for the speed fed to the walk cycle.</summary>
+    private const float ANIM_SPEED_RATE = 10f;
 
     /// <summary>Jump further than this between snapshots and we snap instead of
     /// interpolating — the citizen was teleported by SoD (lift, vehicle, spawn)
@@ -103,14 +118,6 @@ public static class CitizenPositionSync
     /// one send interval so ordinary packet loss doesn't cause AI flapping.</summary>
     private const float STALE_TIMEOUT_S = 1.5f;
 
-    /// <summary>Below this interpolated speed the citizen is treated as
-    /// standing still: no facing update (so they don't spin on jitter) and idle
-    /// walk animation.</summary>
-    private const float MOVING_SPEED_EPS = 0.05f;
-
-    /// <summary>Facing turn rate, degrees/second, when following movement
-    /// direction.</summary>
-    private const float TURN_DEG_PER_S = 540f;
 
     // ── Host state ──────────────────────────────────────────────────────
 
@@ -127,13 +134,10 @@ public static class CitizenPositionSync
         public Animator Anim;
         public bool AnimResolved;
 
-        public Vector3 PrevPos;
-        public float   PrevTime;
-        public Vector3 CurPos;
-        /// <summary>Latest host facing, degrees. NaN until received.</summary>
-        public float   Yaw = float.NaN;
-        public float   CurTime;
-        public bool    HasPrev;
+        /// <summary>Host samples, oldest first, timed on the host's clock.</summary>
+        public readonly List<Sample> Samples = new(SAMPLE_CAP);
+        /// <summary>Smoothed playback speed, m/s.</summary>
+        public float AnimSpeed;
 
         public float LastRecvTime;
         /// <summary>True while we hold this citizen's AI disabled. Tracked so
@@ -147,7 +151,18 @@ public static class CitizenPositionSync
         public readonly RootMotionGuard RootMotion = new();
     }
 
+    private struct Sample
+    {
+        public float   T;
+        public Vector3 Pos;
+        public float   Yaw;
+    }
+
     private static readonly Dictionary<int, NpcState> _npcs = new();
+
+    /// <summary>The host's clock as seen from here. One for all citizens —
+    /// every sample comes from the same machine and tick.</summary>
+    private static readonly RemoteClock _hostClock = new();
     private static readonly List<int> _dropScratch = new();
 
     private static int _animMoveSpeedHash = -1;
@@ -266,6 +281,7 @@ public static class CitizenPositionSync
         try
         {
             _livePosThisTick.Clear();
+            _tickTime = Time.unscaledTime;
             var clients = NetworkManager.Clients;
             for (int ci = 0; ci < clients.Count; ci++)
             {
@@ -416,17 +432,26 @@ public static class CitizenPositionSync
         return have;
     }
 
-    /// <summary>Reserve the count byte; patched in by <see cref="FlushPacket"/>
-    /// once we know how many entries actually made it in.</summary>
+    /// <summary>Byte offset of the entry count, after the host-time header.</summary>
+    private const int COUNT_OFFSET = 4;
+
+    /// <summary>Host time of the current tick's samples — every entry in the
+    /// tick was read in the same frame.</summary>
+    private static float _tickTime;
+
+    /// <summary>Header: host sample time (float) + a reserved count byte,
+    /// patched in by <see cref="FlushPacket"/> once we know how many entries
+    /// actually made it in.</summary>
     private static void BeginPacket()
     {
         _writer.Reset();
+        _writer.Put(_tickTime);
         _writer.Put((byte)0);
     }
 
     private static void FlushPacket(Network.Steam.SteamPeer peer, int count)
     {
-        _writer.Data[0] = (byte)count;
+        _writer.Data[COUNT_OFFSET] = (byte)count;
         // Sequenced: these are pure overwrite state. A late packet is worthless
         // because the next one supersedes it, and forcing them through the
         // reliable channel would head-of-line block real state transitions
@@ -446,8 +471,15 @@ public static class CitizenPositionSync
 
         try
         {
+            if (r.AvailableBytes < COUNT_OFFSET + 1) return;
+            float hostTime = r.GetFloat();
             int count = r.GetByte();
             float now = Time.unscaledTime;
+
+            // The host restarted its clock (new process) — samples buffered on
+            // the old one can't be compared with the new ones.
+            if (_hostClock.Observe(hostTime, now))
+                foreach (var kv in _npcs) kv.Value.Samples.Clear();
 
             for (int i = 0; i < count; i++)
             {
@@ -472,26 +504,20 @@ public static class CitizenPositionSync
                     continue;
                 }
 
-                var pos = new Vector3(x, y, z);
-
                 if (!_npcs.TryGetValue(humanId, out var st))
                 {
-                    st = new NpcState { CurPos = pos, CurTime = now, HasPrev = false };
+                    st = new NpcState();
                     if (!TryBind(humanId, st)) continue;   // citizen not present locally
                     _npcs[humanId] = st;
                 }
-                else
-                {
-                    // Shift the sample window forward.
-                    st.PrevPos  = st.CurPos;
-                    st.PrevTime = st.CurTime;
-                    st.CurPos   = pos;
-                    st.CurTime  = now;
-                    st.HasPrev  = true;
-                }
+
+                var samples = st.Samples;
+                // Same tick again (a packet split) or out of order: nothing new.
+                if (samples.Count > 0 && hostTime <= samples[samples.Count - 1].T) { st.LastRecvTime = now; continue; }
+                if (samples.Count >= SAMPLE_CAP) samples.RemoveAt(0);
+                samples.Add(new Sample { T = hostTime, Pos = new Vector3(x, y, z), Yaw = yaw });
 
                 st.LastRecvTime = now;
-                st.Yaw = yaw;
             }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenPositionSync] HandlePacket: {ex.Message}"); }
@@ -521,6 +547,18 @@ public static class CitizenPositionSync
             // transform ourselves; left on, root motion would add its own
             // displacement after our write every frame.
             st.RootMotion.Suppress(c);
+
+            // Its own AI is off from here on, so nothing on this machine will
+            // pose it any more: take the host's pose (sitting, on the phone,
+            // in bed…) from the citizen's ZDO now instead of leaving whatever
+            // the local AI was last doing.
+            try
+            {
+                SoDCoop.Zdo.Resolvers.CitizenResolver.ForgetPose(humanId);
+                var z = ZdoMan.FindBySodId(ZdoTypeTag.Citizen, humanId);
+                if (z != null) SoDCoop.Zdo.Resolvers.CitizenResolver.ApplyPose(c, z);
+            }
+            catch { }
             return true;
         }
         catch { return false; }
@@ -534,8 +572,10 @@ public static class CitizenPositionSync
         if (NetworkManager.IsHost) return;
 
         float now = Time.unscaledTime;
-        float renderTime = now - INTERP_DELAY_S;
         float dt = Time.unscaledDeltaTime;
+        _hostClock.Advance(dt, 1f / SYNC_HZ, MIN_DELAY_S, MAX_DELAY_S);
+        float renderTime = _hostClock.RenderTime(now);
+        float speedBlend = 1f - Mathf.Exp(-ANIM_SPEED_RATE * Mathf.Max(dt, 0f));
 
         _dropScratch.Clear();
 
@@ -554,59 +594,76 @@ public static class CitizenPositionSync
             var human = st.Human;
             if (human == null) { _dropScratch.Add(kv.Key); continue; }
 
+            var samples = st.Samples;
+            if (samples.Count == 0) continue;
+
             Transform t;
             try { t = human.transform; } catch { _dropScratch.Add(kv.Key); continue; }
             if (t == null) { _dropScratch.Add(kv.Key); continue; }
 
-            // ── Interpolate ──────────────────────────────────────────────
+            // ── Interpolate on the host's clock ──────────────────────────
             Vector3 target;
+            float yaw;
             float speed = 0f;
-            if (!st.HasPrev)
+            var newest = samples[samples.Count - 1];
+            if (renderTime >= newest.T)
             {
-                target = st.CurPos;
+                // Next sample is late: coast briefly on the last pair's
+                // velocity, then hold.
+                target = newest.Pos;
+                yaw = newest.Yaw;
+                if (samples.Count >= 2)
+                {
+                    var prev = samples[samples.Count - 2];
+                    float span = newest.T - prev.T;
+                    if (span > 1e-3f && Vector3.Distance(prev.Pos, newest.Pos) <= TELEPORT_M)
+                    {
+                        Vector3 vel = (newest.Pos - prev.Pos) / span;
+                        float ahead = renderTime - newest.T;
+                        if (ahead < MAX_EXTRAPOLATION_S)
+                        {
+                            target += vel * ahead;
+                            speed = vel.magnitude;
+                        }
+                        else target += vel * MAX_EXTRAPOLATION_S;
+                    }
+                }
             }
-            else if (Vector3.Distance(st.PrevPos, st.CurPos) > TELEPORT_M)
+            else if (renderTime <= samples[0].T)
             {
-                // SoD moved them discontinuously (lift, vehicle, respawn).
-                target = st.CurPos;
+                // Just bound (one sample) or the delay grew past the buffer.
+                target = samples[0].Pos;
+                yaw = samples[0].Yaw;
             }
             else
             {
-                float span = Mathf.Max(st.CurTime - st.PrevTime, 0.0001f);
-                float f = Mathf.Clamp01((renderTime - st.PrevTime) / span);
-                target = Vector3.Lerp(st.PrevPos, st.CurPos, f);
-                speed = Vector3.Distance(st.PrevPos, st.CurPos) / span;
+                int i = samples.Count - 1;
+                while (i > 0 && samples[i - 1].T > renderTime) i--;
+                var a = samples[i - 1];
+                var b = samples[i];
+                float span = b.T - a.T;
+                float f = span > 1e-4f ? Mathf.Clamp01((renderTime - a.T) / span) : 1f;
+                if (Vector3.Distance(a.Pos, b.Pos) > TELEPORT_M)
+                {
+                    // SoD moved them discontinuously (lift, vehicle, respawn).
+                    target = b.Pos;
+                    yaw = b.Yaw;
+                }
+                else
+                {
+                    target = Vector3.Lerp(a.Pos, b.Pos, f);
+                    yaw = Mathf.LerpAngle(a.Yaw, b.Yaw, f);
+                    speed = span > 1e-3f ? Vector3.Distance(a.Pos, b.Pos) / span : 0f;
+                }
             }
 
             try { t.position = target; } catch { _dropScratch.Add(kv.Key); continue; }
+            // The host's facing, played on the same timeline as the position:
+            // turning to face someone, sitting down at a desk.
+            try { t.rotation = Quaternion.Euler(0f, yaw, 0f); } catch { }
 
-            // ── Facing: the host's, turn-rate limited ────────────────────
-            if (!float.IsNaN(st.Yaw))
-            {
-                try
-                {
-                    var want = Quaternion.Euler(0f, st.Yaw, 0f);
-                    t.rotation = Quaternion.RotateTowards(t.rotation, want, TURN_DEG_PER_S * dt);
-                }
-                catch { }
-            }
-            // Fallback when no facing has arrived: follow movement.
-            else if (speed > MOVING_SPEED_EPS && st.HasPrev)
-            {
-                Vector3 dir = st.CurPos - st.PrevPos;
-                dir.y = 0f;
-                if (dir.sqrMagnitude > 0.0001f)
-                {
-                    try
-                    {
-                        var want = Quaternion.LookRotation(dir.normalized, Vector3.up);
-                        t.rotation = Quaternion.RotateTowards(t.rotation, want, TURN_DEG_PER_S * dt);
-                    }
-                    catch { }
-                }
-            }
-
-            DriveWalkAnimation(st, speed);
+            st.AnimSpeed += (speed - st.AnimSpeed) * speedBlend;
+            DriveWalkAnimation(st, st.AnimSpeed);
         }
 
         for (int i = 0; i < _dropScratch.Count; i++) Release(_dropScratch[i]);
@@ -662,6 +719,10 @@ public static class CitizenPositionSync
         catch { }
     }
 
+    /// <summary>Client: true while <paramref name="humanId"/> is driven from the
+    /// host — its local AI is off and its pose comes from the host.</summary>
+    internal static bool IsDriven(int humanId) => _npcs.ContainsKey(humanId);
+
     /// <summary>Client: the citizens currently driven from the host — the ones
     /// near this player.</summary>
     internal static void CollectDriven(List<KeyValuePair<int, global::Human>> into)
@@ -690,5 +751,6 @@ public static class CitizenPositionSync
             _dropScratch.Clear();
         }
         _npcs.Clear();
+        _hostClock.Reset();
     }
 }

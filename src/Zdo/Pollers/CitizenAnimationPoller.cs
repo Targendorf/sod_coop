@@ -5,83 +5,55 @@ using SoDCoop.Network;
 namespace SoDCoop.Zdo.Pollers;
 
 /// <summary>
-/// Host-only. Polls every loaded citizen at 5 Hz for their two animation
-/// state enums — <c>idleAnimationState</c> (sitting / sweeping / phone /
-/// dancing / cooking / etc., 17 values) and <c>armsBoolAnimationState</c>
-/// (resting / typing / smoking / reading / etc., 12 values) — and ships a
-/// <see cref="ZdoEvents.CITIZEN_ANIM_STATE"/> event to clients only when
-/// either changes for that citizen.
+/// Host-only. Polls the citizens near connected peers for their pose —
+/// <c>idleAnimationState</c> (sitting / sweeping / phone / dancing / cooking /
+/// etc.), <c>armsBoolAnimationState</c> (typing / smoking / reading / cuffed /
+/// etc.) and whether they are in bed — and writes it to each citizen's
+/// <see cref="ZdoTypeTag.Citizen"/> ZDO (<see cref="ZdoKeys.AnimIdle"/>,
+/// <see cref="ZdoKeys.AnimArms"/>, <see cref="ZdoKeys.InBed"/> /
+/// <see cref="ZdoKeys.LowBed"/>). Clients pose the citizens they drive from it
+/// (<c>CitizenResolver.ApplyPose</c>).
 ///
-/// <para>Without this, client peers see SoD's procedural NPCs walking the
-/// city in idle pose only — the host's local AI sets per-citizen idle
-/// states that drive the dancing / cooking / phone-talking animations,
-/// but those state writes never reach the client. The poller closes that
-/// gap with O(diff) bandwidth: typical city tick churn is a handful of
-/// state transitions per second across 300 citizens, not the full snapshot.</para>
+/// <para><b>State, not events (2026-09-29).</b> This used to send a
+/// <see cref="ZdoEvents.CITIZEN_ANIM_STATE"/> event on each change, spatially
+/// culled to the peers near the citizen at that moment, and silently seeded a
+/// baseline — no send — for any citizen it saw for the first time. A client
+/// therefore only ever learned a pose that CHANGED while it was nearby: walk
+/// into an office where people had sat down before you arrived and they all
+/// stood idle at their desks. As ZDO keys the pose rides the join snapshot,
+/// the catch-up a peer gets when it enters an area, and reliable deltas;
+/// <c>Zdo.Set</c> already skips unchanged values, so a quiet city costs
+/// nothing on the wire.</para>
 ///
 /// <para><b>Field verification</b> (Assembly-CSharp_Dump):
 /// <list type="bullet">
 ///   <item><c>Actor.animationController : CitizenAnimationController</c> (Actor.cs:1536)</item>
 ///   <item><c>CitizenAnimationController.idleAnimationState : IdleAnimationState</c> (1908)</item>
 ///   <item><c>CitizenAnimationController.armsBoolAnimationState : ArmsBoolSate</c> (1895)</item>
-///   <item><c>SetIdleAnimationState(IdleAnimationState)</c> (2527) — receiver-side apply</item>
-///   <item><c>SetArmsBoolState(ArmsBoolSate)</c> (2443) — receiver-side apply</item>
+///   <item><c>Actor.isInBed</c> / <c>Actor.isInLowBed</c> bool (Actor.cs:1165/1178)</item>
 /// </list></para>
 /// </summary>
 public static class CitizenAnimationPoller
 {
     public const string NAME = "citizen-anim";
 
-    /// <summary>Last-broadcast (idle, arms) per citizen. Diff vs current
-    /// tick → only changed pairs hit the wire.</summary>
-    private static readonly Dictionary<int, (byte idle, byte arms)> _last = new();
+    /// <summary>Scan rate in Auto mode. Auto only reads the citizens near a
+    /// peer, so it can afford a rate at which someone sitting down is seen
+    /// sitting within a quarter of a second.</summary>
+    public const int AUTO_HZ = 4;
 
     /// <summary>Register with a configurable tick rate. The actual scan
     /// behaviour (full vs spatial) is decided per-tick from
     /// CoopSettings.CitizenAnimSync.</summary>
-    public static void Register(int hz = 2)
+    public static void Register(int hz = AUTO_HZ)
     {
         hz = UnityEngine.Mathf.Clamp(hz, 1, 5);
-        ZdoPollerHost.Register(NAME, 1f / hz, Tick, WarmupBaseline);
-    }
-
-    /// <summary>Pre-seed <see cref="_last"/> with every citizen's current
-    /// (idle, arms) state without broadcasting. Called by
-    /// <see cref="ZdoPollerHost"/> on the first tick after a peer connects
-    /// so the post-warmup tick sees a stable baseline and only emits
-    /// genuine post-connect transitions. Without this, the first real tick
-    /// would treat all 300+ citizens as "everything looks new" and flood
-    /// the event channel with state the snapshot already delivered.</summary>
-    public static void WarmupBaseline()
-    {
-        try
-        {
-            if (!CitizenRosterCache.TryGetRoster(out var ids, out var citizens)) return;
-            int count = 0;
-            for (int ci = 0; ci < citizens.Count; ci++)
-            {
-                var c = citizens[ci];
-                if (c == null) continue;
-                int id = ids[ci];
-                if (id == 0) continue;
-                global::CitizenAnimationController ac;
-                try { ac = c.animationController; } catch { continue; }
-                if (ac == null) continue;
-                byte idle, arms;
-                try { idle = (byte)ac.idleAnimationState; }     catch { continue; }
-                try { arms = (byte)ac.armsBoolAnimationState; } catch { continue; }
-                _last[id] = (idle, arms);
-                count++;
-            }
-            if (count > 0)
-                Plugin.Log.LogDebug($"[CitizenAnimationPoller] warmup: pre-seeded {count} citizen anim baselines (no broadcast)");
-        }
-        catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenAnimationPoller] warmup: {ex.Message}"); }
+        ZdoPollerHost.Register(NAME, 1f / hz, Tick);
     }
 
     private static void Tick(float now)
     {
-        if (!ZdoFeatureFlags.UseZdoForEvents) return;
+        if (!ZdoFeatureFlags.UseZdoForCitizens) return;
         if (!SoDCoop.Network.NetworkManager.IsHost) return;
         if (!SoDCoop.Network.NetworkManager.HasPeers) return;
         TickInner(now);
@@ -92,14 +64,6 @@ public static class CitizenAnimationPoller
     /// probe exercises the real SoD-field-deref path even on a solo host.</summary>
     internal static void ProbeBody(float now) => TickInner(now);
 
-    /// <summary>Soft per-tick send cap. Caps the broadcast burst on cold-start
-    /// (when <see cref="_last"/> is empty or stale and the diff would otherwise
-    /// emit 200-300 events in one frame). Real per-tick churn in an idle city
-    /// is single digits, so this only kicks in during the recovery scenario.
-    /// Excess deltas keep their old baseline and go out on the following
-    /// ticks.</summary>
-    private const int MAX_SENT_PER_TICK = 32;
-
     private static void TickInner(float now)
     {
         try
@@ -109,8 +73,7 @@ public static class CitizenAnimationPoller
             if (!CitizenRosterCache.TryGetRoster(out var ids, out var citizens)) return;
 
             // ── Mode selection ──────────────────────────────────────────────
-            // Disabled: SoD AI is deterministic — clients compute the same
-            //   animation states from the same seed. No network sync needed.
+            // Disabled: no pose sync (not registered at all).
             // Auto: scan only citizens within CULL_RADIUS of connected peers
             //   via SpatialGrid (~30-50 instead of 336). Cheap + accurate
             //   near players. Recommended.
@@ -119,28 +82,20 @@ public static class CitizenAnimationPoller
             var mode = CoopSettings.CitizenAnimSync?.Value ?? CitizenAnimSyncMode.Auto;
             if (mode == CitizenAnimSyncMode.Disabled) return;
 
-            // Build the set of citizens to scan this tick. In FixedHz mode
-            // it's the full roster; in Auto mode it's a subset filtered by
-            // proximity to connected peers via SpatialGrid.
             List<int> scanIds = ids;
             List<Human> scanCitizens = citizens;
             int scanCount = citizens.Count;
 
             if (mode == CitizenAnimSyncMode.Auto && NetworkManager.HasPeers)
             {
-                // Collect all in-range citizen IDs from every connected peer's
-                // position via SpatialGrid.Query. This is O(visible cells)
-                // instead of O(all citizens) — the entire reason Auto mode
-                // exists.
+                // O(visible cells) instead of O(all citizens) — the entire
+                // reason Auto mode exists.
                 BuildSpatialScanSet(ids, citizens, out scanIds, out scanCitizens);
                 scanCount = scanCitizens.Count;
             }
 
             if (scanCount == 0) return;
 
-            int sent = 0;
-            int suppressed = 0;
-            int seeded = 0;
             for (int ci = 0; ci < scanCount; ci++)
             {
                 var c = scanCitizens[ci];
@@ -156,53 +111,32 @@ public static class CitizenAnimationPoller
                 try { idle = (byte)ac.idleAnimationState; }       catch { continue; }
                 try { arms = (byte)ac.armsBoolAnimationState; }   catch { continue; }
 
-                // Per-citizen cold start: a citizen we have no baseline for
-                // gets seeded and NOT broadcast (the snapshot already carries
-                // authoritative state, and broadcasting the whole roster at
-                // once would flood the event channel).
-                //
-                // This replaces a GLOBAL all-or-nothing reseed pass that was a
-                // permanent trap in Auto mode: the pass `continue`d without
-                // writing a baseline whenever a citizen's animationController
-                // was null, while the gate that triggered it asked "does ANY
-                // in-range citizen lack a baseline?". One such citizen in range
-                // meant the gate stayed true forever, so every tick reseeded
-                // and returned early — the poller paid its full scan cost and
-                // never shipped a single animation delta. Auto is the DEFAULT
-                // mode, so NPC animation sync was dead by default.
-                if (!_last.TryGetValue(id, out var prev))
-                {
-                    _last[id] = (idle, arms);
-                    seeded++;
-                    continue;
-                }
+                var z = ZdoMan.GetOrCreateBySodId(ZdoTypeTag.Citizen, id, owner: ZdoMan.LocalPeerUid, persistent: true);
+                z.Set(ZdoKeys.AnimIdle, idle);
+                z.Set(ZdoKeys.AnimArms, arms);
 
-                if (prev.idle == idle && prev.arms == arms) continue;
-
-                if (sent >= MAX_SENT_PER_TICK)
-                {
-                    // Over the cap: leave the baseline alone so this change is
-                    // seen — and sent — next tick. It used to be written here,
-                    // which marked the change as delivered and dropped it for
-                    // good (a citizen sat down but stayed standing on clients).
-                    suppressed++;
-                    continue;
-                }
-
-                _last[id] = (idle, arms);
-
+                // Bed — here rather than only on CitizenStatePoller's 1 Hz slow
+                // lane, so lying down shows at the pose rate. Same key, same
+                // value from both: Set() makes the second write a no-op.
                 try
                 {
-                    SoDCoop.Zdo.ZdoEvents.SendCitizenAnimState(id, idle, arms);
-                    sent++;
+                    bool inBed = c.isInBed;
+                    z.Set(ZdoKeys.InBed, inBed);
+                    if (inBed) z.Set(ZdoKeys.LowBed, c.isInLowBed);
                 }
-                catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenAnimationPoller] send {id}: {ex.Message}"); }
-            }
+                catch { }
 
-            if (sent > 0 || suppressed > 0 || seeded > 0)
-                Plugin.Log.LogDebug(
-                    $"[CitizenAnimationPoller] tick ({mode}, {scanCount} citizens): {sent} delta(s)" +
-                    $"{(suppressed > 0 ? $", {suppressed} suppressed" : "")}{(seeded > 0 ? $", {seeded} seeded" : "")}");
+                // Combat stance. The swings themselves are NOT mirrored: the
+                // attack animation fires CitizenAnimationEvents.MeleeAttackTrigger,
+                // which would run the hit on the client's copy too — the host
+                // already delivers that damage.
+                try
+                {
+                    var ai = c.ai;
+                    if (ai != null) z.Set(ZdoKeys.InCombat, ai.inCombat);
+                }
+                catch { }
+            }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenAnimationPoller] tick: {ex.Message}"); }
     }
@@ -291,8 +225,7 @@ public static class CitizenAnimationPoller
 
     private static readonly HashSet<int> _spatialIdScratch = new();
 
-    /// <summary>Drop the diff baseline so the next post-load tick treats
-    /// every citizen as freshly-discovered (forces a full re-broadcast).
-    /// Called after world reset / save reload.</summary>
-    public static void ResetBaseline() => _last.Clear();
+    /// <summary>Kept for the world-reset call sites. The pose now lives on the
+    /// citizen ZDOs, which a reload rebuilds; there is no baseline here.</summary>
+    public static void ResetBaseline() { }
 }
