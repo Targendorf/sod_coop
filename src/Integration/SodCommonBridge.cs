@@ -57,6 +57,12 @@ public static class SodCommonBridge
                 try
                 {
                     _loadSw.Restart();
+                    // Host loading a save with friends connected: the world the
+                    // live stream describes is about to be torn down. Stop
+                    // streaming to them now; OnAfterLoad re-syncs them to the
+                    // new one.
+                    if (SoDCoop.Network.NetworkManager.IsHost && SoDCoop.Network.NetworkManager.HasPeers)
+                        SoDCoop.Network.NetworkManager.MarkAllPeersWorldNotReady("host is loading a save");
                     // Close the gate so any in-flight patch body fast-bails.
                     SoDCoop.Sync.SyncGate.Close();
                     // Wipe in-memory ZDO state — the host's authoritative ZDO
@@ -112,6 +118,11 @@ public static class SodCommonBridge
                     // change — reset clears the cache so it doesn't point at
                     // doors destroyed by the world reload.
                     SoDCoop.Zdo.Pollers.DoorPoller.ResetBaseline();
+                    // Same for the door map / interactable index / watched
+                    // objects behind client→host world edits.
+                    SoDCoop.Sync.DoorLookup.Reset();
+                    SoDCoop.Zdo.Pollers.InteractableSpatialCache.Reset();
+                    SoDCoop.Sync.WorldEditSync.Reset();
                     // Shared citizen roster cache (used by all per-citizen
                     // pollers) — same stale-reference concern as DoorPoller.
                     SoDCoop.Zdo.Pollers.CitizenRosterCache.Reset();
@@ -160,6 +171,20 @@ public static class SodCommonBridge
                         }
                     }
                     catch { /* non-fatal — SendSaveToPeer degrades to share-code */ }
+
+                    // Host loaded a save WITH friends connected: its world was
+                    // just replaced. Ship them the loaded save so they reload
+                    // into the same world, instead of carrying on in the old one.
+                    if (SoDCoop.Network.NetworkManager.IsHost && SoDCoop.Network.NetworkManager.HasPeers)
+                    {
+                        try
+                        {
+                            int pushed = SoDCoop.Sync.SaveTransfer.ResyncToAllClients();
+                            Plugin.Log.LogInfo($"[SODCommon] OnAfterLoad: host re-sync pushed to {pushed} client(s).");
+                        }
+                        catch (Exception ex) { Plugin.Log.LogWarning($"SaveTransfer.ResyncToAllClients: {ex.Message}"); }
+                    }
+
                     // Try to load the persisted ZdoMan dump for this save (if any).
                     SoDCoop.Zdo.ZdoMan.LoadFromDisk();
                     // Schedule patch Resume — fires when both gates open
@@ -215,19 +240,12 @@ public static class SodCommonBridge
                         }
                         catch { /* non-fatal — SaveTransfer falls back gracefully */ }
 
-                        // Phase 4: live re-sync. If clients are connected and
-                        // the just-written save differs from the last one we
-                        // pushed, re-ship the save to every client so their
-                        // world reflects the host's new state (e.g. host
-                        // loaded a checkpoint, or SoD auto-saved after a time
-                        // skip). Each client reloads via LoadGame and re-ACKs.
-                        try
-                        {
-                            int pushed = SoDCoop.Sync.SaveTransfer.ResyncToAllClients();
-                            if (pushed > 0)
-                                Plugin.Log.LogInfo($"[SODCommon] OnAfterSave: live re-sync pushed to {pushed} client(s).");
-                        }
-                        catch (Exception ex) { Plugin.Log.LogWarning($"SaveTransfer.ResyncToAllClients: {ex.Message}"); }
+                        // No re-sync here. A save does not change the world —
+                        // clients are already in sync through the live stream —
+                        // and this hook is a POSTFIX on the async
+                        // CaptureSaveStateAsync, so it fires before the file is
+                        // even written. The re-sync belongs to a host LOAD
+                        // (OnAfterLoad), which really does replace the world.
                     }
                 }
                 catch (Exception ex) { Plugin.Log.LogError($"OnAfterSave handler: {ex.Message}"); }

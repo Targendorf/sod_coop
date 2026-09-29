@@ -263,39 +263,57 @@ public static class ItemSync
     /// </summary>
     private static void ApplyDrop(ItemDropPacket p)
     {
-        var inter = FindInteractableById(p.InteractableId);
-        if (inter == null)
-        {
-            Plugin.Log.LogWarning($"[ItemSync] ApplyDrop: id={p.InteractableId} not found");
-            return;
-        }
-
-        IsApplyingRemote = true;
-        try
-        {
-            var go = inter.spawnedObject;
-            if (go != null)
-            {
-                go.transform.position = p.DropPosition;
-                if (!go.activeSelf) go.SetActive(true);
-                Plugin.Log.LogDebug($"[ItemSync] Applied drop id={p.InteractableId} pos={p.DropPosition}");
-            }
-        }
-        catch (System.Exception ex)
-        {
-            Plugin.Log.LogWarning($"[ItemSync] ApplyDrop({p.InteractableId}): {ex.Message}");
-        }
-        finally
-        {
-            IsApplyingRemote = false;
-        }
+        // Legacy packet carries no rotation; keep the item's own.
+        Vector3 euler = default;
+        try { var inter = FindInteractableById(p.InteractableId); if (inter != null) euler = inter.wEuler; } catch { }
+        ApplyDropFromZdo(-1, p.InteractableId, DROP_HAS_POSITION, p.DropPosition, euler);
     }
 
-    /// <summary>ZDO entry — invoked from <c>ZdoEvents.OnItemDrop</c>. The
-    /// drop position isn't part of the event payload; we look it up from
-    /// the interactable's current world position on the receiver, which
-    /// matches the legacy ApplyDrop behaviour for missed-position fields.</summary>
-    public static void ApplyDropFromZdo(int senderPlayerId, int interactableId)
+    /// <summary>Drop flag: <c>pos</c>/<c>euler</c> say where the item now is.</summary>
+    public const byte DROP_HAS_POSITION = 1;
+    /// <summary>Drop flag: the item left the world instead (eaten, used up,
+    /// destroyed) — receivers keep it hidden.</summary>
+    public const byte DROP_GONE = 2;
+
+    /// <summary>Sender side of a drop: read where the item ended up, right after
+    /// it left the local inventory.</summary>
+    public static void GetDropInfo(int interactableId, out byte flags, out Vector3 pos, out Vector3 euler)
+    {
+        flags = 0;
+        pos = default;
+        euler = default;
+        try
+        {
+            var inter = FindInteractableById(interactableId);
+            if (inter == null || inter.rem) { flags = DROP_GONE; return; }
+            // Handed to someone (an NPC, a container holder) rather than put
+            // down: it is not in the world, so receivers must not show it.
+            if (inter.inInventory != null) { flags = DROP_GONE; return; }
+
+            var go = inter.spawnedObject;
+            if (go != null && go.activeInHierarchy)
+            {
+                pos = go.transform.position;
+                euler = go.transform.eulerAngles;
+            }
+            else
+            {
+                pos = inter.wPos;
+                euler = inter.wEuler;
+            }
+            flags = DROP_HAS_POSITION;
+        }
+        catch { flags = 0; }
+    }
+
+    /// <summary>ZDO entry — invoked from <c>ZdoEvents.OnItemDrop</c>.
+    ///
+    /// <para>Moves the item's DATA, not only its GameObject: SoD despawns and
+    /// respawns interactables as rooms load around the player, from
+    /// <c>wPos</c>. A transform-only move snapped back the next time the room
+    /// reloaded.</para></summary>
+    public static void ApplyDropFromZdo(int senderPlayerId, int interactableId,
+                                        byte flags = 0, Vector3 pos = default, Vector3 euler = default)
     {
         _ = senderPlayerId;
         var inter = FindInteractableById(interactableId);
@@ -307,7 +325,35 @@ public static class ItemSync
         IsApplyingRemote = true;
         try
         {
+            // Held by someone in THIS world (a joiner starts with a copy of the
+            // host's inventory). Moving it would pull it out of that inventory.
+            Human holder = null;
+            try { holder = inter.inInventory; } catch { }
+            if (holder != null)
+            {
+                Plugin.Log.LogDebug($"[ItemSync] drop id={interactableId}: held locally — left alone.");
+                return;
+            }
+
             var go = inter.spawnedObject;
+            if ((flags & DROP_GONE) != 0)
+            {
+                if (go != null && go.activeSelf) go.SetActive(false);
+                return;
+            }
+
+            if ((flags & DROP_HAS_POSITION) != 0)
+            {
+                try { inter.MoveInteractable(pos, euler, true); }
+                catch (System.Exception ex) { Plugin.Log.LogDebug($"[ItemSync] MoveInteractable({interactableId}): {ex.Message}"); }
+                go = inter.spawnedObject;
+                if (go != null)
+                {
+                    go.transform.position = pos;
+                    go.transform.eulerAngles = euler;
+                }
+            }
+
             if (go != null && !go.activeSelf)
             {
                 go.SetActive(true);

@@ -64,8 +64,13 @@ public static class NetworkManager
     /// followed by <c>joinerSeed</c> + <c>joinerShareCode</c> when the joiner
     /// is already in a city (Mode 2 — connect with pre-loaded world). If the
     /// flag is false (or absent for an older client), the host falls back to
-    /// the legacy auto-generate flow (Mode 1).</summary>
-    public const int PROTOCOL_VERSION = 2;
+    /// the legacy auto-generate flow (Mode 1).
+    /// v3 (2026-09-29): Save-Transfer headers carry a kind + file name and the
+    /// host ships its city file before the save; the bootstrap lists the
+    /// client's city files; new world-edit / npc-interest events; item drops
+    /// carry their position. A v2 client would take the city file for a save
+    /// and try to load it, so the versions must not mix.</summary>
+    public const int PROTOCOL_VERSION = 3;
 
     /// <summary>
     /// Seconds we keep a disconnected player's slot alive waiting for them to
@@ -339,18 +344,16 @@ public static class NetworkManager
         State = ConnectionState.Connecting;
         ActiveTransport = TransportKind.Steam;
 
-        // Save-Transfer hint: if the host has never saved this session, the
-        // joining client will fall back to share-code (Mode 1) which can
-        // diverge. Surface this proactively so the host knows to press Save
-        // once before friends join. (We can't auto-capture here because the
-        // SOD.Common SaveGame API is async + main-thread-bound; the existing
-        // OnAfterSave hook captures HostSavePath on the next manual save.)
-        if (string.IsNullOrEmpty(SoDCoop.Sync.SaveTransfer.HostSavePath))
+        // Save-Transfer hint. With SaveTransferCaptureOnJoin (default) every
+        // join ships a fresh capture of the live world, so there is nothing for
+        // the host to do. Only when that is switched off does the old advice —
+        // save before friends join — still apply.
+        if (CoopSettings.SaveTransferCaptureOnJoin?.Value == false
+            && string.IsNullOrEmpty(SoDCoop.Sync.SaveTransfer.HostSavePath))
         {
             Plugin.Log.LogWarning(
-                "[NetworkManager] Save-Transfer: host has no save file yet. Save your game once " +
-                "(Esc → Save) so joining clients get an identical world via Save-Transfer instead of " +
-                "the share-code path (which can diverge).");
+                "[NetworkManager] Save-Transfer: SaveTransferCaptureOnJoin is off and the host has no save file yet. " +
+                "Save once (Esc → Save) so joining clients get your world instead of the share-code path.");
         }
 
         SteamLobby.CreateLobbyAsync();
@@ -999,6 +1002,8 @@ public static class NetworkManager
         // clients that don't write this field are detected by the host
         // via AvailableBytes guard → fall back to share-code automatically.
         _writer.Put(true); // supportsSaveTransfer
+        // Our Cities/ folder, so the host can skip shipping a city we have.
+        SoDCoop.Sync.SaveTransfer.WriteKnownCityFiles(_writer);
 
         SendToHost(PacketType.CharacterSubmit, _writer);
         // ↑ Bootstrapping: we use CharacterSubmit as the GUID-bearing first
@@ -1433,31 +1438,14 @@ public static class NetworkManager
         Plugin.Log.LogInfo($"Player '{info.PlayerName}' (ID: {playerId}) fully joined. Total: {_clients.Count + 1}");
         OnPlayerJoined?.Invoke(playerId, info.PlayerName);
 
-        // ── Mode 2 short-circuit: if the joiner already has the city
-        // loaded (and the seed matched our hostSeed at bootstrap time),
-        // skip the WorldDescriptor send entirely — they don't need to
-        // re-generate, and they aren't going to fire ClientWorldReady
-        // for us either (that's owned by WorldAutoLoad, which is bypassed
-        // in Mode 2). Send the snapshot synchronously instead.
-        if (info.SkipAutoLoad)
-        {
-            Plugin.Log.LogInfo(
-                $"[NetworkManager] Mode 2: skipping WorldDescriptor for {peer.DisplayName} — " +
-                $"firing snapshot immediately.");
-            HandleClientWorldReady(peer);
-            return;
-        }
-
-        // ── Mode 3 (Save-Transfer): if the host's WorldBootstrap setting ──
-        // is SaveTransfer AND the client advertised support in its bootstrap
-        // packet, ship the host's save file instead of a share-code. The
-        // client loads it via SoD's LoadGame path → identical world by
-        // construction. Falls back to Mode 1 (share-code) if the client
-        // doesn't support it, the host setting is ShareCode, or the save
-        // file can't be read. The ZDO snapshot stays deferred until the
-        // client's save-load completes and fires ClientWorldReady (same
-        // tail as Mode 1 — WorldAutoLoad.OnWorldReadyAfterAutoLoad sends
-        // it after the load finishes).
+        // ── Mode 3 (Save-Transfer) FIRST: ship the host's world — a fresh
+        // capture of it, plus the city file if the joiner lacks it — and the
+        // client loads it through SoD's own Load Game. Identical world by
+        // construction. Checked BEFORE Mode 2 on purpose: a joiner who already
+        // has this city loaded has THEIR OWN save of it (their own clock,
+        // murders, items), and Mode 2 used to keep that world and only lay the
+        // ZDO snapshot over it. The snapshot is deferred until the client's
+        // load completes and it sends ClientWorldReady.
         bool wantSaveTransfer = CoopSettings.WorldBootstrap?.Value == WorldBootstrapMode.SaveTransfer;
         if (wantSaveTransfer && info.SupportsSaveTransfer)
         {
@@ -1465,14 +1453,24 @@ public static class NetworkManager
             {
                 Plugin.Log.LogInfo(
                     $"[NetworkManager] Mode 3 (Save-Transfer) started for {peer.DisplayName} — " +
-                    $"save file enqueued, awaiting client load + ClientWorldReady.");
+                    $"awaiting client load + ClientWorldReady.");
                 return;
             }
-            // SendSaveToPeer returned false (no save file / read error) →
-            // fall through to Mode 1 share-code as a safe fallback.
             Plugin.Log.LogWarning(
                 $"[NetworkManager] Save-Transfer requested but unavailable for {peer.DisplayName} — " +
-                $"falling back to share-code (Mode 1).");
+                $"falling back to {(info.SkipAutoLoad ? "its already-loaded world (Mode 2)" : "share-code (Mode 1)")}.");
+        }
+
+        // ── Mode 2: the joiner already has the city loaded (seed matched at
+        // bootstrap). No WorldDescriptor — it would not regenerate and would
+        // not fire ClientWorldReady. Send the snapshot now.
+        if (info.SkipAutoLoad)
+        {
+            Plugin.Log.LogInfo(
+                $"[NetworkManager] Mode 2: skipping WorldDescriptor for {peer.DisplayName} — " +
+                $"firing snapshot immediately.");
+            HandleClientWorldReady(peer);
+            return;
         }
 
         // ── Auto-load (Mode 1): send WorldDescriptor so the joiner can ──
@@ -1560,6 +1558,34 @@ public static class NetworkManager
         catch (Exception ex)
         {
             Plugin.Log.LogError($"[NetworkManager] SendWorldDescriptorTo: {ex}");
+        }
+    }
+
+    /// <summary>Host: give <paramref name="peer"/> the share-code world path.
+    /// Used by Save-Transfer when a join-time capture ended with nothing to
+    /// ship, so the joiner is not left waiting on its main menu.</summary>
+    internal static void SendWorldDescriptorFallback(SteamPeer peer)
+    {
+        // A Mode 2 joiner is already in the city and would ignore a descriptor
+        // (and never send ClientWorldReady): give it the snapshot instead.
+        int id = GetPlayerIdByPeer(peer);
+        if (id >= 0 && _players.TryGetValue(id, out var info) && info != null && info.SkipAutoLoad)
+        {
+            HandleClientWorldReady(peer);
+            return;
+        }
+        SendWorldDescriptorTo(peer);
+    }
+
+    /// <summary>Host: suspend live traffic to every client. Called when the
+    /// host starts loading a save — the world those deltas describe is about to
+    /// be torn down, and each client gets the new one through a re-sync.</summary>
+    internal static void MarkAllPeersWorldNotReady(string reason)
+    {
+        foreach (var kv in _players)
+        {
+            if (kv.Value == null || kv.Value.IsHost) continue;
+            MarkPeerWorldNotReady(kv.Key, reason);
         }
     }
 
@@ -1886,6 +1912,9 @@ public static class NetworkManager
             // because it's the last field in the bootstrap packet.
             try { if (reader.AvailableBytes >= 1) info.SupportsSaveTransfer = reader.GetBool(); }
             catch { /* mixed-version client — leave SupportsSaveTransfer=false */ }
+            // After it: the city files the client already has, so Save-Transfer
+            // ships the host's city only to a joiner that lacks it.
+            info.KnownCityFiles = SoDCoop.Sync.SaveTransfer.ReadKnownCityFiles(reader);
 
             // Reconnect path: same clientGuid is in the grace window. Restore
             // the existing slot, swap in the new SteamPeer reference, send a
@@ -2168,6 +2197,11 @@ public class PlayerNetInfo
     /// this field defaults to false → host falls back to share-code
     /// automatically (mixed-version safety).</summary>
     public bool SupportsSaveTransfer { get; set; }
+
+    /// <summary>City files (name → size) the client reported in its
+    /// <c>Cities</c> folder at bootstrap. Save-Transfer skips shipping the
+    /// host's city file when an identical one is already there.</summary>
+    public Dictionary<string, long> KnownCityFiles { get; set; }
 
     /// <summary>True once this peer has finished loading the world AND
     /// received its full ZDO snapshot — i.e. it is ready to receive and

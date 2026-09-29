@@ -56,19 +56,16 @@ public static class FingerprintPoller
     public const string NAME = "fingerprints";
 
     // ── Shared ─────────────────────────────────────────────────────────────
+    //
+    // Every interactable and its position come from InteractableSpatialCache,
+    // which WorldEditSync shares. This poller only keeps its own cursor for the
+    // host-side "does it carry prints" classification.
 
-    /// <summary>Directory entries classified per tick. Cheap reads only (no
-    /// component tree walk), so this can be larger than the light/computer
-    /// scans; a 10 000-entry directory is indexed in a few seconds.</summary>
-    private const int SCAN_PER_TICK = 400;
-
-    /// <summary>Every interactable seen so far, by directory index, plus their
-    /// positions. Interactables don't move while they carry prints that matter
-    /// (fixtures, furniture, doors), so one index built at scan time serves the
-    /// near-player tier.</summary>
-    private static readonly List<Interactable> _all = new();
-    private static readonly StaticSpatialIndex _allIndex = new();
-    private static int _scannedTo;
+    /// <summary>Directory index up to which entries have been classified for
+    /// <see cref="_bearing"/>. Separate from the shared cache's cursor because
+    /// another caller may have advanced the cache past entries we haven't
+    /// looked at yet.</summary>
+    private static int _classifiedTo;
 
     /// <summary>df.Count per interactable id as last observed. Absent = never
     /// seen: the first observation only records the baseline.</summary>
@@ -104,9 +101,8 @@ public static class FingerprintPoller
 
     public static void ResetBaseline()
     {
-        _all.Clear();
-        _allIndex.Clear();
-        _scannedTo = 0;
+        InteractableSpatialCache.Reset();
+        _classifiedTo = 0;
         _lastCount.Clear();
         _bearing.Clear();
         _bearingSet.Clear();
@@ -128,39 +124,34 @@ public static class FingerprintPoller
     {
         try
         {
-            var dir = CityData.Instance?.interactableDirectory;
-            if (dir == null) return;
-            if (dir.Count < _scannedTo) ResetBaseline();   // directory rebuilt under us
+            int before = InteractableSpatialCache.ScannedTo;
+            InteractableSpatialCache.Advance();
+            if (InteractableSpatialCache.ScannedTo < before) _classifiedTo = 0;   // directory rebuilt under us
 
-            ScanStep(dir, trackBearing: NetworkManager.IsHost);
-
-            if (NetworkManager.IsHost) HostTick();
-            else                       ClientTick();
+            if (NetworkManager.IsHost)
+            {
+                ClassifyBearing();
+                HostTick();
+            }
+            else ClientTick();
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[FingerprintPoller] tick: {ex.Message}"); }
     }
 
-    /// <summary>Classify the next slice of the directory: remember the
-    /// interactable, index its position, and (host) note whether it already
-    /// carries prints.</summary>
-    private static void ScanStep(Il2CppSystem.Collections.Generic.List<Interactable> dir, bool trackBearing)
+    /// <summary>Host: note which newly cached interactables already carry a
+    /// print list, so the city-wide sweep knows where to look.</summary>
+    private static void ClassifyBearing()
     {
-        int end = Math.Min(dir.Count, _scannedTo + SCAN_PER_TICK);
-        for (int i = _scannedTo; i < end; i++)
+        int end = InteractableSpatialCache.ScannedTo;
+        for (int i = _classifiedTo; i < end; i++)
         {
-            Interactable inter = null;
-            try { inter = dir[i]; } catch { }
-            _all.Add(inter);
+            var inter = InteractableSpatialCache.Get(i);
             if (inter == null) continue;
-            try { _allIndex.Add(i, inter.wPos); } catch { }
-            if (trackBearing)
-            {
-                object df = null;
-                try { df = inter.df; } catch { }
-                if (df != null) MarkBearing(i);
-            }
+            object df = null;
+            try { df = inter.df; } catch { }
+            if (df != null) MarkBearing(i);
         }
-        _scannedTo = end;
+        _classifiedTo = end;
     }
 
     private static void MarkBearing(int dirIdx)
@@ -176,11 +167,10 @@ public static class FingerprintPoller
     {
         // Tier 1: everything near any player, every tick. Checks df directly,
         // so an object that only now got its list is picked up here.
-        PollerAnchors.CollectNear(_allIndex, _anchors, _near, _nearSeen);
+        InteractableSpatialCache.QueryNearPlayers(_anchors, _near, _nearSeen);
         for (int k = 0; k < _near.Count; k++)
         {
             int d = _near[k];
-            if (d < 0 || d >= _all.Count) continue;
             if (HostCheck(d)) MarkBearing(d);
         }
 
@@ -201,7 +191,7 @@ public static class FingerprintPoller
     /// carries a print list at all.</summary>
     private static bool HostCheck(int d)
     {
-        var inter = _all[d];
+        var inter = InteractableSpatialCache.Get(d);
         if (inter == null) return false;
 
         Il2CppSystem.Collections.Generic.List<Interactable.DynamicFingerprint> prints = null;
@@ -285,13 +275,11 @@ public static class FingerprintPoller
 
         _near.Clear();
         _nearSeen.Clear();
-        _allIndex.Query(myPos, OWN_TOUCH_RADIUS_M, _near, _nearSeen);
+        InteractableSpatialCache.Query(myPos, OWN_TOUCH_RADIUS_M, _near, _nearSeen, maxDy: 3.5f);
 
         for (int k = 0; k < _near.Count; k++)
         {
-            int d = _near[k];
-            if (d < 0 || d >= _all.Count) continue;
-            var inter = _all[d];
+            var inter = InteractableSpatialCache.Get(_near[k]);
             if (inter == null) continue;
 
             Il2CppSystem.Collections.Generic.List<Interactable.DynamicFingerprint> prints = null;

@@ -31,6 +31,9 @@ public static class ZdoBootstrap
         // after CitizenStatePoller because it consumes the HostPosition that
         // poller stamps — it reads no SoD fields of its own.
         SoDCoop.Sync.CitizenPositionSync.Register();
+        // Client → host edits of doors / locks / switches, plus correcting
+        // anything near the client that drifted from the host.
+        SoDCoop.Sync.WorldEditSync.Register();
         // Per-citizen idle/arms anim state (host → clients via ZdoEventRpc).
         // Mode is configurable via CoopSettings.CitizenAnimSync:
         //   Disabled — no poller, SoD AI is deterministic from the same seed.

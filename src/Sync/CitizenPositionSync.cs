@@ -155,7 +155,105 @@ public static class CitizenPositionSync
     // Host
     // ════════════════════════════════════════════════════════════════════
 
-    public static void Register() => ZdoPollerHost.Register(POLLER_NAME, 1f / SYNC_HZ, HostTick);
+    public static void Register()
+    {
+        ZdoPollerHost.Register(POLLER_NAME, 1f / SYNC_HZ, HostTick);
+        ZdoPollerHost.RegisterAnyPeer(INTEREST_POLLER_NAME, 1f / INTEREST_HZ, ClientInterestTick);
+        ZdoEventDispatcher.Register(INTEREST_EVENT, OnInterest);
+    }
+
+    // ── Client-side interest ────────────────────────────────────────────
+    //
+    // The host picks which citizens to stream by where they are in ITS world.
+    // A citizen whose copy on this client wandered close to the player while
+    // the host has it across the city was never picked — so it was never
+    // frozen, kept walking on the client's own AI, and stood next to the
+    // player on one machine and nowhere near on the other: exactly the "same
+    // person in two places / people only I can see" report. The client now
+    // tells the host which citizens are near it HERE; the host streams those
+    // too, with their real positions, and they snap back to where they
+    // actually are.
+
+    public const string INTEREST_POLLER_NAME = "npc-interest";
+    public const string INTEREST_EVENT = "npc-interest";
+    private const float INTEREST_HZ = 2f;
+    /// <summary>A report older than this is ignored — the client has moved on.</summary>
+    private const float INTEREST_TTL_S = 1.5f;
+    private const int MAX_INTEREST_IDS = 96;
+
+    /// <summary>Host: the latest citizens each client reported near itself.</summary>
+    private static readonly Dictionary<int, (List<int> ids, float at)> _interest = new();
+    private static readonly HashSet<int> _writtenScratch = new();
+    private static readonly List<int> _interestScratch = new();
+    private static readonly HashSet<int> _twinScratch = new();
+    private static readonly NetDataWriter _interestWriter = new();
+
+    private static void ClientInterestTick(float now)
+    {
+        if (NetworkManager.IsHost) return;
+        if (CoopSettings.SyncCitizenPositions?.Value == false) return;
+
+        try
+        {
+            var player = global::Player.Instance;
+            if (player == null) return;
+            Vector3 me = player.transform.position;
+
+            if (!SoDCoop.Zdo.Pollers.CitizenRosterCache.TryGetRoster(out var ids, out var citizens)) return;
+
+            // Twins are player bodies, driven by RemotePlayer / hidden as ours.
+            _twinScratch.Clear();
+            var players = NetworkManager.Players;
+            if (players != null)
+                foreach (var kv in players)
+                    if (kv.Value != null && kv.Value.TwinHumanID > 0) _twinScratch.Add(kv.Value.TwinHumanID);
+
+            float r2 = SYNC_RADIUS_M * SYNC_RADIUS_M;
+            _interestScratch.Clear();
+            for (int i = 0; i < citizens.Count && _interestScratch.Count < MAX_INTEREST_IDS; i++)
+            {
+                int id = ids[i];
+                // Already streamed to us: the host has it near us too.
+                if (_npcs.ContainsKey(id)) continue;
+                if (_twinScratch.Contains(id)) continue;
+                if (SyncManager.WorldSync?.IsOwnedLocally(id) == true) continue;
+                var c = citizens[i];
+                if (c == null) continue;
+                Vector3 p;
+                try { p = c.transform.position; } catch { continue; }
+                if ((p - me).sqrMagnitude > r2) continue;
+                _interestScratch.Add(id);
+            }
+            if (_interestScratch.Count == 0) return;
+
+            _interestWriter.Reset();
+            _interestWriter.Put((ushort)_interestScratch.Count);
+            for (int i = 0; i < _interestScratch.Count; i++) _interestWriter.Put(_interestScratch[i]);
+            // Superseded by the next report half a second later — no retransmit.
+            ZdoEventDispatcher.Send(INTEREST_EVENT, _interestWriter, DeliveryMethod.Sequenced);
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenPositionSync] interest: {ex.Message}"); }
+    }
+
+    /// <summary>Host: a client's list of citizens near it in ITS world. In a 3+
+    /// session the relay also hands it to the other clients, which ignore it.</summary>
+    private static void OnInterest(NetDataReader r, int senderId)
+    {
+        if (!NetworkManager.IsHost) return;
+        try
+        {
+            if (r.AvailableBytes < 2) return;
+            int n = r.GetUShort();
+            if (n > MAX_INTEREST_IDS) n = MAX_INTEREST_IDS;
+            if (!_interest.TryGetValue(senderId, out var entry) || entry.ids == null)
+                entry = (new List<int>(n), 0f);
+            entry.ids.Clear();
+            for (int i = 0; i < n && r.AvailableBytes >= 4; i++) entry.ids.Add(r.GetInt());
+            entry.at = Time.unscaledTime;
+            _interest[senderId] = entry;
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenPositionSync] interest from {senderId}: {ex.Message}"); }
+    }
 
     private static void HostTick(float now)
     {
@@ -185,6 +283,7 @@ public static class CitizenPositionSync
                 var near = SpatialGrid.Query(info.LastKnownPosition, SYNC_RADIUS_M);
 
                 int written = 0;
+                _writtenScratch.Clear();
                 BeginPacket();
                 for (int i = 0; i < near.Count; i++)
                 {
@@ -202,7 +301,8 @@ public static class CitizenPositionSync
                     // running it on its own AI; it discards these anyway.
                     if (SyncManager.WorldSync?.GetOwnerPlayerId(humanId) == peerId) continue;
 
-                    Vector3 p = LivePosition(humanId, z);
+                    if (!LivePosition(humanId, z, out Vector3 p)) continue;
+                    _writtenScratch.Add(humanId);
                     _writer.Put(humanId);
                     _writer.Put(p.x);
                     _writer.Put(p.y);
@@ -214,6 +314,37 @@ public static class CitizenPositionSync
                         FlushPacket(peer, written);
                         written = 0;
                         BeginPacket();
+                    }
+                }
+
+                // Citizens the client reported near it in ITS world. Their
+                // real position is usually far away — the client snaps them
+                // there, which is the point.
+                if (_interest.TryGetValue(peerId, out var interest)
+                    && interest.ids != null
+                    && now - interest.at <= INTEREST_TTL_S)
+                {
+                    for (int i = 0; i < interest.ids.Count; i++)
+                    {
+                        int humanId = interest.ids[i];
+                        if (humanId == 0 || _writtenScratch.Contains(humanId)) continue;
+                        if (TwinManager.IsTwin(humanId)) continue;
+                        if (SyncManager.WorldSync?.GetOwnerPlayerId(humanId) == peerId) continue;
+                        var z = ZdoMan.FindBySodId(ZdoTypeTag.Citizen, humanId);
+                        if (!LivePosition(humanId, z, out Vector3 p)) continue;
+                        _writtenScratch.Add(humanId);
+                        _writer.Put(humanId);
+                        _writer.Put(p.x);
+                        _writer.Put(p.y);
+                        _writer.Put(p.z);
+                        written++;
+
+                        if (written >= MAX_ENTRIES_PER_PACKET)
+                        {
+                            FlushPacket(peer, written);
+                            written = 0;
+                            BeginPacket();
+                        }
                     }
                 }
                 if (written > 0) FlushPacket(peer, written);
@@ -237,10 +368,14 @@ public static class CitizenPositionSync
     /// player. Only the tens of citizens actually being sent are read here, so
     /// the extra interop is small. The fresh value is written back to the ZDO,
     /// which keeps sector culling current for free.</para></summary>
-    private static Vector3 LivePosition(int humanId, SoDCoop.Zdo.Zdo z)
+    /// <param name="z">The citizen's ZDO, or null (a citizen named by a
+    /// client's interest report may not have one yet).</param>
+    /// <returns>False when there is no position to send at all.</returns>
+    private static bool LivePosition(int humanId, SoDCoop.Zdo.Zdo z, out Vector3 p)
     {
-        if (_livePosThisTick.TryGetValue(humanId, out var cached)) return cached;
-        Vector3 p = z.HostPosition;
+        if (_livePosThisTick.TryGetValue(humanId, out p)) return true;
+        bool have = false;
+        if (z != null && z.HasHostPosition) { p = z.HostPosition; have = true; }
         try
         {
             var h = NetworkIdResolver.GetHuman(humanId);
@@ -248,12 +383,13 @@ public static class CitizenPositionSync
             if (t != null)
             {
                 p = t.position;
-                ZdoMan.NotifyZdoPosition(z, p);
+                have = true;
+                if (z != null) ZdoMan.NotifyZdoPosition(z, p);
             }
         }
         catch { /* fall back to the last stamped position */ }
-        _livePosThisTick[humanId] = p;
-        return p;
+        if (have) _livePosThisTick[humanId] = p;
+        return have;
     }
 
     /// <summary>Reserve the count byte; patched in by <see cref="FlushPacket"/>

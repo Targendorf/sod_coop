@@ -59,8 +59,15 @@ internal sealed class StaticSpatialIndex
     /// <summary>Append the cache indices within <paramref name="radius"/>
     /// (horizontal plane) of <paramref name="center"/> to <paramref name="results"/>,
     /// skipping any already in <paramref name="seen"/> — so several players
-    /// standing in the same area don't cause the same object to be read twice.</summary>
-    public void Query(Vector3 center, float radius, List<int> results, HashSet<int> seen)
+    /// standing in the same area don't cause the same object to be read twice.
+    ///
+    /// <para><paramref name="maxDy"/> bounds the vertical distance. The cells
+    /// are horizontal, so without it a query inside a tower returns every floor
+    /// stacked above and below — thousands of objects the player cannot see or
+    /// reach, each costing IL2CPP reads in the caller. The check is on the
+    /// position stored here, so filtering is free.</para></summary>
+    public void Query(Vector3 center, float radius, List<int> results, HashSet<int> seen,
+                      float maxDy = float.PositiveInfinity)
     {
         if (_cells.Count == 0 || radius <= 0f) return;
         if (!float.IsFinite(center.x) || !float.IsFinite(center.z)) return;
@@ -82,6 +89,7 @@ internal sealed class StaticSpatialIndex
                     float dx = e.pos.x - center.x;
                     float dz = e.pos.z - center.z;
                     if (dx * dx + dz * dz > r2) continue;
+                    if (Mathf.Abs(e.pos.y - center.y) > maxDy) continue;
                     if (seen.Add(e.idx)) results.Add(e.idx);
                 }
             }
@@ -108,6 +116,11 @@ internal static class PollerAnchors
     /// checked every poller tick rather than waiting for the city-wide sweep.
     /// Covers the room, the corridor and the street outside it.</summary>
     public const float NEAR_RADIUS_M = 40f;
+
+    /// <summary>Vertical half-height of the near tier: the player's own floor
+    /// and a few either side. Other floors of a tower are behind floors and
+    /// ceilings; the wrapping sweep still converges them within seconds.</summary>
+    public const float NEAR_MAX_DY_M = 12f;
 
     public static void Collect(List<Vector3> into)
     {
@@ -142,6 +155,6 @@ internal static class PollerAnchors
         if (index.Count == 0) return;
         Collect(anchors);
         for (int a = 0; a < anchors.Count; a++)
-            index.Query(anchors[a], NEAR_RADIUS_M, near, seen);
+            index.Query(anchors[a], NEAR_RADIUS_M, near, seen, NEAR_MAX_DY_M);
     }
 }

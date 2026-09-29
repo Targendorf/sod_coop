@@ -130,7 +130,7 @@ public static class LightPoller
             // в”Ђв”Ђ Bounded incremental scan в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
             // Each new interactable costs a GetComponentInChildren tree walk to
             // learn whether it carries a LightController. The first tick after a
-            // peer joins used to walk the ENTIRE directory at once вЂ” ~10 000
+            // peer joins used to walk the ENTIRE directory at once — ~10 000
             // tree walks in one frame, 437 ms on the 2026-07-30 host. SoD's
             // directory grows by appending, so resuming from _scannedTo in
             // SCAN_PER_TICK slices is safe and spreads the warm-up over a few
@@ -145,7 +145,7 @@ public static class LightPoller
 
             // в”Ђв”Ђ Tier 1: every light near a player, every tick в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
             // LightController.SetOn is NOT patched (the attribute is commented
-            // out вЂ” lights toggle constantly under NPC schedules), so this
+            // out — lights toggle constantly under NPC schedules), so this
             // poller is the only path; an earlier note here claimed otherwise.
             // Lights in view of any player are checked at the full 10 Hz.
             PollerAnchors.CollectNear(_index, _anchors, _near, _nearSeen);
@@ -190,7 +190,7 @@ public static class LightPoller
     {
         if (i < 0 || i >= _lightControllers.Count) return;
         var light = _lightControllers[i];
-        if (light == null) return; // Unity destroyed вЂ” drop next tick.
+        if (light == null) return; // Unity destroyed — drop next tick.
         int id = _lightIds[i];
 
         Zdo z = ZdoMan.GetOrCreateBySodId(ZdoTypeTag.Light, id, owner: ZdoMan.LocalPeerUid, persistent: true);

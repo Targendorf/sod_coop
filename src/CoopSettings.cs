@@ -135,21 +135,28 @@ public static class CoopSettings
     /// <summary>Only relevant when <see cref="WorldBootstrap"/> =
     /// <see cref="WorldBootstrapMode.SaveTransfer"/>. When true, the
     /// client accepts incoming save transfers (first-join + live re-sync
-    /// when the host saves) without prompting. When false, a dialog asks
-    /// the player before overwriting their world with the host's save —
-    /// useful when a client wants to preserve their own progress in a
-    /// world that diverged from the host's.</summary>
+    /// when the host LOADS a different save mid-session) without prompting.
+    /// When false, a live re-sync is declined and this client leaves the
+    /// session instead: staying connected in a world the host has abandoned
+    /// would be a guaranteed desync. There is no confirmation dialog.</summary>
     public static ConfigEntry<bool> SaveTransferAutoAccept;
 
-    /// <summary>Host-side, opt-in. Capture a fresh save before shipping it to a
-    /// joining client, so the base world the joiner loads matches the host's
-    /// live state exactly rather than the state at the host's last save/load.
-    /// Off by default: it calls <c>SaveStateController.CaptureSaveStateAsync</c>
-    /// mid-session, and it is not yet confirmed by playtest that doing so
-    /// leaves the game's notion of "current save" untouched. The capture always
-    /// writes to a dedicated coop file and never over the player's own
-    /// saves.</summary>
-    public static ConfigEntry<bool> SaveTransferForceSaveOnJoin;
+    /// <summary>Host-side. Capture a fresh save of the live world for every
+    /// joining client and ship THAT, so the joiner starts in the world exactly
+    /// as it is now — time, murders, moved items, dead citizens, everything the
+    /// save format holds — instead of the state at the host's last save/load.
+    ///
+    /// <para>On by default since 2026-09-29. Without it the joiner's base world
+    /// was whatever file the host last loaded or saved (possibly hours of play
+    /// behind), and a host who had neither — a freshly generated city, the
+    /// July playtest — silently fell back to share-code, where the joiner
+    /// regenerates the city at its INITIAL state and only the handful of
+    /// ZDO-tracked keys get layered on top. The capture goes through the game's
+    /// own <c>SaveStateController.CaptureSaveStateAsync</c> (the same call its
+    /// save menu makes) into a dedicated coop file, never over the player's own
+    /// saves. The key name changed from <c>SaveTransferForceSaveOnJoin</c> so
+    /// existing configs pick up the new default.</para></summary>
+    public static ConfigEntry<bool> SaveTransferCaptureOnJoin;
 
     /// <summary>Host-authoritative position replication for citizens near each
     /// client. On by default: without it nothing syncs citizen positions at all
@@ -222,16 +229,15 @@ public static class CoopSettings
         SaveTransferAutoAccept = config.Bind(
             "Networking", "SaveTransferAutoAccept", true,
             "When WorldBootstrap=SaveTransfer: automatically accept incoming save transfers " +
-            "(first-join + live re-sync when host saves) without prompting. Set false to get a " +
-            "confirmation dialog before the host's save overwrites your world.");
+            "(first-join + live re-sync when the host loads a save mid-session). Set false to refuse a " +
+            "live re-sync - you then leave the session instead of silently playing in a different world.");
 
-        SaveTransferForceSaveOnJoin = config.Bind(
-            "Networking", "SaveTransferForceSaveOnJoin", false,
-            "When WorldBootstrap=SaveTransfer: capture a fresh save right before shipping it to a " +
-            "joining client, so their base world matches your live state exactly instead of your last " +
-            "save/load. Writes to a dedicated coop file — never over your own saves. Off by default " +
-            "because saving mid-session this way is not yet playtest-verified; leave it off and just " +
-            "save before friends join for the same result.");
+        SaveTransferCaptureOnJoin = config.Bind(
+            "Networking", "SaveTransferCaptureOnJoin", true,
+            "When WorldBootstrap=SaveTransfer: save the live world right before shipping it to each " +
+            "joining client, so they start in exactly your current world instead of your last save/load " +
+            "(or a freshly regenerated city if you never saved). Writes to a dedicated coop file - never " +
+            "over your own saves. Turn off only if a join-time save causes problems.");
 
         RemotePlayerUsesTwinBody = config.Bind(
             "Networking", "RemotePlayerUsesTwinBody", true,

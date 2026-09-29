@@ -416,6 +416,15 @@ public class Plugin : BasePlugin
             // with its renderers back on, so the hide has to be re-applied.
             try { SoDCoop.Sync.TwinManager.ResetOwnTwinHidden(); }
             catch (System.Exception ex) { Log.LogWarning($"TwinManager.ResetOwnTwinHidden: {ex.Message}"); }
+            // Door map, interactable index and the watched-object table all
+            // hold references into the world being torn down.
+            try
+            {
+                SoDCoop.Sync.DoorLookup.Reset();
+                SoDCoop.Zdo.Pollers.InteractableSpatialCache.Reset();
+                SoDCoop.Sync.WorldEditSync.Reset();
+            }
+            catch (System.Exception ex) { Log.LogWarning($"world-edit reset: {ex.Message}"); }
         };
 
         Log.LogInfo("Initializing remote player manager...");
@@ -515,6 +524,9 @@ public class CoopUpdateRunner : MonoBehaviour
             // after FreezeAllTwins has already run). Guarded by an id compare,
             // so this is two field reads once it's done.
             SoDCoop.Sync.TwinManager.HideOwnTwinBody();
+            // Every player's twin must have its AI off in THIS world too —
+            // FreezeAllTwins only ever ran on the host. Throttled to 1 Hz inside.
+            SoDCoop.Sync.TwinManager.FreezePeerTwinsLocally();
             // Interpolate + apply host-authoritative citizen positions. Must run
             // every frame (not on the poller cadence) — it renders between 10 Hz
             // snapshots, same contract as RemotePlayer. No-op on the host and

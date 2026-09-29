@@ -432,29 +432,10 @@ public static class WorldStateSync
     //  Lookup helpers
     // -------------------------------------------------------------------------
 
-    /// <summary>
-    /// Linear scan of CityData.doorDictionary looking for a NewDoor whose
-    /// doorInteractable.id matches. SoD has ~hundreds of doors per city so
-    /// this is cheap enough for once-per-packet lookup.
-    /// </summary>
-    private static NewDoor FindDoorByInteractableId(int id)
-    {
-        try
-        {
-            var dict = CityData.Instance?.doorDictionary;
-            if (dict == null) return null;
-
-            foreach (var kv in dict)
-            {
-                var d = kv.Value;
-                if (d == null) continue;
-                if (d.doorInteractable != null && d.doorInteractable.id == id)
-                    return d;
-            }
-        }
-        catch { }
-        return null;
-    }
+    /// <summary>O(1) door lookup through <see cref="DoorLookup"/>. This used to
+    /// enumerate the whole IL2CPP doorDictionary per call — per door ZDO applied,
+    /// thousands of times over during a join catch-up.</summary>
+    private static NewDoor FindDoorByInteractableId(int id) => DoorLookup.Find(id);
 
     /// <summary>
     /// Look up an Interactable by id, then find LightController on its spawnedObject.
@@ -465,6 +446,16 @@ public static class WorldStateSync
         {
             var inter = FindInteractableById(id);
             if (inter == null) return null;
+
+            // The interactable keeps a direct reference to its controller —
+            // one field read instead of a ~44 µs tree walk per apply. The walk
+            // stays as the fallback for a light whose field isn't wired.
+            try
+            {
+                var lc = inter.lightController;
+                if (lc != null) return lc;
+            }
+            catch { }
 
             // spawnedObject is the in-world GameObject of this interactable.
             var go = inter.spawnedObject;

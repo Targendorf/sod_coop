@@ -316,6 +316,56 @@ public static class TwinManager
     /// so the next world re-hides against its freshly built citizen rig.</summary>
     public static void ResetOwnTwinHidden() => _ownTwinHidden = 0;
 
+    private static float _nextPeerTwinFreezeAt;
+    private static readonly HashSet<int> _loggedLocalFreeze = new();
+
+    /// <summary>Keep every player's twin frozen in THIS machine's world, on
+    /// every peer — not only on the host.
+    ///
+    /// <para><b>What was broken:</b> twins were only ever frozen by
+    /// <see cref="FreezeAllTwins"/>, which reads the host's
+    /// <c>CharacterStore</c> and runs at host start. A client loads the world
+    /// fresh, with every citizen's AI enabled, and nothing froze the twins
+    /// there. So on a client the host's twin and other players' twins — the
+    /// bodies <c>RemotePlayer</c> drives — ran their daily schedule underneath
+    /// the network position every frame (sitting down, walking off, using
+    /// doors); and the client's OWN twin, hidden since dae7875, walked the city
+    /// invisibly, opening doors and switching lights that existed on that
+    /// client only.</para>
+    ///
+    /// <para>Twin ids come from the roster every peer receives in the
+    /// handshake. Re-checked once a second because SoD can switch a citizen's
+    /// AI back on by itself (knock-out recovery, waking up).</para></summary>
+    public static void FreezePeerTwinsLocally()
+    {
+        float now = UnityEngine.Time.unscaledTime;
+        if (now < _nextPeerTwinFreezeAt) return;
+        _nextPeerTwinFreezeAt = now + 1f;
+
+        if (!SoDCoop.Network.NetworkManager.IsConnected) return;
+        if (!WorldReadyGate.IsWorldReady) return;
+
+        try
+        {
+            var players = SoDCoop.Network.NetworkManager.Players;
+            var dict = global::CityData.Instance?.citizenDictionary;
+            if (players == null || dict == null) return;
+
+            foreach (var kv in players)
+            {
+                int id = kv.Value?.TwinHumanID ?? 0;
+                if (id <= 0) continue;
+                if (!dict.TryGetValue(id, out var human) || human == null) continue;
+                var ai = human.ai;
+                if (ai == null || !ai.enabled) continue;
+                ai.enabled = false;
+                if (_loggedLocalFreeze.Add(id))
+                    Plugin.Log.LogInfo($"[TwinManager] froze twin #{id} ({kv.Value.PlayerName}) in this machine's world.");
+            }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[TwinManager] FreezePeerTwinsLocally: {ex.Message}"); }
+    }
+
     /// <summary>Put a twin's renderers back. Called when the player releases a
     /// twin (character reset) so a citizen that returns to the city's normal
     /// population isn't left invisible.</summary>

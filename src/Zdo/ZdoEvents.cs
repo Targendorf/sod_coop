@@ -54,7 +54,9 @@ public static class ZdoEvents
     /// <summary>Item picked up by a player — payload: <c>(int playerId, int interactableId)</c>.</summary>
     public const string ITEM_PICKUP          = "item-pickup";
 
-    /// <summary>Item dropped by a player — payload: <c>(int playerId, int interactableId)</c>.</summary>
+    /// <summary>Item dropped by a player — payload: <c>(int playerId, int interactableId)</c>
+    /// then trailing <c>(byte flags, Vector3 pos, Vector3 euler)</c>; see
+    /// <c>ItemSync.GetDropInfo</c>.</summary>
     public const string ITEM_DROP            = "item-drop";
 
     /// <summary>NPC took damage — payload: <c>(int victimHumanId, int attackerHumanId,
@@ -403,6 +405,14 @@ public static class ZdoEvents
         _w.Reset();
         _w.Put(SoDCoop.Network.NetworkManager.LocalPlayerId);
         _w.Put(interactableId);
+        // Trailing: where it ended up. Without it every receiver re-showed the
+        // item where it had been PICKED UP (the event carried only the id), and
+        // an item that was eaten or used up came back to life there.
+        SoDCoop.Sync.ItemSync.GetDropInfo(interactableId, out byte flags,
+            out UnityEngine.Vector3 pos, out UnityEngine.Vector3 euler);
+        _w.Put(flags);
+        _w.Put(pos.x); _w.Put(pos.y); _w.Put(pos.z);
+        _w.Put(euler.x); _w.Put(euler.y); _w.Put(euler.z);
         ZdoEventDispatcher.Send(ITEM_DROP, _w);
     }
 
@@ -743,7 +753,15 @@ public static class ZdoEvents
             int playerId       = r.GetInt();
             int interactableId = r.GetInt();
             if (playerId == SoDCoop.Network.NetworkManager.LocalPlayerId) return;
-            try { SoDCoop.Sync.ItemSync.ApplyDropFromZdo(playerId, interactableId); }
+            byte flags = 0;
+            UnityEngine.Vector3 pos = default, euler = default;
+            if (r.AvailableBytes >= 25)
+            {
+                flags = r.GetByte();
+                pos   = new UnityEngine.Vector3(r.GetFloat(), r.GetFloat(), r.GetFloat());
+                euler = new UnityEngine.Vector3(r.GetFloat(), r.GetFloat(), r.GetFloat());
+            }
+            try { SoDCoop.Sync.ItemSync.ApplyDropFromZdo(playerId, interactableId, flags, pos, euler); }
             catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnItemDrop] apply: {ex.Message}"); }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnItemDrop] {ex.Message}"); }
