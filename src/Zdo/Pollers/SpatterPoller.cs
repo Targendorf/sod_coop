@@ -14,10 +14,25 @@ public static class SpatterPoller
     public const float TICK_HZ = 2f;
     public const string NAME = "spatter";
 
-    private static int _cursor;
+    /// <summary>Index into the spatter list already replicated. -1 = not yet
+    /// baselined; the first observation records the length and emits nothing.
+    /// Same reasoning as FootprintPoller._cursor: it used to start at 0 and had
+    /// no reset, so the first tick replayed every existing spatter.</summary>
+    private static int _cursor = -1;
     private static uint _seq = 1;
 
+    /// <summary>Only the most recent spatter events stay in the registry; see
+    /// <see cref="TransientZdoLog"/>.</summary>
+    private static readonly TransientZdoLog _log = new(256);
+
     public static void Register() => ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick);
+
+    /// <summary>World unload: forget the cursor and the log.</summary>
+    public static void ResetBaseline()
+    {
+        _cursor = -1;
+        _log.Clear();
+    }
 
     private static void Tick(float now)
     {
@@ -39,6 +54,11 @@ public static class SpatterPoller
             var list = gc.spatter;
             if (list == null) return;
             int count = list.Count;
+            if (_cursor < 0)
+            {
+                _cursor = count;   // baseline — see _cursor
+                return;
+            }
             if (count <= _cursor)
             {
                 if (count < _cursor) _cursor = count;
@@ -61,6 +81,7 @@ public static class SpatterPoller
                 try { z.Set(ZdoKeys.SpatterForceType,   (byte)sim.force); } catch { }
                 try { z.Set(ZdoKeys.SpatterCountMul,    sim.spatterCountMultiplier); } catch { }
                 try { z.Set(ZdoKeys.SpatterStickActors, sim.stickToActors); } catch { }
+                _log.Track(z.Id);
             }
             _cursor = count;
         }

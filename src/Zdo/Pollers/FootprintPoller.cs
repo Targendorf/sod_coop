@@ -19,10 +19,28 @@ public static class FootprintPoller
     public const float TICK_HZ = 5f;
     public const string NAME = "footprints";
 
-    private static int _cursor;
+    /// <summary>Index into footprintsList already replicated. -1 = not yet
+    /// baselined: the first observation records the current length and emits
+    /// nothing, so footprints that already exist — which every peer already
+    /// has, Save-Transfer ships them in the save — are not replayed as new.
+    /// It used to start at 0 and survive world reloads (there was no reset),
+    /// so the first tick replicated every footprint in the city.</summary>
+    private static int _cursor = -1;
     private static uint _seq = 1;
 
+    /// <summary>Only the most recent footprints stay in the registry; see
+    /// <see cref="TransientZdoLog"/>.</summary>
+    private static readonly TransientZdoLog _log = new(512);
+
     public static void Register() => ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick);
+
+    /// <summary>World unload: forget the cursor and the log (the registry is
+    /// cleared with the world).</summary>
+    public static void ResetBaseline()
+    {
+        _cursor = -1;
+        _log.Clear();
+    }
 
     private static void Tick(float now)
     {
@@ -44,6 +62,11 @@ public static class FootprintPoller
             var list = gc.footprintsList;
             if (list == null) return;
             int count = list.Count;
+            if (_cursor < 0)
+            {
+                _cursor = count;   // baseline — see _cursor
+                return;
+            }
             if (count <= _cursor)
             {
                 // Either no growth, or list got cleared (count < cursor).
@@ -66,6 +89,7 @@ public static class FootprintPoller
                 z.Set(ZdoKeys.DirtFloat,  fp.str);
                 z.Set(ZdoKeys.BloodFloat, fp.bl);
                 z.Set(ZdoKeys.FootprintTimestamp, fp.t);
+                _log.Track(z.Id);
             }
             _cursor = count;
         }

@@ -402,6 +402,16 @@ public class Plugin : BasePlugin
             // Applied-print dedup is per world: the next one has fresh ZDO ids.
             try { SoDCoop.Zdo.Resolvers.FingerprintResolver.Reset(); }
             catch (System.Exception ex) { Log.LogWarning($"FingerprintResolver.Reset: {ex.Message}"); }
+            // Transient-event logs and cursors: per world, like the registry
+            // they index.
+            try
+            {
+                SoDCoop.Zdo.Resolvers.FootprintResolver.Reset();
+                SoDCoop.Zdo.Resolvers.SpatterResolver.Reset();
+                SoDCoop.Zdo.Pollers.FootprintPoller.ResetBaseline();
+                SoDCoop.Zdo.Pollers.SpatterPoller.ResetBaseline();
+            }
+            catch (System.Exception ex) { Log.LogWarning($"transient-event reset: {ex.Message}"); }
             // Forget which twin we hid — the reload rebuilds the citizen rig
             // with its renderers back on, so the hide has to be re-applied.
             try { SoDCoop.Sync.TwinManager.ResetOwnTwinHidden(); }
