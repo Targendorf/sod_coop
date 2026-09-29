@@ -51,16 +51,16 @@ public static class SwitchPoller
     // early-out sat AFTER the four field reads, so it saved a ZDO allocation
     // but never saved the interop.
     //
-    // It was also redundant: Interactable.SetSwitchState is Harmony-patched
-    // (GamePatches.Interactable_SetSwitchState_Patch) and broadcasts every
-    // flip the instant it happens. The sweep's only real job is reconciliation
-    // — catching state the patch could have missed (patch paused during load,
-    // state changed by a code path that bypasses the setter).
+    // CORRECTION (2026-09-29): an earlier version of this note said the sweep
+    // was redundant because Interactable.SetSwitchState is Harmony-patched.
+    // It is not — the [HarmonyPatch] attribute is commented out, as it is for
+    // doors and lights, because NPCs flip these constantly. This poller is the
+    // ONLY path for switch state, so it has to be responsive where it counts.
     //
-    // So: tier 1 re-pushes the small TRACKED set (interactables already known
-    // non-default) every tick, and tier 2 sweeps a bounded SLICE of the full
-    // cache per tick, wrapping around. Real-time response comes from the
-    // patch; the sweep guarantees eventual consistency.
+    // Hence three tiers: tier 0 checks everything near any player every tick
+    // (real-time where a delay is visible); tier 1 re-pushes the small TRACKED
+    // set (known non-default) every tick; tier 2 sweeps a bounded SLICE of the
+    // full cache per tick, wrapping, so the rest of the city converges.
 
     /// <summary>Indices into <see cref="_interactables"/> known to be
     /// switch-bearing (non-default state seen at least once, so a ZDO
@@ -76,6 +76,13 @@ public static class SwitchPoller
     private const int SWEEP_PER_TICK = 128;
     private static int _sweepCursor;
 
+    /// <summary>Switch-bearing candidates by position, for the near-player
+    /// tier — see <see cref="StaticSpatialIndex"/>.</summary>
+    private static readonly StaticSpatialIndex _index = new();
+    private static readonly List<UnityEngine.Vector3> _anchors = new();
+    private static readonly List<int> _near = new();
+    private static readonly HashSet<int> _nearSeen = new();
+
     public static void Register() => ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick);
 
     public static void ResetBaseline()
@@ -87,6 +94,7 @@ public static class SwitchPoller
         _tracked.Clear();
         _trackedIds.Clear();
         _sweepCursor = 0;
+        _index.Clear();
     }
 
     private static void Tick(float now)
@@ -110,29 +118,54 @@ public static class SwitchPoller
             // Incrementally extend the cache. Walks only [_scannedTo, dir.Count).
             // Filter out lights (LightPoller owns those) so the per-tick path
             // doesn't have to re-check each tick.
-            if (now >= _nextRescanAt && dir.Count > _scannedTo)
+            // Follow LightPoller's classification rather than forcing it. An
+            // interactable may only be cached as a switch once LightPoller has
+            // decided it is NOT a light — otherwise lights would be
+            // double-broadcast through Switch ZDOs. The old code guaranteed
+            // that by calling EnsureScannedThrough(dir.Count), which dragged
+            // LightPoller's whole remaining scan — thousands of tree walks —
+            // into this poller's frame (143 ms on the 2026-07-30 host).
+            // Reading ScannedTo gives the same guarantee for free.
+            int classified = Math.Min(dir.Count, LightPoller.ScannedTo);
+            if (now >= _nextRescanAt && classified > _scannedTo)
             {
                 _nextRescanAt = now + RESCAN_INTERVAL_S;
-                // Force LightPoller's scan up to the same point first, so
-                // the IsKnownLight HashSet is correct for every Interactable
-                // we're about to look at. Without this they race: if
-                // SwitchPoller ticks before LightPoller's first scan, the
-                // light-set is empty and we'd add lights to our own cache,
-                // double-broadcasting their state via Switch ZDOs.
-                LightPoller.EnsureScannedThrough(dir.Count);
-
-                for (int i = _scannedTo; i < dir.Count; i++)
+                for (int i = _scannedTo; i < classified; i++)
                 {
                     var inter = dir[i];
                     if (inter == null) continue;
                     if (LightPoller.IsKnownLight(inter.id)) continue;
                     _ids.Add(inter.id);
                     _interactables.Add(inter);
+                    // Static: index once for the near-player tier.
+                    try { _index.Add(_interactables.Count - 1, inter.wPos); } catch { }
                 }
-                _scannedTo = dir.Count;
+                _scannedTo = classified;
             }
 
             if (_interactables.Count == 0) return;
+
+            // ── Tier 0: everything near a player, every tick ─────────────
+            // Interactable.SetSwitchState is NOT patched (commented out), so
+            // this poller is the only path — an earlier note claimed otherwise.
+            // Without this tier a drawer or cabinet opened for the FIRST time
+            // waited for the city-wide sweep to reach it: several seconds on a
+            // 10 000-entry directory. Anything within reach of any player is now
+            // checked at the full 10 Hz and promoted into the tracked tier the
+            // moment it leaves its default state.
+            PollerAnchors.CollectNear(_index, _anchors, _near, _nearSeen);
+            for (int k = 0; k < _near.Count; k++)
+            {
+                int i = _near[k];
+                if (i < 0 || i >= _interactables.Count) continue;
+                int id = _ids[i];
+                if (_trackedIds.Contains(id)) continue;   // tier 1 handles it
+                if (PushState(_interactables[i], id, createIfDefault: false))
+                {
+                    _tracked.Add(i);
+                    _trackedIds.Add(id);
+                }
+            }
 
             // ── Tier 1: tracked (known switch-bearing) — every tick ───────
             // Small set, so full-rate polling here is cheap and keeps state

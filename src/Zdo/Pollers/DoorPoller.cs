@@ -43,6 +43,13 @@ public static class DoorPoller
     private const int SWEEP_PER_TICK = 256;
     private static int _sweepCursor;
 
+    /// <summary>Doors by position, so every door near a player is checked every
+    /// tick — see <see cref="StaticSpatialIndex"/>.</summary>
+    private static readonly StaticSpatialIndex _index = new();
+    private static readonly List<UnityEngine.Vector3> _anchors = new();
+    private static readonly List<int> _near = new();
+    private static readonly HashSet<int> _nearSeen = new();
+
     public static void Register()
     {
         ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick);
@@ -57,6 +64,7 @@ public static class DoorPoller
         _doors.Clear();
         _cachedCount = -1;
         _sweepCursor = 0;
+        _index.Clear();
     }
 
     private static void Tick(float now)
@@ -84,6 +92,7 @@ public static class DoorPoller
             {
                 _doorIds.Clear();
                 _doors.Clear();
+                _index.Clear();
                 foreach (var kv in dict)
                 {
                     var d = kv.Value;
@@ -92,49 +101,63 @@ public static class DoorPoller
                     if (di == null) continue;
                     _doorIds.Add(di.id);
                     _doors.Add(d);
+                    // Doors don't move: index once, here, on the rare rebuild.
+                    try { _index.Add(_doors.Count - 1, di.wPos); } catch { }
                 }
                 _cachedCount = dict.Count;
             }
 
-            // ── Amortized reconciliation sweep ────────────────────────────
-            // Walk only SWEEP_PER_TICK doors per tick, wrapping around, rather
-            // than the whole cache. A SoD city has thousands of doors and the
-            // old loop read isClosed + isLocked + a null check on every one at
-            // 10 Hz — tens of thousands of IL2CPP calls per tick on the host
-            // main thread, which is the class of cost that held pollers at
-            // 700-1600 ms/frame (playtest 2026-06-23).
+            // ── Tier 1: every door near a player, every tick ─────────────
             //
-            // Real-time response does not depend on this loop: NewDoor.OnOpen,
-            // OnClose and SetLocked are all Harmony-patched and broadcast the
-            // instant they fire, whoever opened the door. The sweep only has to
-            // guarantee eventual convergence for state a patch could have
-            // missed (patch paused during load, or a path that bypasses the
-            // setters), so full coverage every few seconds is ample.
+            // There is NO real-time path for doors besides this poller: the
+            // NewDoor.OnOpen/OnClose/SetLocked Harmony patches are disabled
+            // (NPCs open doors constantly; patching them was a broadcast storm).
+            // An earlier note here claimed those patches carried real-time state
+            // — they don't, and with only the wrapping sweep below a door a
+            // player opened could take a second or more to open on the other
+            // machine. Doors in view of any player are now checked at the full
+            // 10 Hz; the cost is the handful of doors around each player.
+            PollerAnchors.CollectNear(_index, _anchors, _near, _nearSeen);
+            for (int k = 0; k < _near.Count; k++) PushDoor(_near[k]);
+
+            // ── Tier 2: amortized sweep over the rest of the city ─────────
+            // SWEEP_PER_TICK per tick, wrapping, instead of the whole cache: a
+            // SoD city has thousands of doors, and reading isClosed + isLocked
+            // on every one at 10 Hz was tens of thousands of IL2CPP calls per
+            // tick — the class of cost that held pollers at 700-1600 ms/frame
+            // (playtest 2026-06-23). Doors nobody can see converge within a
+            // couple of seconds, which is invisible.
             int doorSweep = Math.Min(SWEEP_PER_TICK, _doors.Count);
             for (int n = 0; n < doorSweep; n++)
             {
                 if (_sweepCursor >= _doors.Count) _sweepCursor = 0;
                 int i = _sweepCursor++;
-
-                var door = _doors[i];
-                if (door == null) continue; // Unity destroyed — rebuild picks it up on next count change.
-                int id = _doorIds[i];
-
-                Zdo z = ZdoMan.GetOrCreateBySodId(ZdoTypeTag.Door, id, owner: ZdoMan.LocalPeerUid, persistent: true);
-                // Static position — stamp once for sector-cull.
-                if (!z.HasHostPosition)
-                {
-                    try
-                    {
-                        var inter = door.doorInteractable;
-                        if (inter != null) ZdoMan.NotifyZdoPosition(z, inter.wPos);
-                    }
-                    catch { }
-                }
-                z.Set(ZdoKeys.Closed, door.isClosed);
-                z.Set(ZdoKeys.Locked, door.isLocked);
+                if (_nearSeen.Contains(i)) continue;   // tier 1 already did it
+                PushDoor(i);
             }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[DoorPoller] tick: {ex.Message}"); }
+    }
+
+    private static void PushDoor(int i)
+    {
+        if (i < 0 || i >= _doors.Count) return;
+        var door = _doors[i];
+        if (door == null) return; // Unity destroyed — rebuild picks it up on next count change.
+        int id = _doorIds[i];
+
+        Zdo z = ZdoMan.GetOrCreateBySodId(ZdoTypeTag.Door, id, owner: ZdoMan.LocalPeerUid, persistent: true);
+        // Static position — stamp once for sector-cull.
+        if (!z.HasHostPosition)
+        {
+            try
+            {
+                var inter = door.doorInteractable;
+                if (inter != null) ZdoMan.NotifyZdoPosition(z, inter.wPos);
+            }
+            catch { }
+        }
+        z.Set(ZdoKeys.Closed, door.isClosed);
+        z.Set(ZdoKeys.Locked, door.isLocked);
     }
 }

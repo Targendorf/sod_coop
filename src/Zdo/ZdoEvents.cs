@@ -406,9 +406,12 @@ public static class ZdoEvents
         ZdoEventDispatcher.Send(ITEM_DROP, _w);
     }
 
+    /// <param name="healthAfter">The victim's health on the host AFTER this hit.
+    /// Lets the receiver apply only the damage it is actually missing — see
+    /// <c>DamageSync.ApplyFromZdo</c>. NaN when unknown.</param>
     public static void SendNpcDamage(int victimHumanId, int attackerHumanId, float amount,
                                      UnityEngine.Vector3 hitPos, UnityEngine.Vector3 hitDir,
-                                     bool enableKill)
+                                     bool enableKill, float healthAfter = float.NaN)
     {
         if (!ZdoFeatureFlags.UseZdoForEvents) return;
         _w.Reset();
@@ -418,6 +421,8 @@ public static class ZdoEvents
         _w.Put(hitPos.x); _w.Put(hitPos.y); _w.Put(hitPos.z);
         _w.Put(hitDir.x); _w.Put(hitDir.y); _w.Put(hitDir.z);
         _w.Put(enableKill);
+        // Trailing field — older receivers stop reading before it.
+        _w.Put(healthAfter);
         // Spatial: a hit on an NPC across the city has no observable
         // effect for distant peers (vitals + animations replicate via
         // ZDO state which is already sector-culled).
@@ -1110,13 +1115,16 @@ public static class ZdoEvents
             float px = r.GetFloat(), py = r.GetFloat(), pz = r.GetFloat();
             float dx = r.GetFloat(), dy = r.GetFloat(), dz = r.GetFloat();
             bool enableKill = r.GetBool();
+            // Trailing field; absent from an older sender → NaN → legacy
+            // behaviour (apply the full amount).
+            float healthAfter = r.AvailableBytes >= 4 ? r.GetFloat() : float.NaN;
             try
             {
                 SoDCoop.Sync.DamageSync.ApplyFromZdo(
                     victim, attacker, amount,
                     new UnityEngine.Vector3(px, py, pz),
                     new UnityEngine.Vector3(dx, dy, dz),
-                    enableKill);
+                    enableKill, healthAfter);
             }
             catch (Exception ex) { Plugin.Log.LogWarning($"[ZdoEvents.OnNpcDamageRich] apply: {ex.Message}"); }
         }

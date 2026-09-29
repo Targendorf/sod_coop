@@ -30,6 +30,10 @@ public static class PlayerInputPoller
     /// tick on FPS state. Throttled in <see cref="ZdoPollerHost"/> so we
     /// don't fire 60+ times per second.</summary>
     public const float TICK_HZ = 30f;
+
+    /// <summary>New interactable-directory entries examined per tick for
+    /// place/throw detection. See the note at the call site.</summary>
+    private const int NEW_ITEMS_PER_TICK = 256;
     public const string NAME = "player-input";
 
     private static bool _initialized;
@@ -112,9 +116,21 @@ public static class PlayerInputPoller
                 // BroadcastNewItemsSince classifies each new entry via
                 // Rigidbody.velocity → place vs throw. Replaces the four
                 // Place* patches and three Throw* patches.
-                try { SoDCoop.Sync.InventorySync.BroadcastNewItemsSince(_lastInteractableCount); }
-                catch (Exception ex) { Plugin.Log.LogWarning($"[PlayerInputPoller] place/throw: {ex.Message}"); }
-                _lastInteractableCount = curInteractables;
+                // Capped per tick and resumed from where it stopped: a burst of
+                // thousands of new directory entries used to be walked in one
+                // go (293 ms in a single run on the 2026-07-30 host). At 30 Hz a
+                // few hundred per tick still drains any burst in well under a
+                // second, and a player's own placement is caught next tick.
+                try
+                {
+                    _lastInteractableCount = SoDCoop.Sync.InventorySync.BroadcastNewItemsSince(
+                        _lastInteractableCount, NEW_ITEMS_PER_TICK);
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Log.LogWarning($"[PlayerInputPoller] place/throw: {ex.Message}");
+                    _lastInteractableCount = curInteractables;
+                }
             }
             else if (curInteractables < _lastInteractableCount)
             {

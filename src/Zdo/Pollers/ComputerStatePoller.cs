@@ -28,6 +28,12 @@ namespace SoDCoop.Zdo.Pollers;
 public static class ComputerStatePoller
 {
     public const float TICK_HZ = 2f;
+
+    /// <summary>Directory entries classified per tick (one tree walk each).
+    /// ~44 µs each measured (437 ms for a full scan); 120/tick keeps a tick
+    /// near 5 ms. At 2 Hz a 10 000-entry directory is indexed in well under a
+    /// minute, and computer login state is irrelevant before then.</summary>
+    private const int SCAN_PER_TICK = 120;
     public const string NAME = "computer-state";
 
     private struct Snapshot { public int LoggedInHumanId; public string AppName; }
@@ -62,10 +68,15 @@ public static class ComputerStatePoller
             var dir = CityData.Instance?.interactableDirectory;
             if (dir == null) return;
 
-            // Incrementally extend the cache.
+            // Incrementally extend the cache, SCAN_PER_TICK entries at a time.
+            // Each costs a GetComponentInChildren tree walk; the first tick
+            // after a peer joined used to walk the whole directory in one frame
+            // (99 ms on the 2026-07-30 host). The directory only appends, so
+            // resuming from _scannedTo is safe.
             if (dir.Count > _scannedTo)
             {
-                for (int i = _scannedTo; i < dir.Count; i++)
+                int end = Math.Min(dir.Count, _scannedTo + SCAN_PER_TICK);
+                for (int i = _scannedTo; i < end; i++)
                 {
                     var inter = dir[i];
                     if (inter == null || inter.spawnedObject == null) continue;
@@ -75,7 +86,7 @@ public static class ComputerStatePoller
                     _computerIds.Add(inter.id);
                     _computers.Add(computer);
                 }
-                _scannedTo = dir.Count;
+                _scannedTo = end;
             }
 
             for (int i = 0; i < _computers.Count; i++)

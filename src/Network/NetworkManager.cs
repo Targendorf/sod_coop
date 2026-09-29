@@ -1105,7 +1105,11 @@ public static class NetworkManager
             case PacketType.DoorState:             // open/close
             case PacketType.LightState:            // light on/off
             case PacketType.SwitchState:           // generic switch toggle
-            case PacketType.FingerprintAdd:        // (remapped on forward)
+            // FingerprintAdd is deliberately NOT forwarded any more. A client's
+            // own prints now reach the host, which adds them to its world, and
+            // FingerprintPoller replicates them to every client as ZDO prints.
+            // Forwarding the raw packet as well would give every other client
+            // in a 3+ session each of those prints twice.
             case PacketType.FingerprintClearManual:
             case PacketType.FootprintAdd:          // (remapped on forward)
             case PacketType.SpatterAdd:            // blood/dirt spatter
@@ -1208,7 +1212,6 @@ public static class NetworkManager
             case PacketType.ItemAction:          // melee/block/counter (Sequenced at source)
             case PacketType.FootprintAdd:
             case PacketType.SpatterAdd:
-            case PacketType.FingerprintAdd:      // idempotent overwrite of the print set
                 return DeliveryMethod.Sequenced;
 
             // Everything else: state transitions, one-shot events, mutations

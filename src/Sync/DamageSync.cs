@@ -27,6 +27,11 @@ public static class DamageSync
 {
     public static bool IsApplyingRemote { get; private set; }
 
+    /// <summary>Below this much missing health a received hit is treated as
+    /// already applied by the state sync. Matches CitizenStatePoller's health
+    /// deadband, so float jitter on the streamed value can't re-trigger a hit.</summary>
+    private const float RECONCILE_EPSILON = 0.5f;
+
     private static readonly NetDataWriter _writer = new();
 
     /// <summary>Lazy <c>SpatterPatternPreset.name</c> → preset registry.</summary>
@@ -123,9 +128,52 @@ public static class DamageSync
 
     /// <summary>ZDO entry — invoked from <c>ZdoEvents.OnNpcDamageRich</c>.
     /// Spatter presets are not in the event payload; receivers use defaults.</summary>
+    /// <param name="healthAfter">Host's health for the victim after the hit, or
+    /// NaN when the sender didn't provide it.
+    ///
+    /// <para><b>Why the damage is reconciled rather than applied as sent.</b>
+    /// Health reaches receivers twice: as this damage event, which goes through
+    /// <c>RecieveDamage</c> and SUBTRACTS, and as the absolute
+    /// <c>CurrentHealth</c> key CitizenStatePoller streams on the Citizen ZDO,
+    /// which CitizenResolver assigns directly. They travel on different
+    /// channels, so arrival order is not guaranteed. Event first is fine —
+    /// H−d, then the state confirms H−d. State first is not: H−d from the
+    /// state, then the event subtracts again to H−2d, and nothing ever corrects
+    /// it, because the host's value didn't change so the key is never re-sent.
+    /// At low health that knocks an NPC out on the client while it is still
+    /// standing on the host.</para>
+    ///
+    /// <para>Applying only <c>clientHealth − healthAfter</c> makes both orders
+    /// converge on the host's value. When the state already won the race there
+    /// is nothing left to apply and the hit is skipped — losing one hit
+    /// reaction is cosmetic; double damage is a desync. Death is unaffected: it
+    /// propagates as its own Dead state on the Citizen ZDO.</para></param>
     public static void ApplyFromZdo(int victimHumanId, int attackerHumanId, float amount,
-                                    Vector3 hitPosition, Vector3 hitDirection, bool enableKill)
+                                    Vector3 hitPosition, Vector3 hitDirection, bool enableKill,
+                                    float healthAfter = float.NaN)
     {
+        if (!float.IsNaN(healthAfter))
+        {
+            var victim = ResolveActor(victimHumanId);
+            if (victim == null) return;
+            float current;
+            try { current = victim.currentHealth; }
+            catch { current = float.NaN; }
+
+            if (!float.IsNaN(current))
+            {
+                float missing = current - healthAfter;
+                if (missing <= RECONCILE_EPSILON)
+                {
+                    Plugin.Log.LogDebug(
+                        $"[DamageSync] victim={victimHumanId} already at host health {healthAfter:F1} " +
+                        $"(state sync arrived first) — hit of {amount:F1} not re-applied.");
+                    return;
+                }
+                amount = missing;
+            }
+        }
+
         ApplyImpl(
             victimHumanId, attackerHumanId, amount,
             hitPosition, hitDirection,

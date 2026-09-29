@@ -399,6 +399,9 @@ public class Plugin : BasePlugin
             // references belong to the world being torn down.
             try { SoDCoop.Zdo.Pollers.EvidenceRosterCache.Reset(); }
             catch (System.Exception ex) { Log.LogWarning($"EvidenceRosterCache.Reset: {ex.Message}"); }
+            // Applied-print dedup is per world: the next one has fresh ZDO ids.
+            try { SoDCoop.Zdo.Resolvers.FingerprintResolver.Reset(); }
+            catch (System.Exception ex) { Log.LogWarning($"FingerprintResolver.Reset: {ex.Message}"); }
             // Forget which twin we hid — the reload rebuilds the citizen rig
             // with its renderers back on, so the hide has to be re-applied.
             try { SoDCoop.Sync.TwinManager.ResetOwnTwinHidden(); }

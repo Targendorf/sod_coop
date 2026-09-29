@@ -1,61 +1,116 @@
 using System;
 using System.Collections.Generic;
+using SoDCoop.Network;
 
 namespace SoDCoop.Zdo.Pollers;
 
 /// <summary>
-/// Host-side fingerprint cursor poller. Walks
-/// <c>CityData.Instance.interactableDirectory</c> at 5 Hz, tracks each
-/// interactable's <c>df.Count</c>, and on increase emits one
-/// <see cref="ZdoTypeTag.Fingerprint"/> ZDO per new
-/// <c>DynamicFingerprint</c> entry. Each ZDO carries
-/// <c>(interactableId, humanId, life)</c> — receivers replay via
-/// <see cref="SoDCoop.Sync.FingerprintSync.ApplyAddDirect"/>.
+/// Fingerprint replication. Runs on every peer, with a different job on each.
 ///
-/// <para>Replaces the disabled hot patch at
-/// <c>src/Patches/GamePatches.cs:777</c>.</para>
+/// <para><b>Host:</b> the authority for the city's prints. Watches every
+/// interactable's <c>df</c> (DynamicFingerprint list) and emits one
+/// <see cref="ZdoTypeTag.Fingerprint"/> ZDO per new print, carrying
+/// <c>(interactableId, humanId, life)</c>; receivers replay it through
+/// <c>FingerprintSync.ApplyAddDirect</c>.</para>
 ///
-/// <para><b>Performance</b>: previous implementation walked all ~10 000
-/// interactables per tick (5 Hz) just to read <c>df.Count</c> on each.
-/// Most interactables never have fingerprints (only doors, computers,
-/// codebreakers — the things AI can leave a print on). Now uses the same
-/// incremental-cache pattern as <see cref="LightPoller"/>: build a
-/// "fingerprintable" subset on directory growth, walk only the cache
-/// per tick. Drop from ~50 000 iter/s to ~few-hundred iter/s.</para>
+/// <para><b>Client:</b> reports the prints ITS OWN player leaves, which exist
+/// only in the client's world, to the host through the existing
+/// <c>FingerprintSync.BroadcastAdd</c> packet. The host already remaps those to
+/// the client's twin (<c>FingerprintSync.ApplyAdd</c>), adds them to its world,
+/// and from there they reach everyone as ordinary host prints.</para>
+///
+/// <para><b>What was broken, and why (2026-09-29).</b> This is a detective
+/// game; who touched what is the core mechanic, and the sync got all of it
+/// wrong:</para>
+/// <list type="bullet">
+///   <item><description><b>Every replicated print was attributed to human 0.</b>
+///   The ZDO wrote <c>HumanId = 0</c> on the grounds that "live adds are
+///   detected via the active patch path with the human id" — but that patch
+///   (<c>Interactable.AddNewDynamicFingerprint</c>) is disabled. Receivers
+///   looked up citizen 0, got null, and passed null to
+///   AddNewDynamicFingerprint. <c>DynamicFingerprint</c> carries no Human
+///   reference — only <c>id / created / seed / life</c> — and <c>id</c> is the
+///   identity the game has for the print, so it is what we send now. A one-shot
+///   diagnostic logs the first few ids against the citizen roster to confirm
+///   that reading on a real session.</description></item>
+///   <item><description><b>Objects whose <c>df</c> was allocated after the scan
+///   passed them were missed forever.</b> An interactable only entered the
+///   cache if <c>df != null</c> at the single moment the incremental scan
+///   reached it. Every interactable is now indexed by position, and anything
+///   near a player is re-checked every tick, so a print appearing where anyone
+///   can see it is caught within one tick however lazily the game allocated
+///   the list.</description></item>
+///   <item><description><b>Client prints never reached the host at all</b> — the
+///   host poller only sees the host's world, and the client-side patch is the
+///   same disabled one.</description></item>
+///   <item><description><b>First sight re-broadcast every existing print.</b>
+///   The baseline defaulted to 0, so the first time the sweep reached an
+///   interactable it emitted all of its prints as new — duplicates on any
+///   client that already had them, which with Save-Transfer is every client.
+///   First sight now only records the baseline.</description></item>
+/// </list>
 /// </summary>
 public static class FingerprintPoller
 {
     public const float TICK_HZ = 5f;
     public const string NAME = "fingerprints";
 
+    // ── Shared ─────────────────────────────────────────────────────────────
+
+    /// <summary>Directory entries classified per tick. Cheap reads only (no
+    /// component tree walk), so this can be larger than the light/computer
+    /// scans; a 10 000-entry directory is indexed in a few seconds.</summary>
+    private const int SCAN_PER_TICK = 400;
+
+    /// <summary>Every interactable seen so far, by directory index, plus their
+    /// positions. Interactables don't move while they carry prints that matter
+    /// (fixtures, furniture, doors), so one index built at scan time serves the
+    /// near-player tier.</summary>
+    private static readonly List<Interactable> _all = new();
+    private static readonly StaticSpatialIndex _allIndex = new();
+    private static int _scannedTo;
+
+    /// <summary>df.Count per interactable id as last observed. Absent = never
+    /// seen: the first observation only records the baseline.</summary>
     private static readonly Dictionary<int, int> _lastCount = new();
 
-    /// <summary>Cached interactables examined per tick by the sweep. At 5 Hz,
-    /// 128/tick covers a large print-bearing set every few seconds at a fixed
-    /// per-frame cost.</summary>
+    private static readonly List<UnityEngine.Vector3> _anchors = new();
+    private static readonly List<int> _near = new();
+    private static readonly HashSet<int> _nearSeen = new();
+
+    // ── Host: print-bearing cache + sweep ─────────────────────────────────
+
+    /// <summary>Directory indices known to carry a <c>df</c> list — the set the
+    /// city-wide sweep walks.</summary>
+    private static readonly List<int> _bearing = new();
+    private static readonly HashSet<int> _bearingSet = new();
+
+    /// <summary>Print-bearing entries examined per tick by the city-wide sweep.</summary>
     private const int SWEEP_PER_TICK = 128;
     private static int _sweepCursor;
     private static uint _seq = 1;
 
-    /// <summary>Cached references to interactables that ever had — or could
-    /// have — fingerprints. Filled lazily as the directory grows AND any
-    /// time we observe <c>df != null</c> on an interactable. Per-tick we
-    /// only walk this small subset.</summary>
-    private static readonly List<int> _ids = new();
-    private static readonly List<Interactable> _interactables = new();
-    private static int _scannedTo;
-    private const float RESCAN_INTERVAL_S = 1f;
-    private static float _nextRescanAt;
+    // ── Client: own-print detection ────────────────────────────────────────
 
-    public static void Register() => ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick);
+    /// <summary>A player can only leave prints on what they are touching; this
+    /// radius around the local player is all the client has to watch.</summary>
+    private const float OWN_TOUCH_RADIUS_M = 6f;
+
+    // ── Diagnostics ────────────────────────────────────────────────────────
+
+    private static int _idDiagnosticsLeft = 5;
+
+    public static void Register() => ZdoPollerHost.RegisterAnyPeer(NAME, 1f / TICK_HZ, Tick);
 
     public static void ResetBaseline()
     {
-        _ids.Clear();
-        _interactables.Clear();
-        _lastCount.Clear();
+        _all.Clear();
+        _allIndex.Clear();
         _scannedTo = 0;
-        _nextRescanAt = 0f;
+        _lastCount.Clear();
+        _bearing.Clear();
+        _bearingSet.Clear();
+        _sweepCursor = 0;
     }
 
     private static void Tick(float now)
@@ -75,92 +130,209 @@ public static class FingerprintPoller
         {
             var dir = CityData.Instance?.interactableDirectory;
             if (dir == null) return;
+            if (dir.Count < _scannedTo) ResetBaseline();   // directory rebuilt under us
 
-            // Incrementally extend the cache. We add an interactable to the
-            // cache the first time we see its `df` collection allocated —
-            // that's SoD's signal "this object can carry fingerprints".
-            // Most interactables never get a `df` (doors/computers do; mugs,
-            // notes, evidence don't), so the cache stays small even with
-            // 10 K total interactables.
-            if (now >= _nextRescanAt && dir.Count > _scannedTo)
-            {
-                _nextRescanAt = now + RESCAN_INTERVAL_S;
-                for (int i = _scannedTo; i < dir.Count; i++)
-                {
-                    var inter = dir[i];
-                    if (inter == null) continue;
-                    // Use `var` — the underlying IL2CPP-projected list type
-                    // (Il2CppSystem.Collections.Generic.List<DynamicFingerprint>)
-                    // isn't directly importable as a managed type reference.
-                    var df = (object)null;
-                    try { df = inter.df; } catch { }
-                    if (df == null) continue;
-                    _ids.Add(inter.id);
-                    _interactables.Add(inter);
-                }
-                _scannedTo = dir.Count;
-            }
+            ScanStep(dir, trackBearing: NetworkManager.IsHost);
 
-            // Amortized sweep. The cache holds every interactable that has ever
-            // had a fingerprint collection allocated, which on a lived-in city
-            // is a large set, and the old loop read `inter.df` plus its Count on
-            // every one of them at 5 Hz. Measured on the 2026-07-30 playtest:
-            // 226 ms per tick on average — one of the three pollers holding the
-            // host's coop layer at ~197 ms per frame (~5 FPS).
-            //
-            // Prints appear from player actions, so a bounded slice per tick
-            // detects them just as well at a fixed small cost. Interactable.
-            // AddNewDynamicFingerprint is Harmony-patched as well, so real-time
-            // response never depended on this loop.
-            int total = _interactables.Count;
-            int sweep = Math.Min(SWEEP_PER_TICK, total);
-            for (int n = 0; n < sweep; n++)
-            {
-                if (_sweepCursor >= total) _sweepCursor = 0;
-                int idx = _sweepCursor++;
-
-                var inter = _interactables[idx];
-                if (inter == null) continue;
-                int interId = _ids[idx];
-
-                var prints = inter.df;
-                if (prints == null) continue;
-                int curCount = prints.Count;
-
-                int prev = _lastCount.TryGetValue(interId, out var p) ? p : 0;
-                if (curCount == prev) continue;
-
-                if (curCount > prev)
-                {
-                    // Emit one ZDO per new fingerprint entry. Each entry is a
-                    // separate persistent ZDO so the snapshot can replay history.
-                    for (int k = prev; k < curCount; k++)
-                    {
-                        var fp = prints[k];
-                        if (fp == null) continue;
-
-                        // Composite SoD id: (interactableId << 16) | sequence.
-                        // Sequence is local to host but unique enough; receivers
-                        // dedup by (interactableId, humanId, life) at apply time.
-                        int compositeId = unchecked((interId << 16) | (int)(_seq++ & 0xffff));
-                        var z = ZdoMan.GetOrCreateBySodId(ZdoTypeTag.Fingerprint, compositeId,
-                            owner: ZdoMan.LocalPeerUid, persistent: true);
-                        z.Set(ZdoKeys.InteractableId, interId);
-                        // DynamicFingerprint has only id/created/seed/life as
-                        // verified in the dump (Interactable.cs:286-289). The
-                        // Human reference is implicit in the print object's
-                        // chain, but the poll snapshot doesn't easily expose it.
-                        // Use 0 as a placeholder; live fingerprint *adds* are
-                        // primarily detected via the active patch path with the
-                        // human id. The cursor poll captures count-only history
-                        // for snapshot replay.
-                        try { z.Set(ZdoKeys.HumanId, 0); } catch { }
-                        try { z.Set(ZdoKeys.Life, (byte)fp.life); } catch { }
-                    }
-                }
-                _lastCount[interId] = curCount;
-            }
+            if (NetworkManager.IsHost) HostTick();
+            else                       ClientTick();
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[FingerprintPoller] tick: {ex.Message}"); }
+    }
+
+    /// <summary>Classify the next slice of the directory: remember the
+    /// interactable, index its position, and (host) note whether it already
+    /// carries prints.</summary>
+    private static void ScanStep(Il2CppSystem.Collections.Generic.List<Interactable> dir, bool trackBearing)
+    {
+        int end = Math.Min(dir.Count, _scannedTo + SCAN_PER_TICK);
+        for (int i = _scannedTo; i < end; i++)
+        {
+            Interactable inter = null;
+            try { inter = dir[i]; } catch { }
+            _all.Add(inter);
+            if (inter == null) continue;
+            try { _allIndex.Add(i, inter.wPos); } catch { }
+            if (trackBearing)
+            {
+                object df = null;
+                try { df = inter.df; } catch { }
+                if (df != null) MarkBearing(i);
+            }
+        }
+        _scannedTo = end;
+    }
+
+    private static void MarkBearing(int dirIdx)
+    {
+        if (_bearingSet.Add(dirIdx)) _bearing.Add(dirIdx);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Host
+    // ════════════════════════════════════════════════════════════════════
+
+    private static void HostTick()
+    {
+        // Tier 1: everything near any player, every tick. Checks df directly,
+        // so an object that only now got its list is picked up here.
+        PollerAnchors.CollectNear(_allIndex, _anchors, _near, _nearSeen);
+        for (int k = 0; k < _near.Count; k++)
+        {
+            int d = _near[k];
+            if (d < 0 || d >= _all.Count) continue;
+            if (HostCheck(d)) MarkBearing(d);
+        }
+
+        // Tier 2: bounded sweep over the known print-bearing set.
+        int total = _bearing.Count;
+        int sweep = Math.Min(SWEEP_PER_TICK, total);
+        for (int n = 0; n < sweep; n++)
+        {
+            if (_sweepCursor >= total) _sweepCursor = 0;
+            int d = _bearing[_sweepCursor++];
+            if (_nearSeen.Contains(d)) continue;
+            HostCheck(d);
+        }
+    }
+
+    /// <summary>Emit a ZDO for every print added to directory entry
+    /// <paramref name="d"/> since we last looked. Returns true if the entry
+    /// carries a print list at all.</summary>
+    private static bool HostCheck(int d)
+    {
+        var inter = _all[d];
+        if (inter == null) return false;
+
+        Il2CppSystem.Collections.Generic.List<Interactable.DynamicFingerprint> prints = null;
+        try { prints = inter.df; } catch { }
+        if (prints == null) return false;
+
+        int interId;
+        int curCount;
+        try { interId = inter.id; curCount = prints.Count; }
+        catch { return true; }
+
+        if (!_lastCount.TryGetValue(interId, out int prev))
+        {
+            // First sight: record, don't replay. Prints that already existed
+            // are in every peer's world already (Save-Transfer ships them in
+            // the save), so emitting them would only duplicate.
+            _lastCount[interId] = curCount;
+            return true;
+        }
+        if (curCount <= prev)
+        {
+            if (curCount < prev) _lastCount[interId] = curCount;   // wiped / expired
+            return true;
+        }
+
+        for (int k = prev; k < curCount; k++)
+        {
+            Interactable.DynamicFingerprint fp = null;
+            try { fp = prints[k]; } catch { }
+            if (fp == null) continue;
+
+            int humanId = 0;
+            byte life = 0;
+            try { humanId = fp.id; } catch { }
+            try { life = (byte)fp.life; } catch { }
+            LogIdDiagnostic(interId, humanId);
+
+            // Composite SoD id: (interactableId << 16) | host-local sequence.
+            int compositeId = unchecked((interId << 16) | (int)(_seq++ & 0xffff));
+            var z = ZdoMan.GetOrCreateBySodId(ZdoTypeTag.Fingerprint, compositeId,
+                owner: ZdoMan.LocalPeerUid, persistent: true);
+            z.Set(ZdoKeys.InteractableId, interId);
+            z.Set(ZdoKeys.HumanId, humanId);
+            z.Set(ZdoKeys.Life, life);
+        }
+        _lastCount[interId] = curCount;
+        return true;
+    }
+
+    /// <summary>First few prints only: log the print's id and whether it names a
+    /// citizen, so a real session confirms <c>DynamicFingerprint.id</c> is the
+    /// owner's humanID — the reading the attribution fix relies on.</summary>
+    private static void LogIdDiagnostic(int interId, int humanId)
+    {
+        if (_idDiagnosticsLeft <= 0) return;
+        _idDiagnosticsLeft--;
+        bool isCitizen = false, isPlayer = false;
+        try { isCitizen = CityData.Instance?.citizenDictionary?.ContainsKey(humanId) ?? false; } catch { }
+        try { isPlayer = global::Player.Instance != null && global::Player.Instance.humanID == humanId; } catch { }
+        Plugin.Log.LogInfo(
+            $"[FingerprintPoller/Diag] new print on interactable {interId}: fp.id={humanId} " +
+            $"isCitizen={isCitizen} isHostPlayer={isPlayer}");
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Client
+    // ════════════════════════════════════════════════════════════════════
+
+    private static void ClientTick()
+    {
+        int me;
+        UnityEngine.Vector3 myPos;
+        try
+        {
+            var p = global::Player.Instance;
+            if (p == null) return;
+            me = p.humanID;
+            myPos = p.transform.position;
+        }
+        catch { return; }
+
+        _near.Clear();
+        _nearSeen.Clear();
+        _allIndex.Query(myPos, OWN_TOUCH_RADIUS_M, _near, _nearSeen);
+
+        for (int k = 0; k < _near.Count; k++)
+        {
+            int d = _near[k];
+            if (d < 0 || d >= _all.Count) continue;
+            var inter = _all[d];
+            if (inter == null) continue;
+
+            Il2CppSystem.Collections.Generic.List<Interactable.DynamicFingerprint> prints = null;
+            try { prints = inter.df; } catch { }
+            if (prints == null) continue;
+
+            int interId, curCount;
+            try { interId = inter.id; curCount = prints.Count; }
+            catch { continue; }
+
+            if (!_lastCount.TryGetValue(interId, out int prev))
+            {
+                _lastCount[interId] = curCount;
+                continue;
+            }
+            if (curCount <= prev)
+            {
+                if (curCount < prev) _lastCount[interId] = curCount;
+                continue;
+            }
+
+            for (int i = prev; i < curCount; i++)
+            {
+                Interactable.DynamicFingerprint fp = null;
+                try { fp = prints[i]; } catch { }
+                if (fp == null) continue;
+                int owner; byte life;
+                try { owner = fp.id; life = (byte)fp.life; } catch { continue; }
+
+                // Only OUR prints. Everything else in this world is either
+                // already the host's (it arrived through the ZDO) or local AI
+                // noise the host is authoritative over.
+                if (owner != me) continue;
+
+                // Host remaps our humanID to our twin and adds it to its world;
+                // it then comes back to us as a ZDO print attributed to the
+                // twin, which FingerprintResolver skips as our own echo.
+                try { SoDCoop.Sync.FingerprintSync.BroadcastAdd(interId, owner, life); }
+                catch (Exception ex) { Plugin.Log.LogWarning($"[FingerprintPoller] own print report: {ex.Message}"); }
+            }
+            _lastCount[interId] = curCount;
+        }
     }
 }

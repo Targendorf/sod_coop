@@ -128,7 +128,10 @@ public static class NpcDamagePoller
                 // ZdoEvents.NPC_DAMAGE_RICH instead of legacy NpcDamage packet.
                 if (ZdoFeatureFlags.UseZdoForEvents)
                 {
-                    try { ZdoEvents.SendNpcDamage(id, -1, delta, pos, Vector3.up, enableKill: cur <= 0f); }
+                    // healthAfter lets the receiver reconcile against the
+                    // absolute CurrentHealth the state sync also delivers,
+                    // instead of subtracting the hit a second time.
+                    try { ZdoEvents.SendNpcDamage(id, -1, delta, pos, Vector3.up, enableKill: cur <= 0f, healthAfter: cur); }
                     catch (Exception ex) { Plugin.Log.LogWarning($"[NpcDamagePoller] zdo: {ex.Message}"); }
                 }
                 else

@@ -33,6 +33,23 @@ public static class LightPoller
     private const int SWEEP_PER_TICK = 256;
     private static int _sweepCursor;
 
+    /// <summary>Directory entries classified per tick (one GetComponentInChildren
+    /// tree walk each, ~44 µs measured). 120/tick keeps a tick near 5 ms; a
+    /// 10 000-entry city is indexed within ~8 s of the first peer joining.</summary>
+    private const int SCAN_PER_TICK = 120;
+
+    /// <summary>Lights by position, so every light near a player is checked
+    /// every tick — see <see cref="StaticSpatialIndex"/>.</summary>
+    private static readonly StaticSpatialIndex _index = new();
+    private static readonly List<UnityEngine.Vector3> _anchors = new();
+    private static readonly List<int> _near = new();
+    private static readonly HashSet<int> _nearSeen = new();
+
+    /// <summary>Directory prefix already classified. <see cref="SwitchPoller"/>
+    /// only considers interactables below this, so it never takes an unscanned
+    /// light for a plain switch.</summary>
+    public static int ScannedTo => _scannedTo;
+
     /// <summary>O(1) "is this Interactable backed by a LightController?" lookup,
     /// shared with <see cref="WorldStateSync.IsLightInteractable"/> and
     /// <see cref="SwitchPoller"/>. Populated as a side-effect of the LightPoller's
@@ -53,23 +70,19 @@ public static class LightPoller
     /// switch state for them.</summary>
     public static void EnsureScannedThrough(int throughCount)
     {
+        // Retained for API compatibility only. SwitchPoller used to call this
+        // with the full directory count, which forced the ENTIRE light scan —
+        // thousands of tree walks — into whichever frame SwitchPoller happened
+        // to run in (143 ms on the 2026-07-30 host). It now reads ScannedTo and
+        // follows the bounded scan instead; this is capped the same way in case
+        // anything else ever calls it.
         if (throughCount <= _scannedTo) return;
         try
         {
             var dir = CityData.Instance?.interactableDirectory;
             if (dir == null) return;
-            int hard = System.Math.Min(throughCount, dir.Count);
-            for (int i = _scannedTo; i < hard; i++)
-            {
-                var inter = dir[i];
-                if (inter == null || inter.spawnedObject == null) continue;
-                LightController light = null;
-                try { light = inter.spawnedObject.GetComponentInChildren<LightController>(true); } catch { }
-                if (light == null) continue;
-                _lightIds.Add(inter.id);
-                _lightControllers.Add(light);
-                _lightInteractableIds.Add(inter.id);
-            }
+            int hard = System.Math.Min(System.Math.Min(throughCount, dir.Count), _scannedTo + SCAN_PER_TICK);
+            ScanRange(dir, _scannedTo, hard);
             _scannedTo = hard;
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[LightPoller] EnsureScannedThrough: {ex.Message}"); }
@@ -92,6 +105,7 @@ public static class LightPoller
         _lightInteractableIds.Clear();
         _scannedTo = 0;
         _sweepCursor = 0;
+        _index.Clear();
     }
 
     private static void Tick(float now)
@@ -113,62 +127,84 @@ public static class LightPoller
             var dir = CityData.Instance?.interactableDirectory;
             if (dir == null) return;
 
-            // Incrementally extend the cache for any newly-added interactables.
-            // SoD's directory grows by appending — earlier indices keep their
-            // identities, so resuming from `_scannedTo` is safe.
+            // в”Ђв”Ђ Bounded incremental scan в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+            // Each new interactable costs a GetComponentInChildren tree walk to
+            // learn whether it carries a LightController. The first tick after a
+            // peer joins used to walk the ENTIRE directory at once вЂ” ~10 000
+            // tree walks in one frame, 437 ms on the 2026-07-30 host. SoD's
+            // directory grows by appending, so resuming from _scannedTo in
+            // SCAN_PER_TICK slices is safe and spreads the warm-up over a few
+            // seconds. SwitchPoller only considers interactables below
+            // ScannedTo, so it can never mistake an unscanned light for a switch.
             if (dir.Count > _scannedTo)
             {
-                for (int i = _scannedTo; i < dir.Count; i++)
-                {
-                    var inter = dir[i];
-                    if (inter == null || inter.spawnedObject == null) continue;
-                    LightController light = null;
-                    try { light = inter.spawnedObject.GetComponentInChildren<LightController>(true); } catch { }
-                    if (light == null) continue;
-                    _lightIds.Add(inter.id);
-                    _lightControllers.Add(light);
-                    _lightInteractableIds.Add(inter.id);
-                }
-                _scannedTo = dir.Count;
+                int end = Math.Min(dir.Count, _scannedTo + SCAN_PER_TICK);
+                ScanRange(dir, _scannedTo, end);
+                _scannedTo = end;
             }
 
-            // ── Amortized reconciliation sweep ────────────────────────────
-            // Only SWEEP_PER_TICK lights per tick, wrapping around, instead of
-            // the whole cache. A city has thousands of lights and the old loop
-            // read a null check + isOn on every one at 10 Hz — the same class
-            // of per-tick IL2CPP cost that held pollers at 700-1600 ms/frame
-            // (playtest 2026-06-23).
-            //
-            // LightController.SetOn is Harmony-patched and broadcasts every
-            // switch the moment it happens, so this loop is reconciliation
-            // only: it exists to converge state a patch could have missed, for
-            // which full coverage every couple of seconds is ample.
+            // в”Ђв”Ђ Tier 1: every light near a player, every tick в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+            // LightController.SetOn is NOT patched (the attribute is commented
+            // out вЂ” lights toggle constantly under NPC schedules), so this
+            // poller is the only path; an earlier note here claimed otherwise.
+            // Lights in view of any player are checked at the full 10 Hz.
+            PollerAnchors.CollectNear(_index, _anchors, _near, _nearSeen);
+            for (int k = 0; k < _near.Count; k++) PushLight(_near[k]);
+
+            // в”Ђв”Ђ Tier 2: amortized sweep over the rest of the city в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+            // SWEEP_PER_TICK per tick, wrapping. Walking every light at 10 Hz
+            // was the class of per-tick IL2CPP cost that held pollers at
+            // 700-1600 ms/frame (playtest 2026-06-23); lights nobody can see
+            // converge within a couple of seconds.
             int lightSweep = Math.Min(SWEEP_PER_TICK, _lightControllers.Count);
             for (int n = 0; n < lightSweep; n++)
             {
                 if (_sweepCursor >= _lightControllers.Count) _sweepCursor = 0;
                 int i = _sweepCursor++;
-
-                var light = _lightControllers[i];
-                if (light == null) continue; // Unity destroyed — drop next tick.
-                int id = _lightIds[i];
-
-                Zdo z = ZdoMan.GetOrCreateBySodId(ZdoTypeTag.Light, id, owner: ZdoMan.LocalPeerUid, persistent: true);
-                // First time we see this Light, stamp its (static) world
-                // position onto the ZDO for sector-cull. Lights don't move,
-                // so we don't need to refresh per tick.
-                if (!z.HasHostPosition)
-                {
-                    try
-                    {
-                        var go = light.gameObject;
-                        if (go != null) ZdoMan.NotifyZdoPosition(z, go.transform.position);
-                    }
-                    catch { }
-                }
-                z.Set(ZdoKeys.On, light.isOn);
+                if (_nearSeen.Contains(i)) continue;   // tier 1 already did it
+                PushLight(i);
             }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[LightPoller] tick: {ex.Message}"); }
+    }
+
+    /// <summary>Classify directory entries [from, to): cache every light and
+    /// index it by position.</summary>
+    private static void ScanRange(Il2CppSystem.Collections.Generic.List<Interactable> dir, int from, int to)
+    {
+        for (int i = from; i < to; i++)
+        {
+            var inter = dir[i];
+            if (inter == null || inter.spawnedObject == null) continue;
+            LightController light = null;
+            try { light = inter.spawnedObject.GetComponentInChildren<LightController>(true); } catch { }
+            if (light == null) continue;
+            _lightIds.Add(inter.id);
+            _lightControllers.Add(light);
+            _lightInteractableIds.Add(inter.id);
+            try { _index.Add(_lightControllers.Count - 1, inter.wPos); } catch { }
+        }
+    }
+
+    private static void PushLight(int i)
+    {
+        if (i < 0 || i >= _lightControllers.Count) return;
+        var light = _lightControllers[i];
+        if (light == null) return; // Unity destroyed вЂ” drop next tick.
+        int id = _lightIds[i];
+
+        Zdo z = ZdoMan.GetOrCreateBySodId(ZdoTypeTag.Light, id, owner: ZdoMan.LocalPeerUid, persistent: true);
+        // First time we see this Light, stamp its (static) world position onto
+        // the ZDO for sector-cull. Lights don't move.
+        if (!z.HasHostPosition)
+        {
+            try
+            {
+                var go = light.gameObject;
+                if (go != null) ZdoMan.NotifyZdoPosition(z, go.transform.position);
+            }
+            catch { }
+        }
+        z.Set(ZdoKeys.On, light.isOn);
     }
 }

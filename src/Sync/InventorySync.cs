@@ -315,26 +315,37 @@ public static class InventorySync
     /// to the joiner (40K+ packets in a 30s session in real testing) and
     /// blows the LiteNetLib send queue.</para>
     /// </summary>
-    public static void BroadcastNewItemsSince(int snapshotCount)
+    /// <param name="maxItems">Upper bound on directory entries examined this
+    /// call. The directory can grow by thousands at once (world streaming,
+    /// case generation), and walking all of them in one call — two IL2CPP reads
+    /// each — cost a single 293 ms poller run on the 2026-07-30 host.</param>
+    /// <returns>The directory index examined up to (exclusive). Callers use it
+    /// as their next baseline so a capped walk resumes where it stopped instead
+    /// of skipping the entries it didn't reach.</returns>
+    public static int BroadcastNewItemsSince(int snapshotCount, int maxItems = int.MaxValue)
     {
-        if (!NetworkManager.IsConnected) return;
-        if (IsApplyingRemote) return;
+        if (!NetworkManager.IsConnected) return snapshotCount;
+        if (IsApplyingRemote) return snapshotCount;
 
+        int reached = snapshotCount;
         try
         {
             var dir = CityData.Instance?.interactableDirectory;
-            if (dir == null) return;
-            if (dir.Count <= snapshotCount) return;
+            if (dir == null) return snapshotCount;
+            int count = dir.Count;
+            if (count <= snapshotCount) return count;
 
             // Player extends Human, so the singleton itself doubles as the
             // local human reference. (`Player.Instance.human` doesn't exist
             // — there's no field, the class IS the Human.)
             global::Human me = null;
             try { me = global::Player.Instance; } catch { }
-            if (me == null) return; // No local human yet — skip until ready.
+            if (me == null) return snapshotCount; // No local human yet — retry from here later.
 
-            for (int i = snapshotCount; i < dir.Count; i++)
+            int end = maxItems >= count - snapshotCount ? count : snapshotCount + maxItems;
+            for (int i = snapshotCount; i < end; i++)
             {
+                reached = i + 1;
                 var item = dir[i];
                 if (item == null) continue;
 
@@ -357,6 +368,7 @@ public static class InventorySync
         {
             Plugin.Log.LogWarning($"InventorySync.BroadcastNewItemsSince: {ex.Message}");
         }
+        return reached;
     }
 
     private static bool IsLikelyThrown(Interactable item)
