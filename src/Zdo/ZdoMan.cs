@@ -133,6 +133,11 @@ public static class ZdoMan
     /// O(spatial) walk; otherwise PlayerPosition at 30 Hz × 2000 ZDOs =
     /// 60 K iterations/sec/peer when running.</summary>
     private const float CATCHUP_REEVAL_M = 50f;
+
+    /// <summary>Re-evaluate at least this often even when the peer stands
+    /// still — see the note in <see cref="EvaluatePeerCatchup"/>.</summary>
+    private const float CATCHUP_REEVAL_S = 2f;
+    private static readonly Dictionary<int, float> _lastCatchupAt = new();
     private const float CATCHUP_REEVAL_M_SQ = CATCHUP_REEVAL_M * CATCHUP_REEVAL_M;
 
     /// <summary>Called from <c>PlayerSync.OnRemotePlayerPosition</c> when a
@@ -140,29 +145,33 @@ public static class ZdoMan
     /// sector" and queues full-state resend for newly-visible ZDOs so the
     /// peer doesn't see stale state for entities they walked into.
     ///
-    /// <para>For dynamic-position ZDOs (Citizens) catch-up isn't strictly
-    /// required: their CitizenStatePoller stamps a fresh position every
-    /// tick, which marks the Pos key dirty whenever they move enough,
-    /// which the per-peer flush ships if they're now in range. The static-
-    /// position ZDOs (doors, lights, switches) are the ones that need
-    /// help — their state writes happen on interaction, not per tick, so
-    /// there's no natural "re-emit" loop for a peer entering their
-    /// vicinity.</para></summary>
+    /// <para>Citizens need it as much as doors: their position is stamped
+    /// with <see cref="NotifyZdoPosition"/>, which marks nothing dirty, so a
+    /// citizen moving into range brings no state with it. Hence the time-based
+    /// re-evaluation on top of the movement-based one.</para></summary>
     public static void EvaluatePeerCatchup(int peerId, UnityEngine.Vector3 newPeerPos)
     {
         if (!NetworkManager.IsHost) return;
         if (!NetworkManager.Players.TryGetValue(peerId, out var info) || info == null) return;
 
-        // Debounce: skip the diff if peer hasn't moved far enough to
-        // possibly cross a cull boundary.
+        // Debounce: skip the diff if the peer hasn't moved far enough to
+        // cross a cull boundary AND the last evaluation is recent. The time
+        // half matters: citizens move by themselves. A citizen whose state
+        // changed while out of range and then WALKED into range of a peer
+        // standing still was never caught up — its position is stamped with
+        // NotifyZdoPosition, which (despite an older note here) marks nothing
+        // dirty — so a stake-out saw everyone arrive with stale state.
+        float nowT = UnityEngine.Time.unscaledTime;
         if (info.HasCatchupBaseline)
         {
             float ddx = newPeerPos.x - info.LastCatchupPos.x;
             float ddz = newPeerPos.z - info.LastCatchupPos.z;
-            if (ddx * ddx + ddz * ddz < CATCHUP_REEVAL_M_SQ) return;
+            _lastCatchupAt.TryGetValue(peerId, out float lastAt);
+            if (ddx * ddx + ddz * ddz < CATCHUP_REEVAL_M_SQ && nowT - lastAt < CATCHUP_REEVAL_S) return;
         }
         info.LastCatchupPos = newPeerPos;
         info.HasCatchupBaseline = true;
+        _lastCatchupAt[peerId] = nowT;
 
         if (!_pendingResendForPeer.TryGetValue(peerId, out var pending))
         {
@@ -213,6 +222,7 @@ public static class ZdoMan
     {
         _inRangeForPeer.Remove(peerId);
         _pendingResendForPeer.Remove(peerId);
+        _lastCatchupAt.Remove(peerId);
         // Cursor lives on PlayerNetInfo.LastSeenRev; the caller
         // (NetworkManager.FinalisePendingDisconnects) removes the whole
         // slot, which drops the cursor with it. No work to do here.
