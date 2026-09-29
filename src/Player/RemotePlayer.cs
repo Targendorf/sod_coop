@@ -1063,6 +1063,11 @@ public class RemotePlayer : MonoBehaviour
     {
         _initialized = false;
         _buffer.Clear();
+        // The player left (or the session ended) while we were driving their
+        // twin. Hand the twin's root motion back — a twin released to the city
+        // later (character reset → UnfreezeTwin) would otherwise walk without
+        // it. The twin's transform is left where the player last stood.
+        try { _twinRootMotion.Restore(); } catch { }
     }
 }
 

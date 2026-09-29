@@ -165,6 +165,7 @@ public static class CitizenPositionSync
 
         try
         {
+            _livePosThisTick.Clear();
             var clients = NetworkManager.Clients;
             for (int ci = 0; ci < clients.Count; ci++)
             {
@@ -201,7 +202,7 @@ public static class CitizenPositionSync
                     // running it on its own AI; it discards these anyway.
                     if (SyncManager.WorldSync?.GetOwnerPlayerId(humanId) == peerId) continue;
 
-                    Vector3 p = z.HostPosition;
+                    Vector3 p = LivePosition(humanId, z);
                     _writer.Put(humanId);
                     _writer.Put(p.x);
                     _writer.Put(p.y);
@@ -219,6 +220,40 @@ public static class CitizenPositionSync
             }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenPositionSync] HostTick: {ex.Message}"); }
+    }
+
+    /// <summary>Positions read this tick, so a citizen near several peers is
+    /// read from the engine once.</summary>
+    private static readonly Dictionary<int, Vector3> _livePosThisTick = new();
+
+    /// <summary>The citizen's position NOW, read from its transform.
+    ///
+    /// <para>This used to send <c>z.HostPosition</c>, which CitizenStatePoller
+    /// stamps at 5 Hz — and less often whenever the poller budget defers it —
+    /// while this sync sends at 10 Hz. Every other packet repeated the previous
+    /// position, so the receiver interpolated stop / double-length jump / stop,
+    /// and the walk-speed it derives for the animator alternated between zero
+    /// and twice the real speed: legs flickering on every pedestrian near the
+    /// player. Only the tens of citizens actually being sent are read here, so
+    /// the extra interop is small. The fresh value is written back to the ZDO,
+    /// which keeps sector culling current for free.</para></summary>
+    private static Vector3 LivePosition(int humanId, SoDCoop.Zdo.Zdo z)
+    {
+        if (_livePosThisTick.TryGetValue(humanId, out var cached)) return cached;
+        Vector3 p = z.HostPosition;
+        try
+        {
+            var h = NetworkIdResolver.GetHuman(humanId);
+            var t = h != null ? h.transform : null;
+            if (t != null)
+            {
+                p = t.position;
+                ZdoMan.NotifyZdoPosition(z, p);
+            }
+        }
+        catch { /* fall back to the last stamped position */ }
+        _livePosThisTick[humanId] = p;
+        return p;
     }
 
     /// <summary>Reserve the count byte; patched in by <see cref="FlushPacket"/>
