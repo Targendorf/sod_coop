@@ -445,6 +445,8 @@ public static class EvidenceSync
             try
             {
                 ev.SetNote(keyList, text ?? "");
+                // Another peer's note — the poller must not send it back.
+                SoDCoop.Zdo.Pollers.EvidenceNotePoller.NotifyRemote(evId, ev);
                 Plugin.Log.LogDebug($"[EvidenceSync] applied SetNote evID=\"{evId}\" keys={dataKeys?.Length ?? 0}");
             }
             finally { IsApplyingRemote = false; }
@@ -518,6 +520,8 @@ public static class EvidenceSync
             try
             {
                 ev.AddDiscovery((Evidence.Discovery)discovery);
+                // Another peer's discovery — the poller must not send it back.
+                SoDCoop.Zdo.Pollers.EvidenceDiscoveryPoller.NotifyRemote(evId, ev);
                 Plugin.Log.LogDebug($"[EvidenceSync] applied discovery evID=\"{evId}\" disc={discovery}");
             }
             finally

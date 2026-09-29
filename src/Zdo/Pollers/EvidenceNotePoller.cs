@@ -35,7 +35,43 @@ public static class EvidenceNotePoller
     private const int SWEEP_PER_TICK = 64;
     private static int _sweepCursor;
 
-    public static void Register() => ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick, WarmupBaseline);
+    // Runs on every peer (2026-09-29): host-only, a client's own notes never
+    // left the client — the Evidence.SetNote patch it replaced is disabled.
+    public static void Register() => ZdoPollerHost.RegisterAnyPeer(NAME, 1f / TICK_HZ, Tick, WarmupBaseline);
+
+    /// <summary>True once the sweep has passed over the whole roster at least
+    /// once. Until then first sight of an evidence only records its notes: a
+    /// client's warmup runs on the main menu (no world, nothing seeded), so its
+    /// first pass would otherwise broadcast every seeded note in the city.</summary>
+    private static bool _primed;
+    private static int _primeSwept;
+
+    /// <summary>Another peer's note was just written to <paramref name="ev"/>:
+    /// take it as the baseline so it is not sent back.</summary>
+    public static void NotifyRemote(string evId, global::Evidence ev)
+    {
+        if (string.IsNullOrEmpty(evId) || ev == null) return;
+        try
+        {
+            var notes = ev.notes;
+            _baseline[evId] = (notes == null || notes.Count == 0) ? 0 : HashNotes(notes);
+        }
+        catch { }
+    }
+
+    public static void ResetPriming()
+    {
+        _primed = false;
+        _primeSwept = 0;
+    }
+
+    /// <summary>World unload: the baseline describes the world being torn down.</summary>
+    public static void ResetBaseline()
+    {
+        _baseline.Clear();
+        _sweepCursor = 0;
+        ResetPriming();
+    }
 
     /// <summary>Pre-seed <see cref="_baseline"/> with the current note hash
     /// for every evidence so the first real tick sees a clean baseline and
@@ -99,6 +135,12 @@ public static class EvidenceNotePoller
 
             int total = evidence.Count;
             int sweep = Math.Min(SWEEP_PER_TICK, total);
+            bool primingBatch = !_primed;
+            if (primingBatch)
+            {
+                _primeSwept += sweep;
+                if (_primeSwept >= total) _primed = true;
+            }
             for (int n = 0; n < sweep; n++)
             {
                 if (_sweepCursor >= total) _sweepCursor = 0;
@@ -116,9 +158,12 @@ public static class EvidenceNotePoller
                 }
 
                 int currentHash = HashNotes(notes);
-                if (_baseline.TryGetValue(evId, out var prev) && prev == currentHash)
+                bool known = _baseline.TryGetValue(evId, out var prev);
+                if (known && prev == currentHash)
                     continue;
                 _baseline[evId] = currentHash;
+                // First sight during the priming pass: record only.
+                if (!known && primingBatch) continue;
 
                 // Broadcast each note entry. EvidenceSync.BroadcastSetNote is
                 // idempotent at the receiver (text-equal check before SetNote

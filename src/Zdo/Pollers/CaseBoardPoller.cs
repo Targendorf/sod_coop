@@ -26,11 +26,13 @@ namespace SoDCoop.Zdo.Pollers;
 /// packed key string lets us store and compare List&lt;DataKey&gt; without
 /// marshalling Il2Cpp collections every diff.</para>
 ///
-/// <para>Limitation: client-side pin/unpin/move actions are NOT caught by
-/// this poller (host-only). Same constraint as the rest of the host-only
-/// state pollers — the host's view is authoritative; client-side mid-game
-/// case-board edits past the first save-load window won't sync. Late-join
-/// snapshot still delivers correct state.</para>
+/// <para><b>Runs on every peer (2026-09-29).</b> It was host-only, so a
+/// client's pins, moves and strings never left the client (the pin / move /
+/// string patches it replaced are disabled) — the "shared" board was the host's
+/// board plus whatever each client did privately. An edit applied from another
+/// peer re-baselines this poller (<see cref="RebaselineAfterRemote"/>) so it is
+/// not sent back; without that a card dragged on one machine would be
+/// dragged back by its own half-second-old echo.</para>
 /// </summary>
 public static class CaseBoardPoller
 {
@@ -93,7 +95,14 @@ public static class CaseBoardPoller
     private static readonly Dictionary<PinId, Case.CaseElement> _liveElements = new();
     private static bool _initialized;
 
-    public static void Register() => ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick);
+    public static void Register() => ZdoPollerHost.RegisterAnyPeer(NAME, 1f / TICK_HZ, Tick);
+
+    /// <summary>Another peer's edit was just applied to this board: take the
+    /// board as it is now as the baseline on the next tick, sending nothing.
+    /// A local edit made in the same half second is absorbed with it — rare
+    /// (both players editing the same moment) and harmless next to the
+    /// ping-pong it prevents.</summary>
+    public static void RebaselineAfterRemote() => _initialized = false;
 
     public static void ResetBaseline()
     {

@@ -73,6 +73,9 @@ public static class ZdoBootstrap
         ZdoResolverRegistry.Register(new VmailThreadResolver());
         VmailThreadPoller.Register();
         EvidenceNotePoller.Register();
+        // Discoveries, both directions (the AddDiscovery patch is disabled
+        // and nothing had replaced it).
+        EvidenceDiscoveryPoller.Register();
 
         // ── Phase F: Player state ──
         ZdoResolverRegistry.Register(new LocalPlayerResolver());

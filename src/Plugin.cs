@@ -397,7 +397,12 @@ public class Plugin : BasePlugin
             catch (System.Exception ex) { Log.LogWarning($"CitizenRosterCache.Reset: {ex.Message}"); }
             // Same lifetime rule as the citizen roster: the cached Evidence
             // references belong to the world being torn down.
-            try { SoDCoop.Zdo.Pollers.EvidenceRosterCache.Reset(); }
+            try
+            {
+                SoDCoop.Zdo.Pollers.EvidenceRosterCache.Reset();
+                SoDCoop.Zdo.Pollers.EvidenceDiscoveryPoller.ResetBaseline();
+                SoDCoop.Zdo.Pollers.EvidenceNotePoller.ResetBaseline();
+            }
             catch (System.Exception ex) { Log.LogWarning($"EvidenceRosterCache.Reset: {ex.Message}"); }
             // Applied-print dedup is per world: the next one has fresh ZDO ids.
             try { SoDCoop.Zdo.Resolvers.FingerprintResolver.Reset(); }

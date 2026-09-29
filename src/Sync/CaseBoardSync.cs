@@ -682,6 +682,7 @@ public static class CaseBoardSync
         var keysList = ToIl2CppList(dataKeys);
 
         IsApplyingRemote = true;
+        SoDCoop.Zdo.Pollers.CaseBoardPoller.RebaselineAfterRemote();
         try
         {
             var cpc = CasePanelController.Instance;
@@ -709,6 +710,7 @@ public static class CaseBoardSync
         var keysList = ToIl2CppList(dataKeys);
 
         IsApplyingRemote = true;
+        SoDCoop.Zdo.Pollers.CaseBoardPoller.RebaselineAfterRemote();
         try
         {
             var cpc = CasePanelController.Instance;
@@ -750,6 +752,7 @@ public static class CaseBoardSync
         if (pic == null) return;
 
         IsApplyingRemote = true;
+        SoDCoop.Zdo.Pollers.CaseBoardPoller.RebaselineAfterRemote();
         try
         {
             pic.SetPostion(position);
@@ -779,6 +782,7 @@ public static class CaseBoardSync
         }
 
         IsApplyingRemote = true;
+        SoDCoop.Zdo.Pollers.CaseBoardPoller.RebaselineAfterRemote();
         try
         {
             caseObj.AddNewStringColour(link, (InterfaceControls.EvidenceColours)colour);
@@ -805,6 +809,7 @@ public static class CaseBoardSync
         }
 
         IsApplyingRemote = true;
+        SoDCoop.Zdo.Pollers.CaseBoardPoller.RebaselineAfterRemote();
         try
         {
             caseObj.SetHidden(fact, p.IsHidden);
@@ -835,6 +840,7 @@ public static class CaseBoardSync
         if ((byte)caseObj.caseStatus == status) return;   // idempotent
 
         IsApplyingRemote = true;
+        SoDCoop.Zdo.Pollers.CaseBoardPoller.RebaselineAfterRemote();
         try
         {
             caseObj.SetStatus((Case.CaseStatus)status, cancelObjectives);
@@ -862,6 +868,7 @@ public static class CaseBoardSync
         if (q == null) return;
 
         IsApplyingRemote = true;
+        SoDCoop.Zdo.Pollers.CaseBoardPoller.RebaselineAfterRemote();
         try
         {
             q.SetProgress(p.Progress, p.ForceTrigger);
@@ -884,6 +891,7 @@ public static class CaseBoardSync
         if (caseObj.isSolved) return;        // idempotent
 
         IsApplyingRemote = true;
+        SoDCoop.Zdo.Pollers.CaseBoardPoller.RebaselineAfterRemote();
         try
         {
             caseObj.Resolve();
@@ -910,6 +918,7 @@ public static class CaseBoardSync
         }
 
         IsApplyingRemote = true;
+        SoDCoop.Zdo.Pollers.CaseBoardPoller.RebaselineAfterRemote();
         try
         {
             fact.SetCustomName(p.CustomName ?? "");
@@ -941,6 +950,7 @@ public static class CaseBoardSync
         }
 
         IsApplyingRemote = true;
+        SoDCoop.Zdo.Pollers.CaseBoardPoller.RebaselineAfterRemote();
         try
         {
             sc.RemoveCustomLink();
