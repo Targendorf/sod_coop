@@ -133,6 +133,7 @@ public static class SyncManager
         try { TwinManager.ReleaseLocallyFrozenTwins(); } catch { }
         try { WorldEditSync.Reset(); } catch { }
         try { NpcHitSync.Reset(); } catch { }
+        try { JoinSpawn.Reset(); } catch { }
         Plugin.Log.LogInfo($"SyncManager deactivated: {reason}");
     }
 

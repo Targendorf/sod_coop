@@ -259,6 +259,11 @@ public static class WorldAutoLoad
         IsBootstrappingWorld = false;
         Plugin.Log.LogInfo("[WorldAutoLoad] WorldReady — notifying host to send ZDO snapshot.");
 
+        // The load put the player wherever a new game / the save starts them —
+        // for a new game, the intro apartment. Move them to the host once the
+        // host's state is in.
+        JoinSpawn.Arm("join world loaded");
+
         // Catch up: any ZDOs that streamed in via real-time deltas while
         // we were on the loading screen had their resolver-apply skipped
         // (live SoD refs didn't exist yet). Now that the world is up, walk

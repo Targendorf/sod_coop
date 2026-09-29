@@ -1554,7 +1554,13 @@ public static class ZdoMan
             }
             Plugin.Log.LogInfo($"[ZdoMan] restored {count} ZDOs from snapshot.");
             if (!NetworkManager.IsHost && SoDCoop.Sync.WorldReadyGate.IsWorldReady)
+            {
                 ClientSynced = true;
+                // Covers the join that loaded nothing (Mode 2: already in this
+                // city, possibly across town from the host) as well as the
+                // loads, which also arm at WorldReady.
+                SoDCoop.Sync.JoinSpawn.Arm("host world synced");
+            }
         }
         catch (Exception ex)
         {

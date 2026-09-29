@@ -533,6 +533,9 @@ public class CoopUpdateRunner : MonoBehaviour
             // Every player's twin must have its AI off in THIS world too —
             // FreezeAllTwins only ever ran on the host. Throttled to 1 Hz inside.
             SoDCoop.Sync.TwinManager.FreezePeerTwinsLocally();
+            // Joiner: once loaded and synced, move the player next to the host
+            // (a new game starts them in the intro apartment). No-op when idle.
+            SoDCoop.Sync.JoinSpawn.Update();
             // Interpolate + apply host-authoritative citizen positions. Must run
             // every frame (not on the poller cadence) — it renders between 10 Hz
             // snapshots, same contract as RemotePlayer. No-op on the host and

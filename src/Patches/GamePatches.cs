@@ -2392,6 +2392,24 @@ public static class GamePatches
                 return true;
             }
         }
+
+        /// <summary>The original just placed the player at the chapter's start —
+        /// for a new game the intro apartment. On a joiner that is the wrong
+        /// place: re-arm the move to the host (this can run after WorldReady,
+        /// i.e. after an earlier arm already fired).</summary>
+        [HarmonyPostfix]
+        public static void Postfix()
+        {
+            try
+            {
+                if (IsJoinerSuppressingIntro())
+                    SoDCoop.Sync.JoinSpawn.Arm("chapter start placed the player");
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Log.LogWarning($"ChapterIntro.OnGameStart postfix: {ex.Message}");
+            }
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
