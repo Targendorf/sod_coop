@@ -39,6 +39,9 @@ public static class ZdoPollerHost
         /// entry so both kinds can live in ONE scheduling list — see the
         /// starvation note on <see cref="Tick"/>.</summary>
         public bool HostOnly;
+        /// <summary>Runs while the world is still in its post-load init grace
+        /// (and SyncGate is closed). See <see cref="ExemptFromInitGrace"/>.</summary>
+        public bool DuringInitGrace;
 
         // ── Per-poller cost accounting (rolled up every 10 s) ────────────
         public double SumMs;
@@ -112,6 +115,24 @@ public static class ZdoPollerHost
     /// Used by <see cref="Pollers.LocalPlayerPoller"/> — each peer captures
     /// their own <c>Player.Instance</c> state into their own
     /// <see cref="ZdoTypeTag.LocalPlayer"/> ZDO.</summary>
+    /// <summary>Let the named poller run during the post-load init grace.
+    ///
+    /// <para><b>Why:</b> the grace exists so the scripted burst SoD runs after
+    /// a load (evidence naming, vmail generation, seeded notes) isn't
+    /// broadcast as player activity — it matters to the pollers that diff
+    /// evidence, vmail and interactable-directory growth. It was applied to
+    /// EVERY poller, including the one that sends the player's own position:
+    /// for the first 30 s after any load a joiner stood frozen at its spawn
+    /// on the host's screen, the host sent it no citizen positions (it needs
+    /// the peer's position), and doors it opened were later reverted. Pollers
+    /// that only ever diff against a first-sight baseline are safe during the
+    /// burst and are exempted.</para></summary>
+    public static void ExemptFromInitGrace(string name)
+    {
+        for (int i = 0; i < _schedule.Count; i++)
+            if (_schedule[i].Name == name) _schedule[i].DuringInitGrace = true;
+    }
+
     public static void RegisterAnyPeer(string name, float intervalSeconds, PollerCallback cb, WarmupCallback warmup = null)
     {
         if (cb == null) return;
@@ -129,8 +150,9 @@ public static class ZdoPollerHost
             return;
         }
         if (!WorldReadyGate.IsWorldReady) return;
-        if (WorldReadyGate.IsInInitGrace) return;
-        if (!SyncGate.IsOpen) return;
+        // Init grace / closed SyncGate hold back all but the exempt pollers
+        // (see ExemptFromInitGrace).
+        bool graceOnly = WorldReadyGate.IsInInitGrace || !SyncGate.IsOpen;
         // A client polls nothing until it is in the host's world — see
         // ZdoMan.ClientSynced (joining from inside one's own game).
         if (!NetworkManager.IsHost && !ZdoMan.ClientSynced) return;
@@ -142,7 +164,10 @@ public static class ZdoPollerHost
         // etc.) treats this tick as "everything is fresh dirty" and floods
         // the channel with 20k+ events for state the snapshot already
         // delivered authoritatively.
-        if (!_hadPeers)
+        // Warmups seed baselines and must see the world AFTER the init burst
+        // (that is what the grace is for), so they wait for it to end; only the
+        // exempt pollers — none of which has a warmup — run meanwhile.
+        if (!_hadPeers && !graceOnly)
         {
             _hadPeers = true;
             int warmedAny  = 0;
@@ -195,6 +220,7 @@ public static class ZdoPollerHost
             {
                 var p = _schedule[i];
                 if (p.HostOnly && !isHost) continue;
+                if (graceOnly && !p.DuringInitGrace) continue;
                 float overdue = now - p.NextAt;
                 if (overdue < 0f) continue;             // not due yet
                 if (overdue > bestOverdue) { bestOverdue = overdue; pick = p; }
@@ -214,6 +240,7 @@ public static class ZdoPollerHost
                 {
                     var p = _schedule[i];
                     if (p.HostOnly && !isHost) continue;
+                    if (graceOnly && !p.DuringInitGrace) continue;
                     if (now >= p.NextAt) p.Skips++;
                 }
                 break;

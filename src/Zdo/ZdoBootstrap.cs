@@ -149,6 +149,16 @@ public static class ZdoBootstrap
         PollerHealthCheck.RegisterProbe(MurderDiscoveryPoller.NAME,     MurderDiscoveryPoller.ProbeBody);
         PollerHealthCheck.RegisterProbe(HeldItemPoller.NAME,            HeldItemPoller.ProbeBody);
 
+        // Pollers that only ever diff against a first-sight baseline, and must
+        // not sit out the 30 s post-load grace: the player's own position,
+        // citizen positions (host) and the client's interest report, and the
+        // client's world edits / hits.
+        ZdoPollerHost.ExemptFromInitGrace(LocalPlayerPoller.NAME);
+        ZdoPollerHost.ExemptFromInitGrace(SoDCoop.Sync.CitizenPositionSync.POLLER_NAME);
+        ZdoPollerHost.ExemptFromInitGrace(SoDCoop.Sync.CitizenPositionSync.INTEREST_POLLER_NAME);
+        ZdoPollerHost.ExemptFromInitGrace(SoDCoop.Sync.WorldEditSync.POLLER_NAME);
+        ZdoPollerHost.ExemptFromInitGrace(SoDCoop.Sync.NpcHitSync.POLLER_NAME);
+
         Plugin.Log.LogInfo("[ZdoBootstrap] resolvers + pollers + events registered.");
     }
 }
