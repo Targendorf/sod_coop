@@ -21,7 +21,7 @@ public class HostPanel : CoopPanelBase
     // Identity label + Start/Stop/Invite + direct-IP section (label +
     // port + button) + status + back = ~10 rows. Scrollable keeps the
     // direct-IP section reachable on smaller panels / larger fonts.
-    protected override float PanelHeight => 620f;
+    protected override float PanelHeight => 760f;
     protected override bool  ScrollableBody => true;
 
     private Text       _identityLabel;
@@ -36,6 +36,13 @@ public class HostPanel : CoopPanelBase
     {
         WrappedBodyLabel(L.Get("host.tagline"),
             CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelMuted);
+        Spacer(8f);
+
+        // Step-by-step for the host and what to tell friends — the join is
+        // automatic, but only if nobody fights it (a friend who generates or
+        // loads a city themselves, or runs another mod version).
+        WrappedBodyLabel(L.Get("host.howto"),
+            CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader, TextAnchor.UpperLeft);
         Spacer(8f);
 
         BodyLabel(L.Get("host.label.playingAs"), CoopMenuTheme.FontSizeSmall, CoopMenuTheme.LabelHeader, TextAnchor.MiddleLeft);

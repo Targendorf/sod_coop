@@ -1836,23 +1836,34 @@ public static class NetworkManager
             info.ClientGuid = guid;
             peer.ClientGuid = guid;
 
-            // Mode 2 (connect-with-pre-loaded-world): joiner advertises that
-            // it already has the city loaded. If our seed matches, we skip
-            // the WorldDescriptor send and the 60s SoD generation flow
-            // (avoiding tutorial-replay + 484m teleport burst). If seeds
-            // mismatch, reject with a guidance message — running Mode 2
-            // against the wrong world would diverge state badly. If the
-            // joiner sends false (or the field is absent — pre-v2 bug
-            // or third-party tooling), fall through to Mode 1 / legacy.
+            // Read the whole bootstrap first — the Mode 2 decision below
+            // depends on the trailing capability flag.
             bool joinerWorldAlreadyLoaded = false;
+            string joinerSeed = "";
+            string joinerShareCode = "";
             try { if (reader.AvailableBytes >= 1) joinerWorldAlreadyLoaded = reader.GetBool(); } catch { }
             if (joinerWorldAlreadyLoaded)
             {
-                string joinerSeed = "";
-                string joinerShareCode = "";
                 try { joinerSeed = reader.GetString(); } catch { }
                 try { joinerShareCode = reader.GetString(); } catch { }
+            }
+            // Save-Transfer capability, then the client's city files (so the
+            // host ships its city only to a joiner that lacks it).
+            try { if (reader.AvailableBytes >= 1) info.SupportsSaveTransfer = reader.GetBool(); }
+            catch { /* mixed-version client — leave SupportsSaveTransfer=false */ }
+            info.KnownCityFiles = SoDCoop.Sync.SaveTransfer.ReadKnownCityFiles(reader);
 
+            bool willShipWorld = info.SupportsSaveTransfer
+                && CoopSettings.WorldBootstrap?.Value == WorldBootstrapMode.SaveTransfer;
+
+            // Mode 2 (connect-with-pre-loaded-world): the joiner is already in
+            // a city. Same seed → it may keep that city if no save can be
+            // shipped. Different seed → with Save-Transfer the joiner simply
+            // loads our world over its own (the same in-game load a live
+            // re-sync does), so there is nothing to refuse. Only without
+            // Save-Transfer is a mismatch fatal.
+            if (joinerWorldAlreadyLoaded)
+            {
                 string hostSeed = "";
                 try { hostSeed = global::CityData.Instance?.seed ?? ""; } catch { }
 
@@ -1861,14 +1872,19 @@ public static class NetworkManager
                     Plugin.Log.LogWarning(
                         $"[NetworkManager] joiner reports Mode 2 world-loaded but host has no CityData yet — " +
                         $"falling through to Mode 1.");
-                    // info.SkipAutoLoad stays false → legacy path runs.
                 }
                 else if (string.Equals(joinerSeed, hostSeed, StringComparison.Ordinal))
                 {
                     info.SkipAutoLoad = true;
                     Plugin.Log.LogInfo(
-                        $"[NetworkManager] Mode 2 accepted for {peer.DisplayName}: " +
-                        $"seed='{joinerSeed}' matches host — skipping WorldDescriptor send.");
+                        $"[NetworkManager] {peer.DisplayName} is already in our city (seed '{joinerSeed}')" +
+                        (willShipWorld ? " — shipping our world anyway: their copy is their own save, not ours." : " — Mode 2."));
+                }
+                else if (willShipWorld)
+                {
+                    Plugin.Log.LogInfo(
+                        $"[NetworkManager] {peer.DisplayName} is in another city (seed '{joinerSeed}', ours '{hostSeed}') — " +
+                        "they will load our world over it via Save-Transfer.");
                 }
                 else
                 {
@@ -1903,18 +1919,6 @@ public static class NetworkManager
                     return;
                 }
             }
-
-            // Trailing capability flag: the client advertised Save-Transfer
-            // support (host ships its save file, client loads via LoadGame).
-            // Older clients that don't write this field are detected via the
-            // AvailableBytes guard and default to false → host falls back to
-            // share-code (Mode 1) automatically. Read AFTER the Mode 2 block
-            // because it's the last field in the bootstrap packet.
-            try { if (reader.AvailableBytes >= 1) info.SupportsSaveTransfer = reader.GetBool(); }
-            catch { /* mixed-version client — leave SupportsSaveTransfer=false */ }
-            // After it: the city files the client already has, so Save-Transfer
-            // ships the host's city only to a joiner that lacks it.
-            info.KnownCityFiles = SoDCoop.Sync.SaveTransfer.ReadKnownCityFiles(reader);
 
             // Reconnect path: same clientGuid is in the grace window. Restore
             // the existing slot, swap in the new SteamPeer reference, send a

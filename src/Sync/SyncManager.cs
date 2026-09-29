@@ -126,6 +126,12 @@ public static class SyncManager
         // departed client had claimed paused for good, and a client carried
         // stale claimed ids into its next world.
         try { WorldSync?.OnSessionEnded(); } catch { }
+        // Client: we are no longer in the host's world — client pollers stop
+        // until the next session's snapshot — and the twins we froze in this
+        // world go back to their lives.
+        try { SoDCoop.Zdo.ZdoMan.MarkClientUnsynced(); } catch { }
+        try { TwinManager.ReleaseLocallyFrozenTwins(); } catch { }
+        try { WorldEditSync.Reset(); } catch { }
         Plugin.Log.LogInfo($"SyncManager deactivated: {reason}");
     }
 

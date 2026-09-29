@@ -78,10 +78,18 @@ public static class WorldAutoLoad
             // check anyway.
             if (WorldReadyGate.IsWorldReady)
             {
+                // The share-code path regenerates a city from the main menu
+                // and cannot run from inside a game. Staying connected here
+                // would leave us in our own world with the host waiting for a
+                // ClientWorldReady that never comes — leave with a reason
+                // instead. (Normally the host ships its save, which CAN be
+                // loaded in-game; this is only the fallback when it couldn't.)
                 Plugin.Log.LogWarning(
-                    "[WorldAutoLoad] joiner is already in a city — auto-load skipped. " +
-                    "Hand-shake will continue but world state may not match the host.");
+                    "[WorldAutoLoad] the host sent a share-code but this game is already in a city — " +
+                    "return to the main menu and join again.");
                 IsBootstrappingWorld = false;
+                SaveTransfer.RequestLeave("the host could not send its save; joining from inside a game needs it — " +
+                                          "return to the main menu and join again.");
                 return;
             }
 

@@ -318,6 +318,31 @@ public static class TwinManager
 
     private static float _nextPeerTwinFreezeAt;
     private static readonly HashSet<int> _loggedLocalFreeze = new();
+    private static readonly HashSet<int> _locallyFrozen = new();
+
+    /// <summary>Client, session end: give the twins this machine froze their
+    /// AI back, so a player who stays in the world after leaving doesn't find
+    /// frozen citizens standing about.</summary>
+    public static void ReleaseLocallyFrozenTwins()
+    {
+        if (_locallyFrozen.Count == 0) return;
+        try
+        {
+            var dict = global::CityData.Instance?.citizenDictionary;
+            if (dict != null)
+            {
+                foreach (int id in _locallyFrozen)
+                {
+                    if (!dict.TryGetValue(id, out var human) || human == null) continue;
+                    var ai = human.ai;
+                    if (ai != null && !ai.enabled) ai.enabled = true;
+                }
+            }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[TwinManager] ReleaseLocallyFrozenTwins: {ex.Message}"); }
+        _locallyFrozen.Clear();
+        _loggedLocalFreeze.Clear();
+    }
 
     /// <summary>Keep every player's twin frozen in THIS machine's world, on
     /// every peer — not only on the host.
@@ -359,6 +384,9 @@ public static class TwinManager
                 var ai = human.ai;
                 if (ai == null || !ai.enabled) continue;
                 ai.enabled = false;
+                // The host's own freeze (FreezeAllTwins) is permanent by
+                // design; what a CLIENT froze is undone when it leaves.
+                if (!SoDCoop.Network.NetworkManager.IsHost) _locallyFrozen.Add(id);
                 if (_loggedLocalFreeze.Add(id))
                     Plugin.Log.LogInfo($"[TwinManager] froze twin #{id} ({kv.Value.PlayerName}) in this machine's world.");
             }

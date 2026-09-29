@@ -37,6 +37,7 @@ public class LobbyPanel : CoopPanelBase
     private Text _hostCity;
     private Text _hostTime;
     private Text _hostPlayers;
+    private Text _joinProgress;
     private Button _disconnectBtn;
     private Button _resetBtn;
     private Text   _resetStatus;
@@ -56,6 +57,8 @@ public class LobbyPanel : CoopPanelBase
         _hostCity    = BodyLabel("",          CoopMenuTheme.FontSizeBody,   CoopMenuTheme.LabelMuted);
         _hostTime    = BodyLabel("",          CoopMenuTheme.FontSizeSmall,  CoopMenuTheme.LabelMuted);
         _hostPlayers = BodyLabel("",          CoopMenuTheme.FontSizeSmall,  CoopMenuTheme.LabelMuted);
+        Spacer(6f);
+        _joinProgress = WrappedBodyLabel("", CoopMenuTheme.FontSizeBody, CoopMenuTheme.LabelOk);
 
         Spacer(40f);
 
@@ -120,7 +123,16 @@ public class LobbyPanel : CoopPanelBase
             _hostCity.text    = TryCityName();
             _hostTime.text    = "";
             _hostPlayers.text = $"Connected peers: {NetworkManager.Players?.Count ?? 0}";
+            if (_joinProgress != null) _joinProgress.text = "";
             return;
+        }
+
+        // Client view — where we are in getting into the host's world.
+        if (_joinProgress != null)
+        {
+            var (text, done) = DescribeJoinProgress();
+            _joinProgress.text  = text;
+            _joinProgress.color = done ? CoopMenuTheme.LabelOk : CoopMenuTheme.LabelWarn;
         }
 
         // Client view — show host's broadcasted status.
@@ -161,6 +173,28 @@ public class LobbyPanel : CoopPanelBase
             _hostTime.text   = "";
             _hostPlayers.text = "";
         }
+    }
+
+    /// <summary>The join pipeline as the client sees it: the host capturing,
+    /// the city file and save arriving, SoD loading, the live state arriving.</summary>
+    private static (string text, bool done) DescribeJoinProgress()
+    {
+        switch (SaveTransfer.Stage)
+        {
+            case SaveTransfer.ClientStage.ReceivingCity:
+                return (L.Get("lobby.join.city", Mathf.RoundToInt(SaveTransfer.StageProgress * 100f),
+                              (SaveTransfer.StageBytes / 1048576f).ToString("F1")), false);
+            case SaveTransfer.ClientStage.ReceivingSave:
+                return (L.Get("lobby.join.save", Mathf.RoundToInt(SaveTransfer.StageProgress * 100f),
+                              (SaveTransfer.StageBytes / 1048576f).ToString("F1")), false);
+            case SaveTransfer.ClientStage.Loading:
+                return (L.Get("lobby.join.loading"), false);
+        }
+        if (WorldAutoLoad.IsBootstrappingWorld) return (L.Get("lobby.join.generating"), false);
+        if (SoDCoop.Zdo.ZdoMan.ClientSynced)   return (L.Get("lobby.join.done"), true);
+        if (WorldReadyGate.IsWorldReady && WorldAutoLoad.JoinedSessionActive)
+            return (L.Get("lobby.join.syncing"), false);
+        return (L.Get("lobby.join.waitingHost"), false);
     }
 
     private string DescribeLocalPhase()

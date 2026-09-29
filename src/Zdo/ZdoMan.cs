@@ -325,8 +325,23 @@ public static class ZdoMan
         }
     }
 
+    /// <summary>Client: true once the host's snapshot has been applied to the
+    /// world we are in now — i.e. we are in the HOST's world, not our own.
+    /// Cleared with the registry (world unload / load) and on disconnect.
+    ///
+    /// <para>Gates every client-side poller. A player who connects while in
+    /// their own game keeps playing that world for the seconds it takes the
+    /// host to capture and ship its save; without the gate the client pollers
+    /// ran against that foreign world and reported its doors, switches,
+    /// prints and items to the host by id — where the same ids name
+    /// different objects.</para></summary>
+    public static bool ClientSynced { get; private set; }
+
+    public static void MarkClientUnsynced() => ClientSynced = false;
+
     public static void Clear()
     {
+        ClientSynced = false;
         _byId.Clear();
         _byType.Clear();
         _bySodIdInt.Clear();
@@ -1509,6 +1524,8 @@ public static class ZdoMan
                     EnqueueResolverApply(z);
             }
             Plugin.Log.LogInfo($"[ZdoMan] restored {count} ZDOs from snapshot.");
+            if (!NetworkManager.IsHost && SoDCoop.Sync.WorldReadyGate.IsWorldReady)
+                ClientSynced = true;
         }
         catch (Exception ex)
         {

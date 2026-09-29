@@ -125,11 +125,36 @@ public static class SaveTransfer
     private static byte _expectedKind;
     private static string _expectedName;
 
+    // ── Client-side join progress (read by the lobby panel) ───────────────
+
+    public enum ClientStage { None, ReceivingCity, ReceivingSave, Loading }
+
+    /// <summary>Where this client is in receiving and loading the host's
+    /// world. <see cref="ClientStage.None"/> outside a join/re-sync.</summary>
+    public static ClientStage Stage { get; private set; }
+
+    /// <summary>0..1 for the receiving stages.</summary>
+    public static float StageProgress { get; private set; }
+
+    /// <summary>Size in bytes of the file being received.</summary>
+    public static int StageBytes { get; private set; }
+
+    /// <summary>A load of the host's world that has not finished after this
+    /// long has failed (a slow machine takes ~2 min).</summary>
+    private const float LOAD_TIMEOUT_S = 300f;
+    private static float _loadStartedAt = -1f;
+    private static bool _sawUnsyncedSinceLoad;
+
     /// <summary>Set when this client declined a live re-sync. Acted on from
     /// <see cref="PumpPendingTransfers"/> rather than inside the packet handler
     /// that discovers it, so the disconnect never tears the transport down
     /// in the middle of its own receive loop.</summary>
     private static string _pendingDisconnectReason;
+
+    /// <summary>Client: leave the session on the next frame with
+    /// <paramref name="reason"/> in the log. For join paths that discover,
+    /// inside a packet handler, that no world is coming.</summary>
+    public static void RequestLeave(string reason) => _pendingDisconnectReason = reason;
 
     // ════════════════════════════════════════════════════════════════════
     // Host side
@@ -609,6 +634,29 @@ public static class SaveTransfer
             try { NetworkManager.Disconnect(); } catch (Exception ex) { Plugin.Log.LogWarning($"[SaveTransfer] disconnect: {ex.Message}"); }
         }
 
+        // Client: finish or time out the load of the host's world. During an
+        // in-game join or re-sync the OLD world is still up — and still
+        // "synced" — until SoD unloads it, so "done" means synced again AFTER
+        // having been unsynced.
+        if (Stage == ClientStage.Loading && _loadStartedAt >= 0f)
+        {
+            float t = UnityEngine.Time.unscaledTime - _loadStartedAt;
+            if (!SoDCoop.Zdo.ZdoMan.ClientSynced) _sawUnsyncedSinceLoad = true;
+            if (_sawUnsyncedSinceLoad && SoDCoop.Zdo.ZdoMan.ClientSynced)
+            {
+                Plugin.Log.LogInfo($"[SaveTransfer] in the host's world and synced, {t:F0} s after starting the load.");
+                Stage = ClientStage.None;
+                _loadStartedAt = -1f;
+            }
+            else if (t > LOAD_TIMEOUT_S)
+            {
+                Stage = ClientStage.None;
+                _loadStartedAt = -1f;
+                _pendingDisconnectReason =
+                    $"the host's world was not loaded and synced within {LOAD_TIMEOUT_S:F0} s — the load failed or the host stopped answering.";
+            }
+        }
+
         // Poll the capture FIRST and before the empty-queue early-out — while a
         // capture is in flight there is by definition nothing in _pending yet.
         PumpForcedCapture();
@@ -772,6 +820,9 @@ public static class SaveTransfer
             _expectedKind = kind;
             _expectedName = name;
             _transferStartedAt = UnityEngine.Time.unscaledTime;
+            Stage = kind == KIND_CITY ? ClientStage.ReceivingCity : ClientStage.ReceivingSave;
+            StageProgress = 0f;
+            StageBytes = (int)saveSize;
 
             Plugin.Log.LogInfo(
                 $"[SaveTransfer] header received: '{name}' ({(kind == KIND_CITY ? "city file" : "save")}) " +
@@ -818,6 +869,7 @@ public static class SaveTransfer
             _reassemblyStream.Write(r.RawData, r.Position, chunkLen);
             r.SkipBytes(chunkLen);
             _receivedChunks++;
+            StageProgress = (float)_reassemblyStream.Length / _expectedSaveSize;
 
             // Byte-driven completion: a duplicate or short chunk must never
             // finalise a partial buffer.
@@ -930,8 +982,9 @@ public static class SaveTransfer
             // Staying connected in the world the host just abandoned is a
             // guaranteed desync, so declining means leaving.
             _pendingDisconnectReason =
-                "the host loaded a different save and SaveTransferAutoAccept=false declined the re-sync " +
+                "SaveTransferAutoAccept=false declined loading the host's world over the one you are in " +
                 $"(the host's world is in '{destPath}' if you want it).";
+            Stage = ClientStage.None;
             return;
         }
 
@@ -942,7 +995,17 @@ public static class SaveTransfer
         }
 
         if (!StartSaveLoad(destPath))
+        {
+            // Connected but with no world coming: say so and leave, rather
+            // than sit on the main menu while the host waits for us forever.
+            _pendingDisconnectReason = "could not start loading the host's world — see the errors above.";
+            Stage = ClientStage.None;
             return;
+        }
+        Stage = ClientStage.Loading;
+        StageProgress = 0f;
+        _loadStartedAt = UnityEngine.Time.unscaledTime;
+        _sawUnsyncedSinceLoad = false;
 
         Plugin.Log.LogInfo($"[SaveTransfer] LoadGame() invoked ({(isResync ? "live re-sync" : "first join")}) — SoD's loading screen should take over.");
 
@@ -1058,6 +1121,9 @@ public static class SaveTransfer
     {
         _pending.Clear();
         ResetReassembly();
+        Stage = ClientStage.None;
+        StageProgress = 0f;
+        _loadStartedAt = -1f;
         LastPushedSha256Hex = null;
         // Abandon any in-flight capture. The Task itself keeps running inside
         // SoD — we just stop waiting on it.

@@ -131,6 +131,9 @@ public static class ZdoPollerHost
         if (!WorldReadyGate.IsWorldReady) return;
         if (WorldReadyGate.IsInInitGrace) return;
         if (!SyncGate.IsOpen) return;
+        // A client polls nothing until it is in the host's world — see
+        // ZdoMan.ClientSynced (joining from inside one's own game).
+        if (!NetworkManager.IsHost && !ZdoMan.ClientSynced) return;
 
         // First tick after HasPeers transitioned false→true: warm up every
         // poller's baseline against the current SoD world state, then skip

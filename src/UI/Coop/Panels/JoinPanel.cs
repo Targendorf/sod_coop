@@ -69,15 +69,8 @@ public class JoinPanel : CoopPanelBase
     {
         try
         {
-            if (WorldReadyGate.IsWorldReady)
-            {
-                if (_statusLabel != null)
-                {
-                    _statusLabel.text = L.Get("join.warn.haveSave");
-                    _statusLabel.color = CoopMenuTheme.LabelWarn;
-                }
-                return;
-            }
+            // Joining from inside a game is allowed: the host's world is
+            // loaded over it (the same in-game load a live re-sync does).
             string ip = _ipField?.text?.Trim() ?? "";
             int port = 7777;
             if (_portField != null && !string.IsNullOrEmpty(_portField.text))
@@ -97,8 +90,9 @@ public class JoinPanel : CoopPanelBase
             {
                 if (_statusLabel != null)
                 {
-                    _statusLabel.text = $"Dialing {ip}:{port}...";
-                    _statusLabel.color = CoopMenuTheme.LabelOk;
+                    _statusLabel.text = $"Dialing {ip}:{port}..." +
+                        (WorldReadyGate.IsWorldReady ? "\n" + L.Get("join.warn.haveSave") : "");
+                    _statusLabel.color = WorldReadyGate.IsWorldReady ? CoopMenuTheme.LabelWarn : CoopMenuTheme.LabelOk;
                 }
             }
             else if (_statusLabel != null)
@@ -117,21 +111,11 @@ public class JoinPanel : CoopPanelBase
     {
         try
         {
-            if (WorldReadyGate.IsWorldReady)
-            {
-                if (_statusLabel != null)
-                {
-                    _statusLabel.text = L.Get("join.warn.haveSave");
-                    _statusLabel.color = CoopMenuTheme.LabelWarn;
-                }
-                Plugin.Log.LogWarning("[JoinPanel] Open Friends rejected: client has a save loaded; must be on main menu.");
-                return;
-            }
-
             if (SteamLobby.OpenFriendsOverlay() && _statusLabel != null)
             {
-                _statusLabel.text = L.Get("join.status.overlayOpened");
-                _statusLabel.color = CoopMenuTheme.LabelOk;
+                bool inGame = WorldReadyGate.IsWorldReady;
+                _statusLabel.text = L.Get("join.status.overlayOpened") + (inGame ? "\n" + L.Get("join.warn.haveSave") : "");
+                _statusLabel.color = inGame ? CoopMenuTheme.LabelWarn : CoopMenuTheme.LabelOk;
             }
         }
         catch (System.Exception ex)
@@ -176,6 +160,6 @@ public class JoinPanel : CoopPanelBase
         }
 
         if (_openFriendsBtn != null)
-            _openFriendsBtn.interactable = !inGame;
+            _openFriendsBtn.interactable = true;
     }
 }

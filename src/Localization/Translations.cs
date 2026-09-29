@@ -43,6 +43,7 @@ public static class Translations
         // Host panel
         ["host.title"]              = "Host a session",
         ["host.tagline"]            = "You'll host as your existing in-game character — friends join via Steam invite. Make sure you're in-game before starting.",
+        ["host.howto"]              = "How to host:\n  1. Load your save or start a game — you must be in the city.\n  2. Press Start Hosting, then Invite friends (or they click \"Join Game\" on your Steam profile).\n  3. Friends stay on the MAIN MENU. The mod sends them your world (save + city file) and loads it — they don't generate or load anything themselves.\n  4. Every join makes a quick save of your world (a short freeze). Your own saves are never touched.\n  5. Everyone needs the same mod version.\n  6. Loading another save while friends are connected reloads it for them too.",
         ["host.label.playingAs"]    = "Playing as",
         ["host.identity.reading"]   = "(reading from game…)",
         ["host.identity.noSave"]    = "⚠ Load a save first — your character is read from the loaded game.",
@@ -60,12 +61,12 @@ public static class Translations
         // Join panel
         ["join.title"]              = "Join a session",
         ["join.tagline"]            = "Joining is invite-only via Steam. Wait for an invite from a friend, or click \"Join Game\" on their profile in the Steam overlay.",
-        ["join.instructions"]       = "How to join:\n  1. Friend hosts a session.\n  2. They invite you via the Steam overlay (or you click \"Join Game\" on their profile).\n  3. The mod auto-joins their lobby — no IP, port, or code needed.",
+        ["join.instructions"]       = "How to join:\n  1. Friend hosts a session and invites you via Steam (or you click \"Join Game\" on their profile).\n  2. Stay on the main menu. The mod downloads the host's world — save and city — and loads it for you.\n  3. Don't generate or load a city yourself. First time on this host? You'll be asked for a character name.",
         ["join.btn.openFriends"]    = "🪟  Open Steam Friends",
         ["join.btn.back"]           = "←  Back",
         ["join.status.overlayOpened"] = "Steam Friends overlay opened.",
-        ["join.warn.haveSave"]      = "⚠ Return to the main menu first — you can't join while your own save is loaded.",
-        ["join.state.haveSave"]     = "⚠ A save is currently loaded. Return to the main menu before joining.",
+        ["join.warn.haveSave"]      = "⚠ Your loaded game will be replaced by the host's world — save it first if you want to keep it.",
+        ["join.state.haveSave"]     = "⚠ A save is loaded. Joining replaces it with the host's world (unsaved progress is lost). Joining from the main menu is faster.",
         ["join.state.menuOk"]       = "✔ On main menu — ready to join.",
 
         // Lobby panel
@@ -73,6 +74,13 @@ public static class Translations
         ["lobby.btn.disconnect"]     = "Disconnect",
         ["lobby.btn.close"]          = "Close (stay connected)",
         ["lobby.btn.settings"]       = "⚙  Settings",
+        ["lobby.join.waitingHost"]  = "⏳ The host is saving its world for you…",
+        ["lobby.join.city"]         = "⬇ Receiving the host's city: {0}% ({1} MB)",
+        ["lobby.join.save"]         = "⬇ Receiving the host's world: {0}% ({1} MB)",
+        ["lobby.join.loading"]      = "⏳ Loading the host's world…",
+        ["lobby.join.generating"]   = "⏳ Generating the host's city from its share-code…",
+        ["lobby.join.syncing"]      = "⏳ In the world — receiving live state…",
+        ["lobby.join.done"]         = "✔ You are in the host's world.",
         ["lobby.label.players"]      = "Players:",
         ["lobby.label.you"]          = "(you)",
         ["lobby.label.host"]         = "[HOST]",
@@ -263,6 +271,7 @@ public static class Translations
         // Host panel
         ["host.title"]              = "Создать сессию",
         ["host.tagline"]            = "Ты будешь хостить под своим внутриигровым персонажем. Имя берётся из загруженного сейва — убедись что зашёл в игру до старта.",
+        ["host.howto"]              = "Как хостить:\n  1. Загрузи сейв или начни игру — нужно быть в городе.\n  2. Нажми «Начать хостинг», затем «Пригласить друзей» (или друг жмёт «Присоединиться к игре» в твоём профиле Steam).\n  3. Друзья остаются в ГЛАВНОМ МЕНЮ. Мод сам передаст им твой мир (сейв + файл города) и загрузит его — генерировать или загружать ничего не нужно.\n  4. При каждом входе игрока мир быстро сохраняется (короткий фриз). Твои сохранения не трогаются.\n  5. У всех должна быть одна версия мода.\n  6. Если загрузишь другой сейв при подключённых друзьях — он перезагрузится и у них.",
         ["host.label.playingAs"]    = "Играешь как",
         ["host.identity.reading"]   = "(читаем из игры…)",
         ["host.identity.noSave"]    = "⚠ Сначала загрузи сейв — имя берётся из загруженной игры.",
@@ -282,7 +291,8 @@ public static class Translations
 
         // Join panel
         ["join.title"]              = "Подключиться",
-        ["join.tagline"]            = "Вставь код подключения, либо введи IP и порт хоста вручную. Если это твой первый заход в мир хоста — после подключения попросят создать персонажа.",
+        ["join.tagline"]            = "Вход только по приглашению Steam: дождись приглашения от друга или нажми «Присоединиться к игре» в его профиле в оверлее Steam.",
+        ["join.instructions"]       = "Как подключиться:\n  1. Друг запускает хостинг и приглашает тебя через Steam (или ты жмёшь «Присоединиться к игре» в его профиле).\n  2. Оставайся в главном меню. Мод сам скачает мир хоста — сейв и город — и загрузит его.\n  3. Ничего не генерируй и не загружай сам. Впервые у этого хоста — попросят имя персонажа.",
         ["join.label.code"]         = "Код подключения (рекомендуется)",
         ["join.code.placeholder"]   = "Вставь сюда код",
         ["join.label.manual"]       = "Или ввести вручную",
@@ -294,8 +304,8 @@ public static class Translations
         ["join.status.codeOk"]      = "Код OK — {0}:{1}",
         ["join.status.codeOkCity"]  = "Код OK — {0}:{1} (город: {2})",
         ["join.status.codeBad"]     = "Код не распознан — введи вручную.",
-        ["join.warn.haveSave"]      = "⚠ Сначала вернись в главное меню — нельзя подключиться когда загружен свой сейв.",
-        ["join.state.haveSave"]     = "⚠ Сейчас загружен сейв. Вернись в главное меню перед подключением.",
+        ["join.warn.haveSave"]      = "⚠ Загруженная игра будет заменена миром хоста — сохранись, если хочешь её оставить.",
+        ["join.state.haveSave"]     = "⚠ Загружен сейв. При подключении он заменится миром хоста (несохранённый прогресс пропадёт). Из главного меню подключение быстрее.",
         ["join.state.menuOk"]       = "✔ В главном меню — готов к подключению.",
 
         // Lobby panel
@@ -303,6 +313,13 @@ public static class Translations
         ["lobby.btn.disconnect"]     = "Отключиться",
         ["lobby.btn.close"]          = "Закрыть (остаться в сессии)",
         ["lobby.btn.settings"]       = "⚙  Настройки",
+        ["lobby.join.waitingHost"]  = "⏳ Хост сохраняет для тебя свой мир…",
+        ["lobby.join.city"]         = "⬇ Получаем город хоста: {0}% ({1} МБ)",
+        ["lobby.join.save"]         = "⬇ Получаем мир хоста: {0}% ({1} МБ)",
+        ["lobby.join.loading"]      = "⏳ Загружаем мир хоста…",
+        ["lobby.join.generating"]   = "⏳ Генерируем город хоста по коду…",
+        ["lobby.join.syncing"]      = "⏳ Мир загружен — получаем текущее состояние…",
+        ["lobby.join.done"]         = "✔ Ты в мире хоста.",
         ["lobby.label.players"]      = "Игроки:",
         ["lobby.label.you"]          = "(ты)",
         ["lobby.label.host"]         = "[ХОСТ]",
@@ -460,6 +477,7 @@ public static class Translations
         // Host panel
         ["host.title"]              = "Створити сесію",
         ["host.tagline"]            = "Ти будеш хостити під своїм внутрішньоігровим персонажем. Ім’я береться із завантаженого збереження — переконайся що зайшов у гру до старту.",
+        ["host.howto"]              = "Як хостити:\n  1. Завантаж збереження або почни гру — треба бути в місті.\n  2. Натисни «Почати хостинг», потім «Запросити друзів» (або друг тисне «Приєднатися до гри» у твоєму профілі Steam).\n  3. Друзі залишаються в ГОЛОВНОМУ МЕНЮ. Мод сам передасть їм твій світ (збереження + файл міста) і завантажить його — нічого генерувати чи завантажувати не треба.\n  4. Під час кожного входу гравця світ швидко зберігається (короткий фриз). Твої збереження не чіпаються.\n  5. У всіх має бути однакова версія мода.\n  6. Якщо завантажиш інше збереження при підключених друзях — воно перезавантажиться і в них.",
         ["host.label.playingAs"]    = "Граєш як",
         ["host.identity.reading"]   = "(читаємо з гри…)",
         ["host.identity.noSave"]    = "⚠ Спочатку завантаж збереження — ім’я береться із завантаженої гри.",
@@ -479,7 +497,8 @@ public static class Translations
 
         // Join panel
         ["join.title"]              = "Підключитися",
-        ["join.tagline"]            = "Встав код підключення, або введи IP і порт хоста вручну. Якщо це твій перший захід у світ хоста — після підключення попросять створити персонажа.",
+        ["join.tagline"]            = "Вхід лише за запрошенням Steam: дочекайся запрошення від друга або натисни «Приєднатися до гри» в його профілі в оверлеї Steam.",
+        ["join.instructions"]       = "Як підключитися:\n  1. Друг запускає хостинг і запрошує тебе через Steam (або ти тиснеш «Приєднатися до гри» в його профілі).\n  2. Залишайся в головному меню. Мод сам завантажить світ хоста — збереження і місто.\n  3. Нічого не генеруй і не завантажуй сам. Вперше в цього хоста — попросять ім'я персонажа.",
         ["join.label.code"]         = "Код підключення (рекомендовано)",
         ["join.code.placeholder"]   = "Встав сюди код",
         ["join.label.manual"]       = "Або ввести вручну",
@@ -491,8 +510,8 @@ public static class Translations
         ["join.status.codeOk"]      = "Код OK — {0}:{1}",
         ["join.status.codeOkCity"]  = "Код OK — {0}:{1} (місто: {2})",
         ["join.status.codeBad"]     = "Код не розпізнано — введи вручну.",
-        ["join.warn.haveSave"]      = "⚠ Спочатку повернися в головне меню — не можна підключитися коли завантажене своє збереження.",
-        ["join.state.haveSave"]     = "⚠ Зараз завантажене збереження. Повернися в головне меню перед підключенням.",
+        ["join.warn.haveSave"]      = "⚠ Завантажена гра буде замінена світом хоста — збережися, якщо хочеш її залишити.",
+        ["join.state.haveSave"]     = "⚠ Завантажене збереження. Під час підключення його замінить світ хоста (незбережений прогрес зникне). З головного меню підключення швидше.",
         ["join.state.menuOk"]       = "✔ У головному меню — готовий до підключення.",
 
         // Lobby panel
@@ -500,6 +519,13 @@ public static class Translations
         ["lobby.btn.disconnect"]     = "Відключитися",
         ["lobby.btn.close"]          = "Закрити (залишитись у сесії)",
         ["lobby.btn.settings"]       = "⚙  Налаштування",
+        ["lobby.join.waitingHost"]  = "⏳ Хост зберігає для тебе свій світ…",
+        ["lobby.join.city"]         = "⬇ Отримуємо місто хоста: {0}% ({1} МБ)",
+        ["lobby.join.save"]         = "⬇ Отримуємо світ хоста: {0}% ({1} МБ)",
+        ["lobby.join.loading"]      = "⏳ Завантажуємо світ хоста…",
+        ["lobby.join.generating"]   = "⏳ Генеруємо місто хоста за кодом…",
+        ["lobby.join.syncing"]      = "⏳ Світ завантажено — отримуємо поточний стан…",
+        ["lobby.join.done"]         = "✔ Ти у світі хоста.",
         ["lobby.label.players"]      = "Гравці:",
         ["lobby.label.you"]          = "(ти)",
         ["lobby.label.host"]         = "[ХОСТ]",
@@ -588,8 +614,8 @@ public static class Translations
         ["join.status.codeOk"]      = "Código OK — {0}:{1}",
         ["join.status.codeOkCity"]  = "Código OK — {0}:{1} (ciudad: {2})",
         ["join.status.codeBad"]     = "Código no reconocido — introduce manualmente.",
-        ["join.warn.haveSave"]      = "⚠ Vuelve al menú principal — no puedes unirte mientras tu propia partida esté cargada.",
-        ["join.state.haveSave"]     = "⚠ Hay una partida cargada. Vuelve al menú principal antes de unirte.",
+        ["join.warn.haveSave"]      = "⚠ Tu partida cargada será reemplazada por el mundo del host — guarda antes si quieres conservarla.",
+        ["join.state.haveSave"]     = "⚠ Hay una partida cargada. Al unirte se reemplaza por el mundo del host (se pierde lo no guardado). Desde el menú principal es más rápido.",
         ["join.state.menuOk"]       = "✔ En el menú principal — listo para unirse.",
 
         // Lobby panel
@@ -685,8 +711,8 @@ public static class Translations
         ["join.status.codeOk"]      = "代码有效 — {0}:{1}",
         ["join.status.codeOkCity"]  = "代码有效 — {0}:{1} (城市:{2})",
         ["join.status.codeBad"]     = "无法识别代码——请手动输入。",
-        ["join.warn.haveSave"]      = "⚠ 请先返回主菜单——已加载自己的存档时无法加入。",
-        ["join.state.haveSave"]     = "⚠ 当前已加载存档。加入前请返回主菜单。",
+        ["join.warn.haveSave"]      = "⚠ 当前已加载的游戏将被主机的世界替换——如需保留请先存档。",
+        ["join.state.haveSave"]     = "⚠ 当前已加载存档。加入后将被主机的世界替换(未保存的进度会丢失)。从主菜单加入更快。",
         ["join.state.menuOk"]       = "✔ 在主菜单——可以加入。",
 
         // Lobby panel
@@ -782,8 +808,8 @@ public static class Translations
         ["join.status.codeOk"]      = "Code OK — {0}:{1}",
         ["join.status.codeOkCity"]  = "Code OK — {0}:{1} (ville : {2})",
         ["join.status.codeBad"]     = "Code non reconnu — saisis manuellement.",
-        ["join.warn.haveSave"]      = "⚠ Retourne d'abord au menu principal — impossible de rejoindre tant que ta sauvegarde est chargée.",
-        ["join.state.haveSave"]     = "⚠ Une sauvegarde est chargée. Retourne au menu principal avant de rejoindre.",
+        ["join.warn.haveSave"]      = "⚠ Ta partie chargée sera remplacée par le monde de l'hôte — sauvegarde d'abord si tu veux la garder.",
+        ["join.state.haveSave"]     = "⚠ Une sauvegarde est chargée. Rejoindre la remplace par le monde de l'hôte (la progression non sauvegardée est perdue). Depuis le menu principal, c'est plus rapide.",
         ["join.state.menuOk"]       = "✔ Au menu principal — prêt à rejoindre.",
 
         // Lobby panel
@@ -879,8 +905,8 @@ public static class Translations
         ["join.status.codeOk"]      = "Codice OK — {0}:{1}",
         ["join.status.codeOkCity"]  = "Codice OK — {0}:{1} (città: {2})",
         ["join.status.codeBad"]     = "Codice non riconosciuto — inseriscilo manualmente.",
-        ["join.warn.haveSave"]      = "⚠ Torna prima al menu principale — non puoi unirti mentre il tuo salvataggio è caricato.",
-        ["join.state.haveSave"]     = "⚠ È caricato un salvataggio. Torna al menu principale prima di unirti.",
+        ["join.warn.haveSave"]      = "⚠ La partita caricata verrà sostituita dal mondo dell'host — salva prima se vuoi tenerla.",
+        ["join.state.haveSave"]     = "⚠ È caricato un salvataggio. Unendoti verrà sostituito dal mondo dell'host (i progressi non salvati si perdono). Dal menu principale è più veloce.",
         ["join.state.menuOk"]       = "✔ Nel menu principale — pronto per unirti.",
 
         // Lobby panel
@@ -976,8 +1002,8 @@ public static class Translations
         ["join.status.codeOk"]      = "Code OK — {0}:{1}",
         ["join.status.codeOkCity"]  = "Code OK — {0}:{1} (Stadt: {2})",
         ["join.status.codeBad"]     = "Code nicht erkannt — manuell einfügen.",
-        ["join.warn.haveSave"]      = "⚠ Geh zuerst zurück ins Hauptmenü — beitreten geht nicht, solange dein eigener Spielstand geladen ist.",
-        ["join.state.haveSave"]     = "⚠ Es ist gerade ein Spielstand geladen. Geh ins Hauptmenü, bevor du beitrittst.",
+        ["join.warn.haveSave"]      = "⚠ Dein geladenes Spiel wird durch die Welt des Hosts ersetzt — speichere vorher, wenn du es behalten willst.",
+        ["join.state.haveSave"]     = "⚠ Ein Spielstand ist geladen. Beim Beitreten wird er durch die Welt des Hosts ersetzt (Ungespeichertes geht verloren). Aus dem Hauptmenü geht es schneller.",
         ["join.state.menuOk"]       = "✔ Im Hauptmenü — bereit zum Beitreten.",
 
         // Lobby panel
