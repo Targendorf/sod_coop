@@ -17,6 +17,11 @@ public static class ZdoKeys
     public static readonly int Rot       = Hash32.Of("__rot");
     public static readonly int SodId     = Hash32.Of("__sodId");
     public static readonly int SodIdStr  = Hash32.Of("__sodIdStr");
+    /// <summary>Sender's <c>Time.unscaledTime</c> when <see cref="Pos"/> /
+    /// <see cref="Rot"/> were sampled. Receivers interpolate on it instead of
+    /// on arrival time (see <c>RemoteClock</c>), and use it to tell a new
+    /// transform sample from a delta that only carried other keys.</summary>
+    public static readonly int PosTime   = Hash32.Of("__posTime");
 
     // ── Doors / lights / switches ──
     public static readonly int Closed     = Hash32.Of("closed");

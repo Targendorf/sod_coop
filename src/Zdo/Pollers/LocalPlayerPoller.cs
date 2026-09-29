@@ -34,10 +34,8 @@ namespace SoDCoop.Zdo.Pollers;
 public static class LocalPlayerPoller
 {
     /// <summary>Fast-lane tick rate — drives position / rotation / velocity
-    /// writes into the LocalPlayer ZDO. 15 Hz matches the high end of the
-    /// legacy PlayerSync adaptive rate (walk 15 Hz, run 30 Hz) while staying
-    /// well under the ZDO flush rate (10 Hz) so a position write always has
-    /// a flush ready to ship it. Position is the only fast-lane field;
+    /// writes into the LocalPlayer ZDO, one fresh sample per 20 Hz delta
+    /// flush. Position is the only fast-lane field;
     /// everything else rides the <see cref="SLOW_EVERY"/> cadence to avoid
     /// re-dirtying the ZDO 15× per second with continuously-decaying vitals
     /// / cosmetic flags that only need ~1 Hz.</summary>
@@ -67,6 +65,15 @@ public static class LocalPlayerPoller
     private static UnityEngine.Vector3 _lastPos;
     private static bool _posBaselined;
 
+    /// <summary>Facing deadband: a mouse twitch under half a degree is not
+    /// worth a sample (Quaternion equality is exact, so without this every
+    /// sub-pixel look re-dirtied the ZDO).</summary>
+    private const float ROTATION_DEADBAND_DEG = 0.5f;
+    private static UnityEngine.Quaternion _lastRot = UnityEngine.Quaternion.identity;
+    private static bool _wasMoving;
+    private static float _lastTickAt;
+    private static UnityEngine.Vector3 _lastTickPos;
+
     /// <summary>Last-tick set of address IDs the local player owned. Diff
     /// against current tick → diff = (added → SendApartmentOwned add,
     /// removed → SendApartmentOwned remove). Each peer broadcasts its own
@@ -83,6 +90,8 @@ public static class LocalPlayerPoller
         _apartmentsInitialized = false;
         _lastApartmentIds.Clear();
         _posBaselined = false;
+        _wasMoving = false;
+        _lastTickAt = 0f;
         _tickCounter = 0;
     }
 
@@ -140,7 +149,8 @@ public static class LocalPlayerPoller
             // leave the other side showing the wrong held item, a torch that
             // was switched off, a crouch that ended, or a "downed" pose, until
             // that value happened to change again.
-            if (now >= _nextKeyframeAt)
+            bool keyframe = now >= _nextKeyframeAt;
+            if (keyframe)
             {
                 _nextKeyframeAt = now + KEYFRAME_INTERVAL_S;
                 z.Touch(ZdoKeys.Held);
@@ -153,7 +163,7 @@ public static class LocalPlayerPoller
                 z.Touch(ZdoKeys.CurrentHealth);
             }
 
-            // ── FAST LANE (every tick, 15 Hz) ─────────────────────────────
+            // ── FAST LANE (every tick, 20 Hz) ─────────────────────────────
             // Position / rotation / velocity — the only fields that need
             // high-rate sync for smooth remote-player interpolation. A
             // position deadband swallows sub-cm camera-bob jitter so the ZDO
@@ -172,6 +182,9 @@ public static class LocalPlayerPoller
                 pos = (anchor != null) ? anchor.position : p.transform.position;
             }
             catch { pos = p.transform.position; }
+            UnityEngine.Quaternion rot = UnityEngine.Quaternion.identity;
+            try { rot = p.transform.rotation; } catch { }
+
             bool posMoved = true;
             if (_posBaselined)
             {
@@ -180,26 +193,61 @@ public static class LocalPlayerPoller
                 float dy = pos.y - _lastPos.y;
                 posMoved = (dx * dx + dy * dy + dz * dz) >= POSITION_DEADBAND_SQ;
             }
-            if (posMoved)
+            bool turned = !_posBaselined
+                || UnityEngine.Quaternion.Angle(rot, _lastRot) >= ROTATION_DEADBAND_DEG;
+
+            // Velocity over the real time since the previous TICK. The fixed
+            // 1/TICK_HZ it used assumed the poller runs on the dot; it runs on
+            // the first frame past its due time and the budget can defer it,
+            // so the speed it reported swung with the frame rate.
+            float tickDt = _lastTickAt > 0f ? now - _lastTickAt : 0f;
+            UnityEngine.Vector3 vel = (tickDt > 0.005f && tickDt < 0.5f)
+                ? (pos - _lastTickPos) / tickDt
+                : UnityEngine.Vector3.zero;
+            _lastTickAt = now;
+            _lastTickPos = pos;
+
+            if (posMoved || turned)
             {
+                // One transform SAMPLE: position, facing, velocity and the time
+                // it was taken, all in the same delta. Receivers interpolate on
+                // PosTime — see RemoteClock — and ignore deltas that don't
+                // advance it (a keyframe of the held item used to be replayed as
+                // a fresh position and made the body hitch once a second).
                 try { z.Set(ZdoKeys.Pos, pos); } catch { }
-                // Velocity from position delta over the fast-tick interval.
-                // Receiver's RemotePlayer uses it for short-term extrapolation
-                // when a position delta is late — without it, a stalled packet
-                // freezes the avatar in place instead of coasting.
-                float dt = 1f / TICK_HZ;
-                if (_posBaselined)
-                {
-                    UnityEngine.Vector3 vel = new Vector3(
-                        (pos.x - _lastPos.x) / dt,
-                        (pos.y - _lastPos.y) / dt,
-                        (pos.z - _lastPos.z) / dt);
-                    try { z.Set(ZdoKeys.Velocity, vel); } catch { }
-                }
+                try { z.Set(ZdoKeys.Rot, rot); } catch { }
+                try { z.Set(ZdoKeys.Velocity, posMoved ? vel : UnityEngine.Vector3.zero); } catch { }
+                try { z.Set(ZdoKeys.PosTime, now); } catch { }
                 _lastPos = pos;
+                _lastRot = rot;
                 _posBaselined = true;
+                _wasMoving = posMoved;
             }
-            try { z.Set(ZdoKeys.Rot, p.transform.rotation); } catch { }
+            else if (_wasMoving)
+            {
+                // Just stopped. Without an explicit "standing here, speed 0"
+                // sample the last one on the wire still carried walking
+                // velocity: the receiver extrapolated it for its full window
+                // (0.25 s) and then stayed there — a stopped player stood
+                // 0.4 m (walk) to 1.2 m (sprint) ahead of where they really
+                // were, often inside a door or wall, until they moved again.
+                try { z.Set(ZdoKeys.Pos, pos); } catch { }
+                try { z.Set(ZdoKeys.Velocity, UnityEngine.Vector3.zero); } catch { }
+                try { z.Set(ZdoKeys.PosTime, now); } catch { }
+                _lastPos = pos;
+                _wasMoving = false;
+            }
+            else if (keyframe && _posBaselined)
+            {
+                // Standing still: re-send where we stand, as a fresh sample,
+                // once a second. The stop sample above rides the unreliable
+                // channel; if it was lost the receiver kept extrapolating the
+                // last walking one, and nothing else would ever correct it.
+                try { z.Touch(ZdoKeys.Pos); } catch { }
+                try { z.Touch(ZdoKeys.Rot); } catch { }
+                try { z.Set(ZdoKeys.Velocity, UnityEngine.Vector3.zero); } catch { }
+                try { z.Set(ZdoKeys.PosTime, now); } catch { }
+            }
 
             // Slow lane fires once every SLOW_EVERY fast ticks (~1 Hz).
             bool slowTick = (_tickCounter++ % SLOW_EVERY) == 0;
@@ -207,7 +255,7 @@ public static class LocalPlayerPoller
 
             // ── SLOW LANE (~1 Hz) ─────────────────────────────────────────
             // Vitals (continuous-decay floats), discrete state flags, activity,
-            // trespass — all gameplay/HUD fields that don't need 15 Hz.
+            // trespass — all gameplay/HUD fields that don't need 20 Hz.
 
             try { z.Set(ZdoKeys.Nourishment, p.nourishment); } catch { }
             try { z.Set(ZdoKeys.Hydration,   p.hydration);   } catch { }

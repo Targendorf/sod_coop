@@ -246,7 +246,13 @@ public static class ZdoPollerHost
                 break;
             }
 
-            pick.NextAt = now + pick.Interval;
+            // Advance from the DUE time, not from now. `now + Interval` lost
+            // the part of a frame the poller ran late every time: a 20 Hz
+            // poller at 60 FPS fired every 3 or 4 frames — ~16 Hz, with 50/67
+            // ms gaps. Far behind (deferred by the budget, a hitch) it resyncs
+            // instead of bursting to catch up.
+            float next = pick.NextAt + pick.Interval;
+            pick.NextAt = next > now ? next : now + pick.Interval * 0.5f;
             _pollSw.Restart();
             try { pick.Callback(now); }
             catch (Exception ex) { Plugin.Log.LogError($"[ZdoPollerHost] {pick.Name}: {ex.Message}"); }

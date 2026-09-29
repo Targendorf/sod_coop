@@ -54,6 +54,21 @@ public class RemotePlayer : MonoBehaviour
     /// <see cref="SmoothingFactor"/>.</summary>
     private const float ROTATION_LERP_SPEED = 18f;
 
+    // ── Sender-timed playback (peers that stamp ZdoKeys.PosTime) ──────────
+    // INTERP_DELAY above only applies to arrival-timed playback. Timed
+    // playback renders behind the sender's clock by an adaptive delay —
+    // RemoteClock — bounded here.
+
+    /// <summary>Nominal spacing of the sender's samples (20 Hz poller, a little
+    /// slack for frames it runs late).</summary>
+    private const float SAMPLE_GAP_S = 0.06f;
+    private const float MIN_DELAY_S  = 0.08f;
+    private const float MAX_DELAY_S  = 0.35f;
+
+    /// <summary>Smoothing rate for the speed fed to the walk animation — the
+    /// raw per-pair speed steps at every sample.</summary>
+    private const float ANIM_SPEED_RATE = 12f;
+
     #endregion
 
     #region Snapshot Buffer
@@ -62,6 +77,9 @@ public class RemotePlayer : MonoBehaviour
     {
         public ushort Sequence;
         public float ArrivalTime;   // local Time.unscaledTime when packet was received
+        /// <summary>Playback timeline: the sender's sample time when the peer
+        /// stamps one, otherwise <see cref="ArrivalTime"/>.</summary>
+        public float T;
         public Vector3 Position;
         public Quaternion Rotation;
         public Vector3 Velocity;
@@ -72,6 +90,13 @@ public class RemotePlayer : MonoBehaviour
     private readonly List<Snapshot> _buffer = new(BUFFER_CAPACITY);
     private ushort _newestSeq;
     private bool _hasReceivedAny;
+
+    /// <summary>True while the buffer is on the sender's clock.</summary>
+    private bool _timed;
+    private float _newestT;
+    private readonly SoDCoop.Sync.RemoteClock _clock = new();
+    /// <summary>Smoothed playback speed, m/s — drives the walk cycle.</summary>
+    private float _renderSpeed;
 
     #endregion
 
@@ -196,10 +221,13 @@ public class RemotePlayer : MonoBehaviour
             }
         }
 
+        if (_timed) { _buffer.Clear(); _clock.Reset(); _timed = false; }
+
         var snap = new Snapshot
         {
             Sequence    = packet.Sequence,
             ArrivalTime = Time.unscaledTime,
+            T           = Time.unscaledTime,
             Position    = packet.Position,
             Rotation    = packet.Rotation,
             Velocity    = packet.Velocity,
@@ -234,17 +262,42 @@ public class RemotePlayer : MonoBehaviour
     /// as the receive path for any old <c>PlayerPosition</c> packets.</para>
     /// </summary>
     [HideFromIl2Cpp]
-    public void ApplyPositionFromZdo(Vector3 position, Quaternion rotation, uint dataRevision, Vector3 velocity, byte flags)
+    public void ApplyPositionFromZdo(Vector3 position, Quaternion rotation, uint dataRevision, Vector3 velocity, byte flags,
+                                     float sampleTime = float.NaN)
     {
-        // Out-of-order guard mirrors ApplyPositionState. ushort diff handles
-        // wraparound at 65k; DataRevision is monotonic per-ZDO so the diff
-        // semantics carry over (a lower revision means a stale delta).
-        ushort seq = (ushort)dataRevision;
-        if (_hasReceivedAny)
+        float now = Time.unscaledTime;
+        bool timed = !float.IsNaN(sampleTime);
+
+        // Switching timeline (peer started/stopped stamping) invalidates what
+        // is buffered — the two kinds of time are not comparable.
+        if (_hasReceivedAny && timed != _timed) { _buffer.Clear(); _clock.Reset(); }
+
+        if (timed)
         {
-            short diff = (short)(seq - _newestSeq);
-            if (diff <= 0) return;
+            // Not a new sample: this delta carried other keys (held item,
+            // health keyframe…) and the resolver re-read the unchanged
+            // position. It used to be buffered as a fresh sample at its
+            // arrival time, holding the body in place for a beat — a hitch
+            // every time any other key changed. A big step BACK is a sender
+            // whose clock restarted; RemoteClock resets on it.
+            if (_hasReceivedAny && _timed && sampleTime <= _newestT && _newestT - sampleTime < 2f)
+                return;
+            if (_clock.Observe(sampleTime, now)) _buffer.Clear();
+            _newestT = sampleTime;
         }
+        else
+        {
+            // Out-of-order guard mirrors ApplyPositionState. ushort diff
+            // handles wraparound at 65k; DataRevision is monotonic per-ZDO.
+            ushort seq = (ushort)dataRevision;
+            if (_hasReceivedAny && !_timed)
+            {
+                short diff = (short)(seq - _newestSeq);
+                if (diff <= 0) return;
+            }
+            _newestSeq = seq;
+        }
+        _timed = timed;
 
         // Hard teleport on huge jumps (scene change, respawn, far spawn).
         if (_hasReceivedAny)
@@ -261,8 +314,9 @@ public class RemotePlayer : MonoBehaviour
 
         var snap = new Snapshot
         {
-            Sequence    = seq,
-            ArrivalTime = Time.unscaledTime,
+            Sequence    = (ushort)dataRevision,
+            ArrivalTime = now,
+            T           = timed ? sampleTime : now,
             Position    = position,
             Rotation    = rotation,
             Velocity    = velocity,
@@ -272,7 +326,6 @@ public class RemotePlayer : MonoBehaviour
         if (_buffer.Count >= BUFFER_CAPACITY) _buffer.RemoveAt(0);
         _buffer.Add(snap);
 
-        _newestSeq      = seq;
         _hasReceivedAny = true;
     }
 
@@ -280,26 +333,45 @@ public class RemotePlayer : MonoBehaviour
     {
         if (!_initialized || _buffer.Count == 0) return;
 
-        float renderTime = Time.unscaledTime - INTERP_DELAY;
+        float now = Time.unscaledTime;
+        float dt  = Time.unscaledDeltaTime;
+        float renderTime;
+        if (_timed)
+        {
+            _clock.Advance(dt, SAMPLE_GAP_S, MIN_DELAY_S, MAX_DELAY_S);
+            renderTime = _clock.RenderTime(now);
+        }
+        else
+        {
+            renderTime = now - INTERP_DELAY;
+        }
+
         Vector3 targetPos;
         Quaternion targetRot;
+        float speed;
 
         if (TryFindStraddlingPair(renderTime, out var older, out var newer))
         {
-            float span = newer.ArrivalTime - older.ArrivalTime;
-            float t = span > 1e-4f ? Mathf.Clamp01((renderTime - older.ArrivalTime) / span) : 1f;
+            float span = newer.T - older.T;
+            float t = span > 1e-4f ? Mathf.Clamp01((renderTime - older.T) / span) : 1f;
             targetPos = Vector3.Lerp(older.Position, newer.Position, t);
             targetRot = Quaternion.Slerp(older.Rotation, newer.Rotation, t);
+            speed = span > 1e-3f ? Vector3.Distance(older.Position, newer.Position) / span : 0f;
         }
         else
         {
             // No future snapshot — extrapolate from newest using its velocity.
             var newest = _buffer[_buffer.Count - 1];
-            float ahead = Mathf.Min(renderTime - newest.ArrivalTime, MAX_EXTRAPOLATION);
+            float ahead = Mathf.Min(renderTime - newest.T, MAX_EXTRAPOLATION);
             ahead = Mathf.Max(ahead, 0f);
             targetPos = newest.Position + newest.Velocity * ahead;
             targetRot = newest.Rotation;
+            speed = ahead < MAX_EXTRAPOLATION ? newest.Velocity.magnitude : 0f;
         }
+
+        // The per-pair speed steps at every sample boundary; the walk cycle
+        // reads it every frame, so ease it.
+        _renderSpeed = Mathf.Lerp(_renderSpeed, speed, SmoothingFactor(ANIM_SPEED_RATE, dt));
 
         // Direct position assignment — interpolation already smoothed it.
         // The wrapper transform stays authoritative for nametags, map markers
@@ -509,18 +581,10 @@ public class RemotePlayer : MonoBehaviour
             }
             if (_twinAnimator == null) return;
 
-            float speed = 0f;
-            if (_buffer.Count >= 2)
-            {
-                var a = _buffer[_buffer.Count - 2];
-                var b = _buffer[_buffer.Count - 1];
-                float dt = Mathf.Max(b.ArrivalTime - a.ArrivalTime, 0.01f);
-                speed = Vector3.Distance(a.Position, b.Position) / dt;
-            }
-            else if (_buffer.Count == 1)
-            {
-                speed = _buffer[_buffer.Count - 1].Velocity.magnitude;
-            }
+            // The speed of what is being PLAYED, not of the two newest
+            // arrivals: two packets landing in one frame read as a sprint, a
+            // late one as a stop, and the legs flickered between them.
+            float speed = _renderSpeed;
 
             _twinAnimator.SetFloat(_twinMoveSpeedHash, speed);
             _twinAnimator.SetFloat(_twinWalkSpeedHash, Mathf.Clamp01(speed / 1.5f));
@@ -529,14 +593,14 @@ public class RemotePlayer : MonoBehaviour
     }
 
     /// <summary>
-    /// Find two snapshots in the buffer such that older.ArrivalTime &lt;= renderTime &lt; newer.ArrivalTime.
+    /// Find two snapshots in the buffer such that older.T &lt;= renderTime &lt; newer.T.
     /// </summary>
     [HideFromIl2Cpp]
     private bool TryFindStraddlingPair(float renderTime, out Snapshot older, out Snapshot newer)
     {
         for (int i = _buffer.Count - 1; i >= 1; i--)
         {
-            if (_buffer[i].ArrivalTime >= renderTime && _buffer[i - 1].ArrivalTime <= renderTime)
+            if (_buffer[i].T >= renderTime && _buffer[i - 1].T <= renderTime)
             {
                 older = _buffer[i - 1];
                 newer = _buffer[i];
@@ -569,19 +633,8 @@ public class RemotePlayer : MonoBehaviour
                 ScanAnimatorParams();
             }
 
-            // Compute speed from buffer — last two snapshots.
-            float speed = 0f;
-            if (_buffer.Count >= 2)
-            {
-                var a = _buffer[_buffer.Count - 2];
-                var b = _buffer[_buffer.Count - 1];
-                float dt = Mathf.Max(b.ArrivalTime - a.ArrivalTime, 0.01f);
-                speed = Vector3.Distance(a.Position, b.Position) / dt;
-            }
-            else
-            {
-                speed = _buffer[_buffer.Count - 1].Velocity.magnitude;
-            }
+            // Speed of the interpolated playback (see DriveTwinAnimator).
+            float speed = _renderSpeed;
 
             var newest = _buffer[_buffer.Count - 1];
             bool isRunning   = (newest.Flags & (byte)MovementFlags.Running)   != 0;

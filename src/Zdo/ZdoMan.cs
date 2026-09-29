@@ -665,7 +665,10 @@ public static class ZdoMan
         if (now < _nextFlushAt) return;
 
         float interval = 1f / Mathf.Clamp(DEFAULT_FLUSH_HZ, 1f, 30f);
-        _nextFlushAt = now + interval;
+        // From the due time, not from now — see ZdoPollerHost.Tick: `now +
+        // interval` made the 20 Hz flush a ~16 Hz one with uneven gaps.
+        float next = _nextFlushAt + interval;
+        _nextFlushAt = next > now ? next : now + interval * 0.5f;
         _flushTickCounter++;
 
         // Drain ownership transfers first so ownership-relevant deltas have

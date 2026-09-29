@@ -81,7 +81,12 @@ public sealed class LocalPlayerResolver : IZdoResolver
                     if (vel.sqrMagnitude > 9f) flags |= (byte)SoDCoop.Network.MovementFlags.Running; // 3 m/s
                     if (z.HasKey(ZdoKeys.Crouched) && z.GetBool(ZdoKeys.Crouched, false))
                         flags |= (byte)SoDCoop.Network.MovementFlags.Crouching;
-                    rp.ApplyPositionFromZdo(pos, rot, z.DataRevision, vel, flags);
+                    // NaN from a peer that doesn't stamp sample times — the
+                    // RemotePlayer then falls back to arrival-time playback.
+                    float sampleTime = z.HasKey(ZdoKeys.PosTime)
+                        ? z.GetFloat(ZdoKeys.PosTime, float.NaN)
+                        : float.NaN;
+                    rp.ApplyPositionFromZdo(pos, rot, z.DataRevision, vel, flags, sampleTime);
                 }
                 catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerResolver] position: {ex.Message}"); }
             }
@@ -133,12 +138,52 @@ public sealed class LocalPlayerResolver : IZdoResolver
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerResolver] dead: {ex.Message}"); }
 
-        // Host-only: a remote peer pushed its self-state — mirror crouch /
-        // KO / HP onto that peer's twin citizen in our world. Next tick
-        // CitizenStatePoller writes the same fields onto the twin's Citizen
-        // ZDO so every other peer also picks up the change. Without this
-        // mirror, a client crouching is invisible to anyone except the
-        // client themselves.
+        // Every peer: pose this player's twin — their body in our world — from
+        // their own report. Crouch and activity (lockpicking, typing, on the
+        // phone…) are visual, so each machine applies them to its copy of the
+        // twin directly.
+        //
+        // This used to run on the host only, relying on CitizenStatePoller /
+        // the anim poller to carry the twin's state on to the other clients.
+        // That never covered the HOST: nobody mirrored the host's own crouch
+        // or activity onto the host's twin, so clients always saw the host
+        // standing idle. And crouch was a bare field write the animator never
+        // sees — SetCrouched is what lowers the body.
+        try
+        {
+            int twinId = 0;
+            if (SoDCoop.Network.NetworkManager.Players != null
+                && SoDCoop.Network.NetworkManager.Players.TryGetValue(playerId, out var pinfo)
+                && pinfo != null)
+                twinId = pinfo.TwinHumanID;
+            if (twinId <= 0) twinId = SoDCoop.Sync.TwinManager.GetTwinHumanIDForSender(playerId);
+            if (twinId > 0)
+            {
+                var dict = global::CityData.Instance?.citizenDictionary;
+                if (dict != null && dict.TryGetValue(twinId, out var body) && body != null)
+                {
+                    if (z.HasKey(ZdoKeys.Crouched))
+                    {
+                        bool crouched = z.GetBool(ZdoKeys.Crouched, false);
+                        if (body.isCrouched != crouched)
+                        {
+                            try { body.SetCrouched(crouched); }
+                            catch { try { body.isCrouched = crouched; } catch { } }
+                        }
+                    }
+                    if (z.HasKey(ZdoKeys.Activity))
+                    {
+                        byte raw = z.GetByte(ZdoKeys.Activity, 0);
+                        ApplyActivityToTwin(body, (SoDCoop.Player.PlayerActivity)raw);
+                    }
+                }
+            }
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerResolver] twin pose: {ex.Message}"); }
+
+        // Host-only: KO / HP onto that peer's twin citizen in our world — the
+        // host's world is where citizens react to it (and CitizenStatePoller
+        // carries it on).
         if (SoDCoop.Network.NetworkManager.IsHost)
         {
             try
@@ -149,11 +194,6 @@ public sealed class LocalPlayerResolver : IZdoResolver
                     var dict = global::CityData.Instance?.citizenDictionary;
                     if (dict != null && dict.TryGetValue(twinId, out var twin) && twin != null)
                     {
-                        if (z.HasKey(ZdoKeys.Crouched))
-                        {
-                            bool crouched = z.GetBool(ZdoKeys.Crouched, false);
-                            try { twin.isCrouched = crouched; } catch { }
-                        }
                         if (z.HasKey(ZdoKeys.Ko))
                         {
                             bool ko = z.GetBool(ZdoKeys.Ko, false);
@@ -176,12 +216,6 @@ public sealed class LocalPlayerResolver : IZdoResolver
                                 try { twin.currentHealth = hp; } catch { }
                                 SoDCoop.Zdo.Pollers.NpcDamagePoller.NotifyExternalHealth(twinId, hp);
                             }
-                        }
-
-                        if (z.HasKey(ZdoKeys.Activity))
-                        {
-                            byte raw = z.GetByte(ZdoKeys.Activity, 0);
-                            ApplyActivityToTwin(twin, (SoDCoop.Player.PlayerActivity)raw);
                         }
                     }
                 }
@@ -236,9 +270,11 @@ public sealed class LocalPlayerResolver : IZdoResolver
                 break;
         }
 
-        try { ac.SetArmsBoolState(arms); }
+        // Only on change: the resolver runs on every delta (20 Hz of position),
+        // and re-setting the same state each time restarted the animation.
+        try { if (ac.armsBoolAnimationState != arms) ac.SetArmsBoolState(arms); }
         catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerResolver] SetArmsBoolState({arms}): {ex.Message}"); }
-        try { ac.SetIdleAnimationState(idle); }
+        try { if (ac.idleAnimationState != idle) ac.SetIdleAnimationState(idle); }
         catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerResolver] SetIdleAnimationState({idle}): {ex.Message}"); }
     }
 }
