@@ -75,7 +75,7 @@ public static class CitizenPositionSync
     /// street and any interior.</summary>
     private const float SYNC_RADIUS_M = 60f;
 
-    /// <summary>Entries per packet. 60 × 16 B + 1 ≈ 961 B keeps us under the
+    /// <summary>Entries per packet. 60 × 18 B + 1 ≈ 1081 B keeps us under the
     /// ~1200 B practical limit for an unreliable datagram, so a busy street
     /// splits across packets instead of being fragmented by the transport.</summary>
     private const int MAX_ENTRIES_PER_PACKET = 60;
@@ -130,6 +130,8 @@ public static class CitizenPositionSync
         public Vector3 PrevPos;
         public float   PrevTime;
         public Vector3 CurPos;
+        /// <summary>Latest host facing, degrees. NaN until received.</summary>
+        public float   Yaw = float.NaN;
         public float   CurTime;
         public bool    HasPrev;
 
@@ -307,6 +309,7 @@ public static class CitizenPositionSync
                     _writer.Put(p.x);
                     _writer.Put(p.y);
                     _writer.Put(p.z);
+                    _writer.Put(LiveYaw(humanId));
                     written++;
 
                     if (written >= MAX_ENTRIES_PER_PACKET)
@@ -337,6 +340,7 @@ public static class CitizenPositionSync
                         _writer.Put(p.x);
                         _writer.Put(p.y);
                         _writer.Put(p.z);
+                        _writer.Put(LiveYaw(humanId));
                         written++;
 
                         if (written >= MAX_ENTRIES_PER_PACKET)
@@ -368,6 +372,26 @@ public static class CitizenPositionSync
     /// player. Only the tens of citizens actually being sent are read here, so
     /// the extra interop is small. The fresh value is written back to the ZDO,
     /// which keeps sector culling current for free.</para></summary>
+    /// <summary>The citizen's facing (Y rotation), quantised to 16 bits
+    /// (0.0055° steps). Read from the transform LivePosition just resolved.
+    ///
+    /// <para>Facing used to be derived on the client from the direction of
+    /// movement only, so a citizen who turned without walking — to face the
+    /// player in a conversation, to sit at a desk, to look at a body — kept
+    /// facing wherever it had last walked.</para></summary>
+    private static ushort LiveYaw(int humanId)
+    {
+        float yaw = 0f;
+        try
+        {
+            var h = NetworkIdResolver.GetHuman(humanId);
+            var t = h != null ? h.transform : null;
+            if (t != null) yaw = t.eulerAngles.y;
+        }
+        catch { }
+        return (ushort)Mathf.RoundToInt(Mathf.Repeat(yaw, 360f) / 360f * 65535f);
+    }
+
     /// <param name="z">The citizen's ZDO, or null (a citizen named by a
     /// client's interest report may not have one yet).</param>
     /// <returns>False when there is no position to send at all.</returns>
@@ -427,12 +451,13 @@ public static class CitizenPositionSync
 
             for (int i = 0; i < count; i++)
             {
-                // 16 B per entry — bail out rather than read past a truncated
+                // 18 B per entry — bail out rather than read past a truncated
                 // frame (LiteNetLib hands us oversized reused buffers).
-                if (r.AvailableBytes < 16) break;
+                if (r.AvailableBytes < 18) break;
 
                 int humanId = r.GetInt();
                 float x = r.GetFloat(), y = r.GetFloat(), z = r.GetFloat();
+                float yaw = r.GetUShort() / 65535f * 360f;
                 if (humanId == 0) continue;
                 if (TwinManager.IsTwin(humanId)) continue;
 
@@ -466,6 +491,7 @@ public static class CitizenPositionSync
                 }
 
                 st.LastRecvTime = now;
+                st.Yaw = yaw;
             }
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenPositionSync] HandlePacket: {ex.Message}"); }
@@ -554,8 +580,18 @@ public static class CitizenPositionSync
 
             try { t.position = target; } catch { _dropScratch.Add(kv.Key); continue; }
 
-            // ── Facing follows movement ──────────────────────────────────
-            if (speed > MOVING_SPEED_EPS && st.HasPrev)
+            // ── Facing: the host's, turn-rate limited ────────────────────
+            if (!float.IsNaN(st.Yaw))
+            {
+                try
+                {
+                    var want = Quaternion.Euler(0f, st.Yaw, 0f);
+                    t.rotation = Quaternion.RotateTowards(t.rotation, want, TURN_DEG_PER_S * dt);
+                }
+                catch { }
+            }
+            // Fallback when no facing has arrived: follow movement.
+            else if (speed > MOVING_SPEED_EPS && st.HasPrev)
             {
                 Vector3 dir = st.CurPos - st.PrevPos;
                 dir.y = 0f;
