@@ -34,9 +34,10 @@ public class RemotePlayer : MonoBehaviour
     /// leaves no snapshot newer than the render time and playback falls into
     /// velocity extrapolation — a visible hitch. Position packets go out
     /// Sequenced (unreliable, no retransmit), so losing one is routine, not
-    /// exceptional. Paired with PlayerSync's 50 ms walk / 33 ms run cadence,
-    /// 120 ms is ~2.4 and ~3.6 intervals respectively. The extra 20 ms over the
-    /// old value is not perceptible; the hitch it removes was.</para></summary>
+    /// exceptional. Positions arrive with the 20 Hz ZDO delta flush
+    /// (LocalPlayerPoller → LocalPlayer ZDO; the old PlayerSync packets are
+    /// off), so 120 ms is 2.4 intervals. It was only 1.2 while the flush ran
+    /// at 10 Hz — the hitch this rule exists to prevent.</para></summary>
     private const float INTERP_DELAY = 0.12f;
 
     /// <summary>Max time we'll extrapolate past the newest snapshot before freezing.</summary>

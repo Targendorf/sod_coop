@@ -94,6 +94,23 @@ public sealed class Zdo
         return true;
     }
 
+    /// <summary>Mark an existing key dirty with its current value, so the next
+    /// flush sends it again. For keys on a Sequenced ZDO that rarely change:
+    /// Set() skips unchanged values, so without a periodic touch a single lost
+    /// packet would leave the peer's copy wrong until the value next changed.
+    /// No-op for a key this ZDO doesn't hold.</summary>
+    public void Touch(int key)
+    {
+        if      (_bools    != null && _bools   .ContainsKey(key)) MarkDirty(key, ZdoValueType.Bool);
+        else if (_ints     != null && _ints    .ContainsKey(key)) MarkDirty(key, ZdoValueType.Int);
+        else if (_bytes    != null && _bytes   .ContainsKey(key)) MarkDirty(key, ZdoValueType.Byte);
+        else if (_floats   != null && _floats  .ContainsKey(key)) MarkDirty(key, ZdoValueType.Float);
+        else if (_strings  != null && _strings .ContainsKey(key)) MarkDirty(key, ZdoValueType.String);
+        else if (_vector3s != null && _vector3s.ContainsKey(key)) MarkDirty(key, ZdoValueType.Vector3);
+        else if (_quats    != null && _quats   .ContainsKey(key)) MarkDirty(key, ZdoValueType.Quaternion);
+        else if (_ulongs   != null && _ulongs  .ContainsKey(key)) MarkDirty(key, ZdoValueType.ULong);
+    }
+
     public bool HasKey(int key)
     {
         return (_ints     != null && _ints    .ContainsKey(key))

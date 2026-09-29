@@ -41,14 +41,14 @@ public static class LocalPlayerPoller
     /// everything else rides the <see cref="SLOW_EVERY"/> cadence to avoid
     /// re-dirtying the ZDO 15× per second with continuously-decaying vitals
     /// / cosmetic flags that only need ~1 Hz.</summary>
-    public const float TICK_HZ = 15f;
+    public const float TICK_HZ = 20f;   // one fresh sample per 20 Hz delta flush
     public const string NAME = "local-player";
 
     /// <summary>How many fast ticks between slow-lane passes. At
-    /// <see cref="TICK_HZ"/>=15 a value of 15 makes the slow lane run at
+    /// <see cref="TICK_HZ"/>=20 a value of 20 makes the slow lane run at
     /// ~1 Hz — matching the previous whole-poller rate for vitals /
     /// apartments / damage-diff / activity.</summary>
-    private const int SLOW_EVERY = 15;
+    private const int SLOW_EVERY = 20;
     private static int _tickCounter;
 
     /// <summary>Below this delta, ignore — SoD's bleed tick can write tiny
@@ -119,6 +119,9 @@ public static class LocalPlayerPoller
     /// real SoD-field-deref path.</summary>
     internal static void ProbeBody(float now) => TickInner(now);
 
+    private const float KEYFRAME_INTERVAL_S = 1f;
+    private static float _nextKeyframeAt;
+
     private static void TickInner(float now)
     {
         try
@@ -130,6 +133,25 @@ public static class LocalPlayerPoller
             int sodId = NetworkManager.LocalPlayerId;
             var z = ZdoMan.GetOrCreateBySodId(ZdoTypeTag.LocalPlayer, sodId,
                 owner: ZdoMan.LocalPeerUid, persistent: false);
+
+            // Keyframe the discrete keys once a second. This ZDO rides the
+            // Sequenced channel for its position stream, and Set() never
+            // re-sends an unchanged value — so a single lost packet used to
+            // leave the other side showing the wrong held item, a torch that
+            // was switched off, a crouch that ended, or a "downed" pose, until
+            // that value happened to change again.
+            if (now >= _nextKeyframeAt)
+            {
+                _nextKeyframeAt = now + KEYFRAME_INTERVAL_S;
+                z.Touch(ZdoKeys.Held);
+                z.Touch(ZdoKeys.Raised);
+                z.Touch(ZdoKeys.Flashlight);
+                z.Touch(ZdoKeys.Crouched);
+                z.Touch(ZdoKeys.Ko);
+                z.Touch(ZdoKeys.Dead);
+                z.Touch(ZdoKeys.Activity);
+                z.Touch(ZdoKeys.CurrentHealth);
+            }
 
             // ── FAST LANE (every tick, 15 Hz) ─────────────────────────────
             // Position / rotation / velocity — the only fields that need

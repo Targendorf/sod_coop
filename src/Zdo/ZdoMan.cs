@@ -25,7 +25,13 @@ namespace SoDCoop.Zdo;
 public static class ZdoMan
 {
     public const byte WIRE_VERSION = 1;
-    public const float DEFAULT_FLUSH_HZ = 10f;
+    /// <summary>Delta flush rate. 20 Hz since 2026-09-29: remote players'
+    /// positions ride the LocalPlayer ZDO, so this IS their send rate, and at
+    /// 10 Hz RemotePlayer's 120 ms interpolation delay covered only 1.2 send
+    /// intervals — every lost or late packet dropped playback into
+    /// extrapolation (the ≥2-interval rule). Per-flush batches halve in size,
+    /// so the byte cost is about the same; only the packet count doubles.</summary>
+    public const float DEFAULT_FLUSH_HZ = 20f;
     public const int   DEFAULT_COMPRESSION_THRESHOLD = 100;
 
     /// <summary>Local peer's stable uid (FNV-1a-64 of profile clientGuid).
@@ -718,16 +724,26 @@ public static class ZdoMan
     /// </summary>
     private static DeliveryMethod GetDeliveryFor(ZdoTypeTag tag) => tag switch
     {
-        // Sequenced — idempotent overwrite state. Loss of a single packet is
-        // recovered by the next 10 Hz flush; receiver always has a valid
-        // (possibly stale) version.
-        ZdoTypeTag.Citizen        => DeliveryMethod.Sequenced,
+        // Sequenced — only for ZDOs whose keys are rewritten continuously, so
+        // a lost packet really is replaced by the next flush.
+        //
+        // CORRECTION (2026-09-29): the flush ships per-KEY DELTAS and Zdo.Set
+        // ignores unchanged values, so "the next flush recovers a loss" is
+        // only true for keys that keep changing. A dropped (or late —
+        // Sequenced also discards out-of-order packets) delta carrying a
+        // citizen's Restrained / Stunned / InBed / Outfit / Dead, or a
+        // one-shot fingerprint / footprint / spatter creation, was gone for
+        // good — and the peer cursor recorded it as delivered, so no catch-up
+        // ever re-sent it. Those now ride ReliableOrdered. LocalPlayer stays
+        // Sequenced for its position stream; its discrete keys are re-sent
+        // once a second by LocalPlayerPoller (Zdo.Touch) instead.
         ZdoTypeTag.PlayerTwin     => DeliveryMethod.Sequenced,
         ZdoTypeTag.LocalPlayer    => DeliveryMethod.Sequenced,
-        ZdoTypeTag.Footprint      => DeliveryMethod.Sequenced,
-        ZdoTypeTag.Fingerprint    => DeliveryMethod.Sequenced,
-        ZdoTypeTag.Spatter        => DeliveryMethod.Sequenced,
         ZdoTypeTag.Weather        => DeliveryMethod.Sequenced,
+        ZdoTypeTag.Citizen        => DeliveryMethod.ReliableOrdered,
+        ZdoTypeTag.Footprint      => DeliveryMethod.ReliableOrdered,
+        ZdoTypeTag.Fingerprint    => DeliveryMethod.ReliableOrdered,
+        ZdoTypeTag.Spatter        => DeliveryMethod.ReliableOrdered,
 
         // ReliableOrdered — state transitions, one-shot creations, mutations
         // whose loss leaves a visible, unrecoverable divergence.
