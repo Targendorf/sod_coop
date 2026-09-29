@@ -340,6 +340,16 @@ public struct TimeSyncPacket : INetPacket
     public int DayInt;
     /// <summary><c>SessionData.month</c> enum.</summary>
     public int Month;
+    /// <summary><c>SessionData.gameTimeDouble</c> — the game's real time master
+    /// (a cumulative count of game hours in double precision). The float
+    /// <see cref="GameTime"/> is only its per-frame mirror; see TimeSync.
+    /// NaN when the sender predates this field.</summary>
+    public double GameTimeDouble;
+    /// <summary><c>SessionData.leapYearCycle</c>, the second argument of
+    /// <c>SetGameTime</c>. -1 when unknown.</summary>
+    public int LeapYearCycle;
+    /// <summary><c>SessionData.currentTimeSpeed</c> as int. -1 when unknown.</summary>
+    public int TimeSpeed;
 
     public void Serialize(NetDataWriter writer)
     {
@@ -350,6 +360,9 @@ public struct TimeSyncPacket : INetPacket
         writer.Put(IsPaused);
         writer.Put(DayInt);
         writer.Put(Month);
+        writer.Put(GameTimeDouble);
+        writer.Put(LeapYearCycle);
+        writer.Put(TimeSpeed);
     }
 
     public void Deserialize(NetDataReader reader)
@@ -364,6 +377,9 @@ public struct TimeSyncPacket : INetPacket
         // correction rather than stamping a bogus day 0 / January.
         DayInt = reader.AvailableBytes >= 4 ? reader.GetInt() : -1;
         Month  = reader.AvailableBytes >= 4 ? reader.GetInt() : -1;
+        GameTimeDouble = reader.AvailableBytes >= 8 ? reader.GetDouble() : double.NaN;
+        LeapYearCycle  = reader.AvailableBytes >= 4 ? reader.GetInt() : -1;
+        TimeSpeed      = reader.AvailableBytes >= 4 ? reader.GetInt() : -1;
     }
 }
 

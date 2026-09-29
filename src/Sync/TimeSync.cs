@@ -6,23 +6,60 @@ using UnityEngine;
 namespace SoDCoop.Sync;
 
 /// <summary>
-/// Synchronizes game time between host and clients.
+/// Host-authoritative game clock. The host broadcasts its time at 2 Hz; clients
+/// snap to it when they drift more than a few game minutes.
 ///
-/// Host: every TIME_SYNC_RATE seconds reads SessionData.gameTime (minutes)
-///       and broadcasts via PacketType.TimeSync (ReliableOrdered).
-///
-/// Client: receives the packet and immediately applies the host's time.
-///         Small drifts (< SNAP_THRESHOLD) are smoothed over SMOOTH_RATE
-///         seconds; larger drifts are snapped instantly to avoid clocks
-///         running visually ahead/behind.
+/// <para><b>What the game's clock actually is (2026-09-29).</b> This class was
+/// written believing <c>SessionData.gameTime</c> held "minutes since midnight".
+/// It doesn't. SessionData derives the decimal hour, the day, date, month and
+/// year from one running value — <c>ParseTimeData(float newTime, out
+/// decimalHour, out dayInt, out dateInt, out month, out year, …)</c> — so
+/// <c>gameTime</c> is a cumulative running clock (most likely in hours, going by
+/// that shape). And the real master is <c>gameTimeDouble</c>: the float
+/// <c>gameTime</c> is its per-frame mirror. Consequences, all consistent with
+/// the 2026-07-30 client log:</para>
+/// <list type="bullet">
+///   <item><description><b>The sync never worked.</b> It wrote the float
+///   mirror, which the game rebuilt from the double on the next frame. Thirty
+///   snaps in one session, and the drift never closed.</description></item>
+///   <item><description><b>The "constant 00:42" was garbage, not a frozen
+///   host.</b> The host formatted the clock as <c>(int)(gt/60)%24 :
+///   (int)gt%60</c> — minutes arithmetic on a running cumulative clock, which
+///   prints nonsense whatever the real time. The display now comes from
+///   <c>decimalClock</c>.</description></item>
+///   <item><description><b>The drift and threshold units were a guess</b>
+///   ("5.4 min" was most likely 5.4 game hours). The snap threshold is now
+///   measured in real seconds of the clock's own movement, so it is right
+///   whatever the unit turns out to be. NPC schedules run on this clock —
+///   hours apart means citizens in completely different places.</description></item>
+/// </list>
+/// <para>Now: the host sends <c>gameTimeDouble</c> plus the leap-year cycle, and
+/// the client sets its clock with the game's own <c>SetGameTime(float, int)</c>
+/// — which re-derives hour, date, weekday, month and year consistently — and
+/// then restores full precision on <c>gameTimeDouble</c>. The host's time speed
+/// is mirrored too, so while the host sleeps or waits the client fast-forwards
+/// with it instead of being yanked forward twice a second.</para>
 /// </summary>
 public class TimeSync
 {
     #region Constants
 
-    private const float TIME_SYNC_RATE  = 0.5f;   // s between host broadcasts (2 Hz)
-    private const float SNAP_THRESHOLD  = 0.5f;   // game-minutes — snap directly above this
-    private const float SMOOTH_RATE     = 0.5f;   // fraction per call for small corrections (50%)
+    private const float TIME_SYNC_RATE = 0.5f;   // s between host broadcasts (2 Hz)
+
+    /// <summary>Snap when the clocks differ by more than this many REAL seconds'
+    /// worth of clock movement. Expressed in real time rather than game units on
+    /// purpose: the static dump can't pin down the unit of gameTime (hours per
+    /// ParseTimeData's shape, but the 2026-07-30 log is ambiguous), and a
+    /// fixed game-unit threshold would either snap on packet latency twice a
+    /// second or never fire at all if the guess were wrong. Measuring the
+    /// clock's own rate makes the threshold correct in any unit, and it widens
+    /// automatically while the host fast-forwards (sleep/wait).</summary>
+    private const double SNAP_REAL_SECONDS = 3.0;
+
+    /// <summary>Threshold used until the clock rate has been measured — only the
+    /// first packet or two after joining, when a large snap is exactly what we
+    /// want anyway.</summary>
+    private const double FALLBACK_THRESHOLD = 0.05;
 
     #endregion
 
@@ -39,22 +76,34 @@ public class TimeSync
     private float _lastSyncTime;
     private readonly NetDataWriter _writer = new();
 
-    // Snap-log throttle: snaps fire at the broadcast rate (2 Hz). Logging every
-    // one of them at LogInfo floods BepInEx's console — 120 lines/min just for
-    // time sync, and the BepInEx writer is noticeably hot in IL2CPP. Coalesce
-    // identical-day snaps into one log line per 5 seconds.
-    /// <summary>How often the snap-verification probe may log. Once per 30 s is
-    /// enough to diagnose a clock that refuses to be set without becoming spam
-    /// in its own right.</summary>
-    private const float CLOCK_PROBE_INTERVAL_S = 30f;
-    private float _nextClockProbeAt;
-
-    private const float SNAP_LOG_INTERVAL_S = 5f;
+    /// <summary>Snaps are coalesced into one log line per interval.</summary>
+    private const float SNAP_LOG_INTERVAL_S = 10f;
     private float _lastSnapLogTime = -SNAP_LOG_INTERVAL_S;
     private int   _snapsSinceLog;
-    private int   _lastLoggedDay = int.MinValue;
-    private int   _lastLoggedHour = -1;
-    private int   _lastLoggedMin = -1;
+    private double _worstDriftSinceLog;
+    private bool  _firstSnapVerified;
+
+    // Local clock-rate estimate (game units per real second), EMA-smoothed.
+    private double _rate = double.NaN;
+    private double _rateLastGame;
+    private float  _rateLastReal = -1f;
+
+    /// <summary>Fold one reading of the local clock into the rate estimate.
+    /// Reset after every snap, since a snap is a discontinuity, not motion.</summary>
+    private void SampleRate(double current)
+    {
+        float now = Time.unscaledTime;
+        if (_rateLastReal >= 0f)
+        {
+            float dt = now - _rateLastReal;
+            if (dt < 0.2f) return;   // too short to measure; keep the older anchor
+            double r = (current - _rateLastGame) / dt;
+            if (r >= 0 && !double.IsInfinity(r))
+                _rate = double.IsNaN(_rate) ? r : _rate * 0.8 + r * 0.2;
+        }
+        _rateLastReal = now;
+        _rateLastGame = current;
+    }
 
     // -------------------------------------------------------------------------
 
@@ -82,13 +131,16 @@ public class TimeSync
 
         var packet = new TimeSyncPacket
         {
-            GameTime = info.GameMinutes,
-            Day      = info.Day,
-            Hour     = info.Hour,
-            Minute   = info.Minute,
-            IsPaused = IsGamePaused(),
-            DayInt   = info.DayInt,
-            Month    = info.Month,
+            GameTime       = info.GameTime,
+            Day            = info.Day,
+            Hour           = info.Hour,
+            Minute         = info.Minute,
+            IsPaused       = IsGamePaused(),
+            DayInt         = info.DayInt,
+            Month          = info.Month,
+            GameTimeDouble = info.GameTimeDouble,
+            LeapYearCycle  = info.LeapYearCycle,
+            TimeSpeed      = info.TimeSpeed,
         };
 
         _writer.Reset();
@@ -121,85 +173,47 @@ public class TimeSync
         SyncedMinute   = packet.Minute;
         IsPaused       = packet.IsPaused;
 
+        // Never write the clock of a world that is still loading — the load
+        // rebuilds SessionData right after. (The 2026-07-30 log's first snap
+        // landed mid-load, before the city even existed.)
+        if (!WorldReadyGate.IsWorldReady) return;
+
         try
         {
             var session = SessionData.Instance;
             if (session == null) return;
 
-            float current = session.gameTime;         // minutes
-            float target  = packet.GameTime;          // minutes from host
-            float drift   = Mathf.Abs(target - current);
+            ApplyTimeSpeed(packet, session);
 
-            if (drift > SNAP_THRESHOLD)
+            // Prefer the double master; fall back to the float for an older host.
+            double target = double.IsNaN(packet.GameTimeDouble) ? packet.GameTime : packet.GameTimeDouble;
+            double current;
+            try { current = session.gameTimeDouble; }
+            catch { current = session.gameTime; }
+
+            SampleRate(current);
+            double threshold = double.IsNaN(_rate)
+                ? FALLBACK_THRESHOLD
+                : System.Math.Max(_rate * SNAP_REAL_SECONDS, 1e-4);
+
+            double drift = System.Math.Abs(target - current);
+            if (drift > threshold)
             {
-                // Large drift — snap immediately.
-                session.gameTime = target;
+                int leap = packet.LeapYearCycle;
+                if (leap < 0) { try { leap = session.leapYearCycle; } catch { leap = 0; } }
+
+                // The game's own setter re-derives decimal hour, date, weekday,
+                // month and year from the new value. Then put full precision
+                // back on the double master (the setter takes a float).
+                session.SetGameTime((float)target, leap);
+                try { session.gameTimeDouble = target; } catch { }
+                _rateLastReal = -1f;   // discontinuity — restart the rate anchor
+
                 _snapsSinceLog++;
-
-                // Verify the write actually stuck.
-                //
-                // The 2026-07-30 client log snapped ~28 times with a CONSTANT
-                // 5.4 minute drift and the same displayed time each round. A
-                // constant drift is the tell: if the client's clock were simply
-                // running while the host's stood still, the drift would GROW
-                // between snaps. Staying put means the snap is being undone —
-                // i.e. gameTime is derived from, or overwritten by, something
-                // else each frame. SessionData also carries decimalClock and
-                // dayProgress, so one of those is likely the real master.
-                //
-                // This dump names it: if readback != target the write is being
-                // reverted, and the three values together say which field the
-                // game is actually driving.
-                float probeNow = Time.unscaledTime;
-                if (_nextClockProbeAt <= probeNow)
-                {
-                    _nextClockProbeAt = probeNow + CLOCK_PROBE_INTERVAL_S;
-                    try
-                    {
-                        float readBack = session.gameTime;
-                        float dec = 0f, prog = 0f;
-                        try { dec  = session.decimalClock; } catch { }
-                        try { prog = session.dayProgress; } catch { }
-                        Plugin.Log.LogInfo(
-                            $"[TimeSync/Probe] wrote gameTime={target:F2} readback={readBack:F2} " +
-                            $"(stuck={Mathf.Abs(readBack - target) < 0.01f}) drift={drift:F2} " +
-                            $"decimalClock={dec:F4} dayProgress={prog:F4} hostDayInt={packet.DayInt}");
-                    }
-                    catch { }
-                }
-
-                // Throttle: log at most every SNAP_LOG_INTERVAL_S, or when the
-                // displayed Day/Hour/Minute changes (so the player still gets
-                // visible time-change feedback in the log without it spamming).
-                float now = Time.unscaledTime;
-                bool clockChanged = packet.Day != _lastLoggedDay
-                                 || packet.Hour != _lastLoggedHour
-                                 || packet.Minute != _lastLoggedMin;
-                if (clockChanged || now - _lastSnapLogTime >= SNAP_LOG_INTERVAL_S)
-                {
-                    if (_snapsSinceLog > 1)
-                        Plugin.Log.LogDebug(
-                            $"TimeSync: snapped clock {drift:F1} min → " +
-                            $"Day {packet.Day} {packet.Hour:D2}:{packet.Minute:D2} " +
-                            $"(coalesced ×{_snapsSinceLog})");
-                    else
-                        Plugin.Log.LogDebug(
-                            $"TimeSync: snapped clock {drift:F1} min → " +
-                            $"Day {packet.Day} {packet.Hour:D2}:{packet.Minute:D2}");
-
-                    _lastSnapLogTime = now;
-                    _snapsSinceLog = 0;
-                    _lastLoggedDay = packet.Day;
-                    _lastLoggedHour = packet.Hour;
-                    _lastLoggedMin = packet.Minute;
-                }
+                if (drift > _worstDriftSinceLog) _worstDriftSinceLog = drift;
+                VerifyFirstSnap(session, target, drift);
+                LogSnaps(packet);
             }
-            else if (drift > 0.05f)
-            {
-                // Small drift — nudge 50% toward target per call (called 2 Hz).
-                session.gameTime = Mathf.Lerp(current, target, SMOOTH_RATE);
-            }
-            // else within noise — do nothing
 
             ApplyDate(packet, session);
         }
@@ -209,25 +223,61 @@ public class TimeSync
         }
     }
 
-    /// <summary>Correct the client's DATE to the host's, when it differs.
-    ///
-    /// <para><b>Why this is not optional.</b> The clock sync above writes only
-    /// <c>gameTime</c> — minutes since midnight. The date lives in separate
-    /// fields (<c>dayInt</c>, <c>day</c>, <c>month</c>) and was never touched.
-    /// Snapping <c>gameTime</c> across midnight does not run SoD's own rollover,
-    /// so a client that gets corrected backwards or forwards over 00:00 silently
-    /// fails to advance its day — and each such crossing compounds. Once the two
-    /// machines sit on different WEEKDAYS, SoD's citizens run entirely different
-    /// daily schedules, so every NPC in the city is somewhere else. Invisible in
-    /// logs, permanent, and gets worse the longer a session runs.</para>
-    ///
-    /// <para>Only written on an actual mismatch: this fires at the 2 Hz sync
-    /// rate and stamping identical values every tick would be pointless churn on
-    /// fields the game also writes.</para></summary>
+    /// <summary>Mirror the host's time speed (sleep / wait fast-forward), so the
+    /// client's clock moves at the same rate instead of being snapped forward
+    /// every half second while the host sleeps.</summary>
+    private static void ApplyTimeSpeed(TimeSyncPacket packet, SessionData session)
+    {
+        if (packet.TimeSpeed < 0) return;
+        try
+        {
+            var want = (SessionData.TimeSpeed)packet.TimeSpeed;
+            // "simulation" is the city-generation pre-sim, never a live state.
+            if (want == SessionData.TimeSpeed.simulation) return;
+            if (session.currentTimeSpeed != want) session.SetTimeSpeed(want);
+        }
+        catch (System.Exception ex) { Plugin.Log.LogWarning($"[TimeSync] SetTimeSpeed: {ex.Message}"); }
+    }
+
+    /// <summary>Once per session, confirm the snap actually stuck — the reading
+    /// of SessionData's clock this class now depends on.</summary>
+    private void VerifyFirstSnap(SessionData session, double target, double drift)
+    {
+        if (_firstSnapVerified) return;
+        _firstSnapVerified = true;
+        try
+        {
+            double readD = session.gameTimeDouble;
+            float readF = session.gameTime;
+            float dec = 0f;
+            try { dec = session.decimalClock; } catch { }
+            Plugin.Log.LogInfo(
+                $"[TimeSync] first snap: drift {drift:F3} → set {target:F3}; readback " +
+                $"double={readD:F3} float={readF:F3} (stuck={System.Math.Abs(readD - target) < 0.01}) " +
+                $"decimalClock={dec:F2} dayInt={session.dayInt}");
+        }
+        catch { }
+    }
+
+    private void LogSnaps(TimeSyncPacket packet)
+    {
+        float now = Time.unscaledTime;
+        if (now - _lastSnapLogTime < SNAP_LOG_INTERVAL_S) return;
+        Plugin.Log.LogDebug(
+            $"TimeSync: {_snapsSinceLog} snap(s), worst drift {_worstDriftSinceLog:F3} (rate {_rate:F4}/s) → " +
+            $"host day {packet.DayInt} {packet.Hour:D2}:{packet.Minute:D2}");
+        _lastSnapLogTime = now;
+        _snapsSinceLog = 0;
+        _worstDriftSinceLog = 0;
+    }
+
+    /// <summary>Fallback date correction, only on an actual mismatch.
+    /// <c>SetGameTime</c> re-derives the date from the clock, so normally this
+    /// finds nothing to do; it stays for an older host that doesn't send the
+    /// double master, where the float path can't be trusted to carry the date.</summary>
     private void ApplyDate(TimeSyncPacket packet, SessionData session)
     {
-        // -1 means the sender is an older build that doesn't carry the date.
-        if (packet.DayInt < 0) return;
+        if (packet.DayInt < 0) return;   // older sender without the date
 
         try
         {
@@ -237,14 +287,10 @@ public class TimeSync
                 session.dayInt = packet.DayInt;
                 Plugin.Log.LogInfo(
                     $"[TimeSync] date corrected: dayInt {before} → {packet.DayInt} " +
-                    "(client had drifted onto a different day; NPC schedules are weekday-driven).");
+                    "(NPC schedules are weekday-driven).");
             }
-
-            // day / month are the calendar presentation of dayInt. They are
-            // plain fields, so setting dayInt alone can leave them stale.
             if ((int)session.day != packet.Day)
                 session.day = (global::SessionData.WeekDay)packet.Day;
-
             if (packet.Month >= 0 && (int)session.month != packet.Month)
                 session.month = (global::SessionData.Month)packet.Month;
         }
@@ -258,31 +304,34 @@ public class TimeSync
 
     private static GameTimeInfo GetCurrentGameTime()
     {
+        var info = new GameTimeInfo
+        {
+            GameTime = 0f, GameTimeDouble = double.NaN, Day = 1,
+            DayInt = -1, Month = -1, LeapYearCycle = -1, TimeSpeed = -1,
+        };
         try
         {
             var session = SessionData.Instance;
-            if (session != null)
-            {
-                float gt     = session.gameTime;   // minutes since midnight (float)
-                int   hour   = ((int)(gt / 60f)) % 24;
-                int   minute = ((int)gt) % 60;
-                int dayInt = -1, month = -1;
-                try { dayInt = session.dayInt; } catch { }
-                try { month  = (int)session.month; } catch { }
-                return new GameTimeInfo
-                {
-                    GameMinutes = gt,
-                    Day         = (int)session.day,
-                    Hour        = hour,
-                    Minute      = minute,
-                    DayInt      = dayInt,
-                    Month       = month,
-                };
-            }
+            if (session == null) return info;
+
+            info.GameTime = session.gameTime;
+            try { info.GameTimeDouble = session.gameTimeDouble; } catch { }
+            try { info.LeapYearCycle  = session.leapYearCycle; } catch { }
+            try { info.TimeSpeed      = (int)session.currentTimeSpeed; } catch { }
+            try { info.DayInt         = session.dayInt; } catch { }
+            try { info.Month          = (int)session.month; } catch { }
+            try { info.Day            = (int)session.day; } catch { }
+
+            // Hour/minute for display and logs come from the decimal clock
+            // (0-24). The old code did minutes arithmetic on gameTime, which is
+            // a cumulative HOUR count — hence the permanent "00:42".
+            float dec = 0f;
+            try { dec = session.decimalClock; } catch { }
+            info.Hour   = Mathf.Clamp((int)dec, 0, 23);
+            info.Minute = Mathf.Clamp((int)((dec - (int)dec) * 60f), 0, 59);
         }
         catch { }
-
-        return new GameTimeInfo { GameMinutes = 0f, Day = 1, Hour = 0, Minute = 0 };
+        return info;
     }
 
     private static bool IsGamePaused() => Time.timeScale == 0f;
@@ -291,10 +340,13 @@ public class TimeSync
 /// <summary>Helper struct for game time data.</summary>
 public struct GameTimeInfo
 {
-    public float GameMinutes;   // session.gameTime (minutes since midnight, float)
-    public int   Day;           // session.day — WeekDay enum, not a counter
-    public int   Hour;
-    public int   Minute;
-    public int   DayInt;        // session.dayInt — absolute day counter (-1 = unknown)
-    public int   Month;         // session.month enum (-1 = unknown)
+    public float  GameTime;        // session.gameTime — float mirror of the cumulative hour count
+    public double GameTimeDouble;  // session.gameTimeDouble — the real master (NaN = unknown)
+    public int    LeapYearCycle;   // session.leapYearCycle (-1 = unknown)
+    public int    TimeSpeed;       // session.currentTimeSpeed (-1 = unknown)
+    public int    Day;             // session.day — WeekDay enum, not a counter
+    public int    Hour;            // from decimalClock
+    public int    Minute;          // from decimalClock
+    public int    DayInt;          // session.dayInt — absolute day counter (-1 = unknown)
+    public int    Month;           // session.month enum (-1 = unknown)
 }
