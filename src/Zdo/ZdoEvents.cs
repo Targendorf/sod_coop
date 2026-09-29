@@ -260,11 +260,14 @@ public static class ZdoEvents
         }
         catch { }
 
-        // Sequenced + batched: late frames can be dropped (the next state
-        // stomps anyway), and CitizenAnimationPoller emits up to 32 of these
-        // per tick × 5 Hz — batching collapses those into one packet per
-        // flush instead of 32 individual Steam sends.
-        ZdoEventDispatcher.Send(CITIZEN_ANIM_STATE, _w, DeliveryMethod.Sequenced, originPos, batch: true);
+        // Reliable + batched. This was Sequenced on the theory that "the next
+        // state stomps anyway" — but these are TRANSITIONS (sat down, started
+        // typing, picked up the phone), sent only when the state changes. A
+        // lost or late (Sequenced drops out-of-order) batch left every
+        // citizen in it in the wrong pose until its state next changed, which
+        // for someone sitting at a desk can be hours. Batching still collapses
+        // a frame's worth into one packet per flush.
+        ZdoEventDispatcher.Send(CITIZEN_ANIM_STATE, _w, DeliveryMethod.ReliableOrdered, originPos, batch: true);
     }
 
     /// <summary>Host-only. Broadcast the current social-credit (reputation)

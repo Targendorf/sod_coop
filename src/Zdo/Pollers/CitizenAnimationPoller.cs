@@ -96,9 +96,8 @@ public static class CitizenAnimationPoller
     /// (when <see cref="_last"/> is empty or stale and the diff would otherwise
     /// emit 200-300 events in one frame). Real per-tick churn in an idle city
     /// is single digits, so this only kicks in during the recovery scenario.
-    /// Excess deltas update <see cref="_last"/> silently — they'll be picked
-    /// up by the next snapshot cursor or simply on the citizen's next real
-    /// state change.</summary>
+    /// Excess deltas keep their old baseline and go out on the following
+    /// ticks.</summary>
     private const int MAX_SENT_PER_TICK = 32;
 
     private static void TickInner(float now)
@@ -180,13 +179,17 @@ public static class CitizenAnimationPoller
 
                 if (prev.idle == idle && prev.arms == arms) continue;
 
-                _last[id] = (idle, arms);
-
                 if (sent >= MAX_SENT_PER_TICK)
                 {
+                    // Over the cap: leave the baseline alone so this change is
+                    // seen — and sent — next tick. It used to be written here,
+                    // which marked the change as delivered and dropped it for
+                    // good (a citizen sat down but stayed standing on clients).
                     suppressed++;
                     continue;
                 }
+
+                _last[id] = (idle, arms);
 
                 try
                 {
