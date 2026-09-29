@@ -423,6 +423,7 @@ public class Plugin : BasePlugin
                 SoDCoop.Sync.DoorLookup.Reset();
                 SoDCoop.Zdo.Pollers.InteractableSpatialCache.Reset();
                 SoDCoop.Sync.WorldEditSync.Reset();
+                SoDCoop.Sync.NpcHitSync.Reset();
             }
             catch (System.Exception ex) { Log.LogWarning($"world-edit reset: {ex.Message}"); }
         };

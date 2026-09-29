@@ -626,6 +626,14 @@ public static class CitizenPositionSync
         catch { }
     }
 
+    /// <summary>Client: the citizens currently driven from the host — the ones
+    /// near this player.</summary>
+    internal static void CollectDriven(List<KeyValuePair<int, global::Human>> into)
+    {
+        foreach (var kv in _npcs)
+            if (kv.Value?.Human != null) into.Add(new KeyValuePair<int, global::Human>(kv.Key, kv.Value.Human));
+    }
+
     /// <summary>Client: this citizen is about to be handed to the local AI for
     /// an interaction (<see cref="WorldSync"/> ownership claim). Stop driving it
     /// and give back the AI and root-motion state we took, so dialog, fear and

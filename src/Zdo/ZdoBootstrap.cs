@@ -34,6 +34,8 @@ public static class ZdoBootstrap
         // Client → host edits of doors / locks / switches, plus correcting
         // anything near the client that drifted from the host.
         SoDCoop.Sync.WorldEditSync.Register();
+        // Client → host hits on citizens and other players' bodies.
+        SoDCoop.Sync.NpcHitSync.Register();
         // Per-citizen idle/arms anim state (host → clients via ZdoEventRpc).
         // Mode is configurable via CoopSettings.CitizenAnimSync:
         //   Disabled — no poller, SoD AI is deterministic from the same seed.

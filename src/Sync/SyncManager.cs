@@ -132,6 +132,7 @@ public static class SyncManager
         try { SoDCoop.Zdo.ZdoMan.MarkClientUnsynced(); } catch { }
         try { TwinManager.ReleaseLocallyFrozenTwins(); } catch { }
         try { WorldEditSync.Reset(); } catch { }
+        try { NpcHitSync.Reset(); } catch { }
         Plugin.Log.LogInfo($"SyncManager deactivated: {reason}");
     }
 

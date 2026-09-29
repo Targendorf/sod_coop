@@ -123,6 +123,7 @@ public static class SodCommonBridge
                     SoDCoop.Sync.DoorLookup.Reset();
                     SoDCoop.Zdo.Pollers.InteractableSpatialCache.Reset();
                     SoDCoop.Sync.WorldEditSync.Reset();
+                    SoDCoop.Sync.NpcHitSync.Reset();
                     // Shared citizen roster cache (used by all per-citizen
                     // pollers) — same stale-reference concern as DoorPoller.
                     SoDCoop.Zdo.Pollers.CitizenRosterCache.Reset();

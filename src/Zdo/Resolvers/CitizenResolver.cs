@@ -153,30 +153,24 @@ public sealed class CitizenResolver : IZdoResolver
             // critical (combat/death sync). Even 0 is meaningful (corpse).
             if (z.HasKey(ZdoKeys.CurrentHealth))
             {
-                try { c.currentHealth = z.GetFloat(ZdoKeys.CurrentHealth, c.currentHealth); } catch { }
-            }
-
-            // If this citizen IS the local client's own twin, also stamp
-            // Player.Instance with the authoritative vitals so the HUD
-            // reflects what host sees. Without this, the client eats food
-            // on host's side (host's twin's nourishment goes up) but the
-            // client's HUD still shows the old value because Player.Instance
-            // ticks independently from the citizen.
-            int myTwinId = SoDCoop.Network.NetworkManager.MyTwinHumanID;
-            if (myTwinId > 0 && humanId == myTwinId)
-            {
                 try
                 {
-                    var p = global::Player.Instance;
-                    if (p != null)
-                    {
-                        if (z.HasKey(ZdoKeys.Nourishment))   { try { p.nourishment   = c.nourishment;   } catch { } }
-                        if (z.HasKey(ZdoKeys.Hydration))     { try { p.hydration     = c.hydration;     } catch { } }
-                        if (z.HasKey(ZdoKeys.CurrentHealth)) { try { p.currentHealth = c.currentHealth; } catch { } }
-                    }
+                    c.currentHealth = z.GetFloat(ZdoKeys.CurrentHealth, c.currentHealth);
+                    // The mod's write, not the local player's hit.
+                    SoDCoop.Sync.NpcHitSync.NotifyRemoteHealth(humanId, c.currentHealth);
                 }
-                catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenResolver] my-twin Player.Instance stamp: {ex.Message}"); }
+                catch { }
             }
+
+            // NOTE: this used to copy our own twin's nourishment, hydration and
+            // health onto Player.Instance "so the HUD matches the host". It had
+            // the authority backwards. The player's vitals live on the player's
+            // own machine — the twin on the host is a frozen body that only
+            // MIRRORS them (LocalPlayerResolver) — and a resolver applies every
+            // key on every delta, so any change to the twin (a crouch, a health
+            // step) stamped its stale food/water/health over the player's: a
+            // meal was undone, a heal reverted. Hits the twin takes on the host
+            // now reach the player as damage (DamageSync.ApplyFromZdo).
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[CitizenResolver] drunk/bleeding/vitals apply: {ex.Message}"); }
 

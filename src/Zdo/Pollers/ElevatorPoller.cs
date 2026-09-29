@@ -21,6 +21,14 @@ namespace SoDCoop.Zdo.Pollers;
 ///
 /// <para>Replaces the disabled
 /// <c>Elevator.CallElevator</c> Harmony patch.</para>
+///
+/// <para><b>Runs on every peer (2026-09-29).</b> It used to be host-only, so a
+/// CLIENT pressing a lift button called the lift on the client alone: the host's
+/// car never came, and from then on the two cars ran different schedules. On a
+/// client it now watches only the lifts next to the local player — inside the
+/// frozen, host-driven radius, where the player is the only one pressing
+/// buttons — and a call the host sent us is rebaselined by
+/// <see cref="NotifyRemoteCall"/> so it is not echoed back.</para>
 /// </summary>
 public static class ElevatorPoller
 {
@@ -41,7 +49,25 @@ public static class ElevatorPoller
     private static readonly Dictionary<Key, int> _lastTotal = new();
     private static bool _initialized;
 
-    public static void Register() => ZdoPollerHost.Register(NAME, 1f / TICK_HZ, Tick);
+    public static void Register() => ZdoPollerHost.RegisterAnyPeer(NAME, 1f / TICK_HZ, Tick);
+
+    /// <summary>Client: horizontal distance from the lift shaft within which
+    /// the local player can be the one pressing its buttons.</summary>
+    private const float CLIENT_WATCH_RADIUS_M = 12f;
+
+    /// <summary>A call arriving from another machine was just applied to
+    /// <paramref name="e"/>: take its new count as the baseline so this
+    /// machine doesn't report it as its own.</summary>
+    public static void NotifyRemoteCall(Elevator e)
+    {
+        try
+        {
+            if (e == null || e.building == null || e.bottom == null || e.calls == null) return;
+            var k = new Key { BuildingId = e.building.buildingID, Bottom = e.bottom.globalTileCoord };
+            _lastTotal[k] = SumCalls(e.calls);
+        }
+        catch { }
+    }
 
     public static void ResetBaseline()
     {
@@ -67,11 +93,42 @@ public static class ElevatorPoller
             var list = SessionData.Instance?.activeElevators;
             if (list == null) return;
 
+            bool isHost = Network.NetworkManager.IsHost;
+            Vector3 me = default;
+            if (!isHost)
+            {
+                try
+                {
+                    var p = global::Player.Instance;
+                    if (p == null) return;
+                    me = p.transform.position;
+                }
+                catch { return; }
+            }
+
             for (int i = 0; i < list.Count; i++)
             {
                 var e = list[i];
                 if (e == null || e.building == null || e.bottom == null) continue;
                 if (e.calls == null) continue;
+
+                if (!isHost)
+                {
+                    // Only lifts beside us; a far one is being called by this
+                    // machine's own citizens, which the host must not hear.
+                    Vector3 shaft;
+                    try { var so = e.spawnedObject; if (so == null) continue; shaft = so.position; }
+                    catch { continue; }
+                    float dx = shaft.x - me.x, dz = shaft.z - me.z;
+                    if (dx * dx + dz * dz > CLIENT_WATCH_RADIUS_M * CLIENT_WATCH_RADIUS_M)
+                    {
+                        // Keep the baseline current so walking up to a lift
+                        // doesn't read its old calls as new.
+                        var kf = new Key { BuildingId = e.building.buildingID, Bottom = e.bottom.globalTileCoord };
+                        _lastTotal[kf] = SumCalls(e.calls);
+                        continue;
+                    }
+                }
 
                 int total = SumCalls(e.calls);
                 var k = new Key { BuildingId = e.building.buildingID, Bottom = e.bottom.globalTileCoord };

@@ -152,6 +152,18 @@ public static class DamageSync
                                     Vector3 hitPosition, Vector3 hitDirection, bool enableKill,
                                     float healthAfter = float.NaN)
     {
+        // A hit on OUR body in the host's world is a hit on us. Citizens near
+        // a client are frozen and host-driven here, so a citizen attacking this
+        // player does it on the host, to our twin — this event is the only way
+        // that damage reaches the player. The twin's health on the host only
+        // approximates ours, so the hit's own size is applied, not health-after.
+        int myTwin = SoDCoop.Network.NetworkManager.MyTwinHumanID;
+        if (!SoDCoop.Network.NetworkManager.IsHost && myTwin > 0 && victimHumanId == myTwin)
+        {
+            ApplyToLocalPlayer(amount, attackerHumanId, enableKill);
+            return;
+        }
+
         if (!float.IsNaN(healthAfter))
         {
             var victim = ResolveActor(victimHumanId);
@@ -188,6 +200,74 @@ public static class DamageSync
             ragdollForceMP:  1f);
     }
 
+    /// <summary>Host: a client's hit (<see cref="NpcHitSync"/>), attributed
+    /// to that client's twin so the victim and witnesses react to the right
+    /// body.</summary>
+    internal static void ApplyHit(int victimHumanId, int attackerHumanId, float amount, bool enableKill)
+    {
+        Vector3 pos = Vector3.zero, dir = Vector3.up;
+        try
+        {
+            var victim = ResolveActor(victimHumanId);
+            if (victim == null) return;
+            pos = victim.transform.position + Vector3.up;
+            var attacker = attackerHumanId > 0 ? ResolveActor(attackerHumanId) : null;
+            if (attacker != null)
+            {
+                Vector3 d = victim.transform.position - attacker.transform.position;
+                if (d.sqrMagnitude > 0.0001f) dir = d.normalized;
+            }
+        }
+        catch { }
+
+        ApplyImpl(
+            victimHumanId, attackerHumanId, amount, pos, dir,
+            forwardSpatter:  null,
+            backSpatter:     null,
+            eraseMode:       SpatterSimulation.EraseMode.useDespawnTime,
+            forceRagdoll:    false,
+            ragdollDuration: 0f,
+            shockMP:         1f,
+            enableKill:      enableKill,
+            allowRecoil:     true,
+            ragdollForceMP:  1f);
+    }
+
+    /// <summary>Damage the local player: a hit that landed on our body in
+    /// another machine's world.</summary>
+    internal static void ApplyToLocalPlayer(float amount, int attackerHumanId, bool enableKill)
+    {
+        try
+        {
+            var p = global::Player.Instance;
+            if (p == null || !(amount > 0f)) return;
+            Actor attacker = attackerHumanId > 0 ? ResolveActor(attackerHumanId) : null;
+            Vector3 pos = p.transform.position + Vector3.up;
+            Vector3 dir = Vector3.up;
+            try
+            {
+                if (attacker != null)
+                {
+                    Vector3 d = p.transform.position - attacker.transform.position;
+                    if (d.sqrMagnitude > 0.0001f) dir = d.normalized;
+                }
+            }
+            catch { }
+
+            IsApplyingRemote = true;
+            try
+            {
+                p.RecieveDamage(amount, attacker, pos, dir, null, null,
+                    SpatterSimulation.EraseMode.useDespawnTime,
+                    /*alertSurrounding*/ true, /*forceRagdoll*/ false, 0f, 1f,
+                    enableKill, /*allowRecoil*/ true, 1f);
+            }
+            finally { IsApplyingRemote = false; }
+            Plugin.Log.LogDebug($"[DamageSync] our body was hit in the host's world: {amount:F1}");
+        }
+        catch (System.Exception ex) { Plugin.Log.LogWarning($"[DamageSync] ApplyToLocalPlayer: {ex.Message}"); }
+    }
+
     private static void ApplyImpl(int victimHumanId, int attackerHumanId, float amount,
                                   Vector3 hitPosition, Vector3 hitDirection,
                                   SpatterPatternPreset forwardSpatter, SpatterPatternPreset backSpatter,
@@ -216,6 +296,9 @@ public static class DamageSync
                     /*alertSurrounding*/ true,
                     forceRagdoll, ragdollDuration, shockMP,
                     enableKill, allowRecoil, ragdollForceMP);
+                // Our own write, not the local player's hit — NpcHitSync must
+                // not report it back to the host as one.
+                try { NpcHitSync.NotifyRemoteHealth(victimHumanId, victim.currentHealth); } catch { }
 
                 Plugin.Log.LogDebug($"[DamageSync] applied victim={victimHumanId} amount={amount:F1}");
             }

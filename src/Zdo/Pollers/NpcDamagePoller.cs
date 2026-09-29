@@ -63,6 +63,15 @@ public static class NpcDamagePoller
     /// baseline.</summary>
     public static void WarmupBaseline() => ResetBaseline();
 
+    /// <summary>Host: a player's twin just had its health SET from that
+    /// player's own report (LocalPlayerResolver) — the player's own number, not
+    /// a hit in this world. Rebaseline so it is not replicated as damage (the
+    /// owner would take it a second time).</summary>
+    public static void NotifyExternalHealth(int humanId, float hp)
+    {
+        if (_initialized) _last[humanId] = hp;
+    }
+
     private static void Tick(float now)
     {
         if (!ZdoFeatureFlags.UseZdoForNpcDamage) return;

@@ -102,6 +102,8 @@ public static class ElevatorSync
             try
             {
                 elevator.CallElevator(newFloor, upButton);
+                // Not this machine's call — don't let the poller send it back.
+                SoDCoop.Zdo.Pollers.ElevatorPoller.NotifyRemoteCall(elevator);
                 Plugin.Log.LogDebug($"[ElevatorSync] applied call bld={buildingId} floor={newFloor} up={upButton}");
             }
             finally

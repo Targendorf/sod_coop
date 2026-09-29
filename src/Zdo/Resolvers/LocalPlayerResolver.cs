@@ -25,6 +25,9 @@ public sealed class LocalPlayerResolver : IZdoResolver
 {
     public ZdoTypeTag Tag => ZdoTypeTag.LocalPlayer;
 
+    /// <summary>Host: last health each player reported, by twin id.</summary>
+    private static readonly System.Collections.Generic.Dictionary<int, float> _lastReportedHp = new();
+
     public void Apply(Zdo z)
     {
         if (z == null) return;
@@ -161,8 +164,18 @@ public sealed class LocalPlayerResolver : IZdoResolver
                         }
                         if (z.HasKey(ZdoKeys.CurrentHealth))
                         {
+                            // Only when the player's reported health actually
+                            // CHANGED. This resolver runs on every delta — 10 Hz
+                            // of position — and re-stamping an unchanged report
+                            // would undo a hit a citizen just landed on the twin
+                            // here before the damage poller had seen it.
                             float hp = z.GetFloat(ZdoKeys.CurrentHealth, twin.currentHealth);
-                            try { twin.currentHealth = hp; } catch { }
+                            if (!_lastReportedHp.TryGetValue(twinId, out float prevHp) || prevHp != hp)
+                            {
+                                _lastReportedHp[twinId] = hp;
+                                try { twin.currentHealth = hp; } catch { }
+                                SoDCoop.Zdo.Pollers.NpcDamagePoller.NotifyExternalHealth(twinId, hp);
+                            }
                         }
 
                         if (z.HasKey(ZdoKeys.Activity))
