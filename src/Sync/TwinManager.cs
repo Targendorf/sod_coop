@@ -218,10 +218,49 @@ public static class TwinManager
     //  Phase B.3 — protection / removal-from-simulation
     // ─────────────────────────────────────────────────────────────────────
 
-    /// <summary>True iff this humanID is currently a twin for any client in the host's current seed.</summary>
+    /// <summary>True when <paramref name="humanID"/> is this machine's own
+    /// <c>Player.Instance</c>.
+    ///
+    /// <para><b>Why this matters:</b> the host's body on every machine is the
+    /// citizen with the host's <c>Player.humanID</c>. A client that loaded the
+    /// host's save — or started a new game in the same city — has a player of
+    /// its own with that SAME id, and SoD keeps the player in
+    /// <c>citizenDictionary</c> like any citizen. Every "look up the host's
+    /// twin" on such a client resolves to the client's own player: the host's
+    /// position stream would drive it, the host's crouch and outfit would be
+    /// applied to it, the host's citizen state (health, restraints) stamped
+    /// on it, and its own damage reported as hits on the host. Every twin /
+    /// citizen path that could land on the local player checks this.</para></summary>
+    public static bool IsLocalPlayerHuman(int humanID)
+    {
+        if (humanID <= 0) return false;
+        try
+        {
+            var p = global::Player.Instance;
+            return p != null && p.humanID == humanID;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>True iff this humanID is currently a player's twin (body).
+    ///
+    /// <para>Checks the connected roster first — the only source a CLIENT has
+    /// (its CharacterStore holds whatever it stored when it hosted this city
+    /// itself, not this session) and the only one that includes the HOST's own
+    /// body, which has no CharacterStore record. Then the host's store, which
+    /// also covers twins of players not connected right now.</para></summary>
     public static bool IsTwin(int humanID)
     {
         if (humanID <= 0) return false;
+        try
+        {
+            var players = Network.NetworkManager.Players;
+            if (players != null)
+                foreach (var kv in players)
+                    if (kv.Value != null && kv.Value.TwinHumanID == humanID) return true;
+        }
+        catch { }
+        if (!Network.NetworkManager.IsHost) return false;
         try
         {
             string seed = CharacterStore.CurrentSeed();
@@ -380,6 +419,7 @@ public static class TwinManager
             {
                 int id = kv.Value?.TwinHumanID ?? 0;
                 if (id <= 0) continue;
+                if (IsLocalPlayerHuman(id)) continue;   // that's us — see IsLocalPlayerHuman
                 if (!dict.TryGetValue(id, out var human) || human == null) continue;
                 var ai = human.ai;
                 if (ai == null || !ai.enabled) continue;
@@ -398,6 +438,15 @@ public static class TwinManager
     /// twin (character reset) so a citizen that returns to the city's normal
     /// population isn't left invisible.</summary>
     public static void ShowTwinBody(int humanID) => SetTwinRenderersEnabled(humanID, true);
+
+    /// <summary>Show / hide a player's body (their twin) — hiding in a closet,
+    /// lying as a corpse drawn by another rig. Never touches our own player.</summary>
+    public static void SetBodyVisible(int humanID, bool visible)
+    {
+        if (humanID <= 0 || IsLocalPlayerHuman(humanID)) return;
+        if (humanID == SoDCoop.Network.NetworkManager.MyTwinHumanID) return;   // own twin stays hidden
+        SetTwinRenderersEnabled(humanID, visible);
+    }
 
     private static void SetTwinRenderersEnabled(int humanID, bool enabled)
     {

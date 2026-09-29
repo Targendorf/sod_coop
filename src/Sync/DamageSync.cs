@@ -163,6 +163,10 @@ public static class DamageSync
             ApplyToLocalPlayer(amount, attackerHumanId, enableKill);
             return;
         }
+        // The HOST's body under our own player's id (shared id — see
+        // TwinManager.IsLocalPlayerHuman): the host was hit, not us.
+        if (!SoDCoop.Network.NetworkManager.IsHost && SoDCoop.Sync.TwinManager.IsLocalPlayerHuman(victimHumanId))
+            return;
 
         if (!float.IsNaN(healthAfter))
         {

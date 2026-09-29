@@ -161,6 +161,8 @@ public static class LocalPlayerPoller
                 z.Touch(ZdoKeys.Dead);
                 z.Touch(ZdoKeys.Activity);
                 z.Touch(ZdoKeys.CurrentHealth);
+                z.Touch(ZdoKeys.InBed);
+                z.Touch(ZdoKeys.LowBed);
             }
 
             // ── FAST LANE (every tick, 20 Hz) ─────────────────────────────
@@ -268,6 +270,16 @@ public static class LocalPlayerPoller
             // crouched / unconscious state on the body in their world.
             try { z.Set(ZdoKeys.Crouched, p.isCrouched);          } catch { }
             try { z.Set(ZdoKeys.Ko,       p.playerKOInProgress);  } catch { }
+            // In bed — sleeping to pass the time. Nothing carried it before
+            // (the SetInBed patch that fed PlayerStateSync is disabled), so a
+            // sleeping player stood upright in the bed on everyone else's screen.
+            try
+            {
+                bool inBed = p.isInBed;
+                z.Set(ZdoKeys.InBed, inBed);
+                if (inBed) z.Set(ZdoKeys.LowBed, p.isInLowBed);
+            }
+            catch { }
 
             // Coarse-grained activity tag — lockpicking / computer / phone /
             // search / hide. Receiver maps onto the twin citizen's

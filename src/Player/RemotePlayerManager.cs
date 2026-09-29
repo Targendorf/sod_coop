@@ -203,6 +203,9 @@ public static class RemotePlayerManager
             visual.transform.position = worldPos;
             visual.transform.rotation = worldRot;
             visual.name = $"RemotePlayer_{playerId}_corpse";
+            // The stand-in is switched off while the twin is the body; a corpse
+            // detached from it would fall invisibly.
+            if (!visual.activeSelf) visual.SetActive(true);
 
             // Freeze any animator so the body doesn't keep playing idle/walk
             // while flopping.

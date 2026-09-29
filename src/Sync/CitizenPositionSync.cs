@@ -492,6 +492,8 @@ public static class CitizenPositionSync
                 float yaw = r.GetUShort() / 65535f * 360f;
                 if (humanId == 0) continue;
                 if (TwinManager.IsTwin(humanId)) continue;
+                // Our own player under a shared id — never drive it.
+                if (TwinManager.IsLocalPlayerHuman(humanId)) continue;
 
                 // This client owns the citizen for an interaction (WorldSync
                 // ownership): its local AI is running dialog / fear / combat.

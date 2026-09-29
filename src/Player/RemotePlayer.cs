@@ -148,16 +148,48 @@ public class RemotePlayer : MonoBehaviour
         {
             if (isDown)
             {
+                // The twin is the body: let IT fall, in SoD's own ragdoll.
+                // The corpse path below detaches the STAND-IN, which is hidden
+                // while the twin drives — the player used to go down as an
+                // invisible corpse, a capsule popping up beside it and their
+                // real body still standing.
+                if (TwinIsBody && SetTwinRagdoll(true))
+                {
+                    _twinDown = true;
+                    Plugin.Log.LogInfo($"[RemotePlayer] {PlayerName} down — body #{_twin.humanID} ragdolled.");
+                    return;
+                }
+                if (TwinIsBody)
+                {
+                    // No ragdoll: hide the twin and show the stand-in's corpse.
+                    SoDCoop.Sync.TwinManager.SetBodyVisible(_twin.humanID, false);
+                    _twinHiddenForCorpse = _twin.humanID;
+                }
                 _corpse = RemotePlayerManager.DetachVisualAsCorpse(PlayerId, hitDirection);
                 Plugin.Log.LogInfo($"[RemotePlayer] {PlayerName} down — detached visual as corpse.");
             }
             else
             {
+                if (_twinDown)
+                {
+                    _twinDown = false;
+                    SetTwinRagdoll(false);
+                    Plugin.Log.LogInfo($"[RemotePlayer] {PlayerName} revived — body back on its feet.");
+                    return;
+                }
                 RemotePlayerManager.DestroyCorpseAndRespawnVisual(PlayerId, _corpse);
                 _corpse = null;
                 // Re-resolve animator on the freshly attached visual.
                 _animator = null;
                 _animatorParamsScanned = false;
+                if (_twinHiddenForCorpse > 0)
+                {
+                    SoDCoop.Sync.TwinManager.SetBodyVisible(_twinHiddenForCorpse, true);
+                    _twinHiddenForCorpse = 0;
+                }
+                // The respawned stand-in is visible; if the twin drives, the
+                // next frame must hide it again.
+                _standInHidden = false;
                 Plugin.Log.LogInfo($"[RemotePlayer] {PlayerName} revived — corpse cleared, visual respawned.");
             }
         }
@@ -439,6 +471,7 @@ public class RemotePlayer : MonoBehaviour
 
     private global::Human _twin;
     private float _nextTwinResolveAt;
+    private bool _loggedOwnIdTwin;
     private Animator _twinAnimator;
     private bool _twinAnimResolved;
     private bool _standInHidden;
@@ -462,10 +495,16 @@ public class RemotePlayer : MonoBehaviour
         // back — driving the twin here would leave an invisible corpse on the
         // floor while the twin stayed upright. Same restore when the feature is
         // switched off at runtime.
-        if (IsDown || CoopSettings.RemotePlayerUsesTwinBody?.Value == false)
+        if (CoopSettings.RemotePlayerUsesTwinBody?.Value == false)
         {
             RestoreStandIn();
             return false;
+        }
+        if (IsDown)
+        {
+            // Lying in its own ragdoll: nothing to drive. Otherwise the
+            // stand-in's corpse is the body and the twin is hidden.
+            return _twinDown;
         }
 
         try
@@ -503,6 +542,7 @@ public class RemotePlayer : MonoBehaviour
                 Plugin.Log.LogInfo(
                     $"[RemotePlayer] {PlayerName} is now driven through twin citizen #{_twin.humanID} — " +
                     "stand-in clone hidden, game AI can perceive this player.");
+                OnBodyChanged();
             }
 
             DriveTwinAnimator();
@@ -520,6 +560,8 @@ public class RemotePlayer : MonoBehaviour
     [HideFromIl2Cpp]
     private void DropTwin()
     {
+        _twinDown = false;
+        _twinHiddenForCorpse = 0;
         _twin = null;
         _twinAnimator = null;
         _twinAnimResolved = false;
@@ -536,6 +578,146 @@ public class RemotePlayer : MonoBehaviour
         if (!_standInHidden) return;
         _standInHidden = false;
         RemotePlayerManager.SetStandInVisualVisible(PlayerId, true);
+        OnBodyChanged();
+    }
+
+    // ── What the visible body wears and does ────────────────────────────
+    //
+    // Held item, torch, raised stance, bed, hiding. All of these used to be
+    // put on the RemotePlayer's own hierarchy — the stand-in clone — which is
+    // HIDDEN while the twin is the body (the default). So another player was
+    // seen walking about empty-handed in the dark, never raising a weapon,
+    // never lying down: the item hung off an invisible hand. They now go to
+    // whichever body is on screen and move with it when that changes.
+
+    /// <summary>True while the twin citizen is the visible body.</summary>
+    private bool TwinIsBody => _twin != null && _standInHidden;
+
+    /// <summary>The twin lies in its own ragdoll (player downed).</summary>
+    private bool _twinDown;
+    /// <summary>Twin hidden while the stand-in's corpse shows (no ragdoll).</summary>
+    private int _twinHiddenForCorpse;
+    private bool _flashlightOn;
+    private bool _hiding;
+    private bool _combatStanceSet;
+
+    /// <summary>The visible body changed (twin took over, or the stand-in came
+    /// back): move the held item and torch onto its hand and re-apply the
+    /// states that live on the body.</summary>
+    [HideFromIl2Cpp]
+    private void OnBodyChanged()
+    {
+        try
+        {
+            if (_flashlight != null)
+            {
+                try { Object.Destroy(_flashlight.gameObject); } catch { }
+                _flashlight = null;
+            }
+            _combatStanceSet = false;
+            RebuildHeldVisual();
+            if (_flashlightOn) ApplyFlashlight(true);
+            ApplyRaisedToBody();
+            if (_bedKnown && _inBed) ApplyBedToBody();
+            if (_hiding) ApplyBodyHidden(true);
+            // A re-resolved twin (world reload) is a fresh citizen in its
+            // seeded clothes — dress it again.
+            if (TwinIsBody && _pendingAppearance.HasValue)
+            {
+                try
+                {
+                    var ctrl = _twin.outfitController;
+                    if (ctrl != null) _pendingAppearance.Value.ApplyTo(ctrl);
+                }
+                catch { }
+            }
+        }
+        catch (System.Exception ex) { Plugin.Log.LogDebug($"[RemotePlayer] OnBodyChanged({PlayerName}): {ex.Message}"); }
+    }
+
+    /// <summary>SoD's own ragdoll on the twin — the body falls as any citizen
+    /// knocked out does. False when it isn't available.</summary>
+    [HideFromIl2Cpp]
+    private bool SetTwinRagdoll(bool on)
+    {
+        try
+        {
+            var ac = _twin != null ? _twin.animationController : null;
+            if (ac == null) return false;
+            ac.SetRagdoll(on, false);
+            return true;
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"[RemotePlayer] SetRagdoll({on}) on {PlayerName}'s body: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>Raised weapon / fists: the twin takes SoD's combat stance
+    /// (the one a citizen squaring up to a fight uses); the stand-in gets the
+    /// best-effort animator parameter.</summary>
+    [HideFromIl2Cpp]
+    private void ApplyRaisedToBody()
+    {
+        if (TwinIsBody)
+        {
+            if (!_isRaised && !_combatStanceSet) return;
+            try { _twin.animationController?.SetInCombat(_isRaised); } catch { }
+            _combatStanceSet = _isRaised;
+            return;
+        }
+        SetStandInBool(_isRaised, "israised", "raised", "isaiming", "aim", "aiming");
+    }
+
+    /// <summary>Player is hiding (closet, under a bed…): the body is hidden
+    /// with them rather than standing inside the furniture.</summary>
+    [HideFromIl2Cpp]
+    public void ApplyHiding(bool hiding)
+    {
+        if (_hiding == hiding) return;
+        _hiding = hiding;
+        ApplyBodyHidden(hiding);
+    }
+
+    [HideFromIl2Cpp]
+    private void ApplyBodyHidden(bool hidden)
+    {
+        try
+        {
+            if (TwinIsBody) SoDCoop.Sync.TwinManager.SetBodyVisible(_twin.humanID, !hidden);
+            else RemotePlayerManager.SetStandInVisualVisible(PlayerId, !hidden);
+            if (_heldVisual != null) _heldVisual.SetActive(!hidden);
+            if (_flashlight != null) _flashlight.enabled = !hidden && _flashlightOn;
+        }
+        catch { }
+    }
+
+    /// <summary>Set the first bool parameter matching one of <paramref name="names"/>
+    /// on the stand-in's animator (its rig's parameter names are not known).</summary>
+    [HideFromIl2Cpp]
+    private void SetStandInBool(bool value, params string[] names)
+    {
+        try
+        {
+            if (_animator == null) _animator = GetComponentInChildren<Animator>();
+            if (_animator == null) return;
+            var pars = _animator.parameters;
+            if (pars == null) return;
+            for (int i = 0; i < pars.Length; i++)
+            {
+                var p = pars[i];
+                if (p == null || string.IsNullOrEmpty(p.name) || p.type != AnimatorControllerParameterType.Bool) continue;
+                var n = p.name.ToLowerInvariant();
+                for (int j = 0; j < names.Length; j++)
+                {
+                    if (n != names[j]) continue;
+                    _animator.SetBool(p.nameHash, value);
+                    return;
+                }
+            }
+        }
+        catch { }
     }
 
     [HideFromIl2Cpp]
@@ -549,6 +731,22 @@ public class RemotePlayer : MonoBehaviour
             twinId = info.TwinHumanID;
         }
         if (twinId <= 0) return false;
+
+        // On a machine whose own player shares this id (it loaded the host's
+        // save, or began a new game in the same city) the "twin" IS the local
+        // player — driving it would glue us to this remote player. Stay on
+        // the stand-in body. See TwinManager.IsLocalPlayerHuman.
+        if (SoDCoop.Sync.TwinManager.IsLocalPlayerHuman(twinId))
+        {
+            if (!_loggedOwnIdTwin)
+            {
+                _loggedOwnIdTwin = true;
+                Plugin.Log.LogWarning(
+                    $"[RemotePlayer] {PlayerName}'s body #{twinId} is this machine's own player — " +
+                    "using the stand-in body instead.");
+            }
+            return false;
+        }
 
         var dict = global::CityData.Instance?.citizenDictionary;
         if (dict == null) return false;
@@ -569,16 +767,7 @@ public class RemotePlayer : MonoBehaviour
     {
         try
         {
-            if (!_twinAnimResolved)
-            {
-                _twinAnimResolved = true;
-                try { _twinAnimator = _twin.GetComponentInChildren<Animator>(); } catch { _twinAnimator = null; }
-                if (_twinAnimator != null)
-                {
-                    _twinMoveSpeedHash = Animator.StringToHash("moveSpeed");
-                    _twinWalkSpeedHash = Animator.StringToHash("walkAnimSpeed");
-                }
-            }
+            if (!_twinAnimResolved) ResolveTwinAnimator();
             if (_twinAnimator == null) return;
 
             // The speed of what is being PLAYED, not of the two newest
@@ -590,6 +779,18 @@ public class RemotePlayer : MonoBehaviour
             _twinAnimator.SetFloat(_twinWalkSpeedHash, Mathf.Clamp01(speed / 1.5f));
         }
         catch { /* animator missing or odd — position still syncs */ }
+    }
+
+    [HideFromIl2Cpp]
+    private void ResolveTwinAnimator()
+    {
+        _twinAnimResolved = true;
+        try { _twinAnimator = _twin.GetComponentInChildren<Animator>(); } catch { _twinAnimator = null; }
+        if (_twinAnimator != null)
+        {
+            _twinMoveSpeedHash = Animator.StringToHash("moveSpeed");
+            _twinWalkSpeedHash = Animator.StringToHash("walkAnimSpeed");
+        }
     }
 
     /// <summary>
@@ -757,26 +958,7 @@ public class RemotePlayer : MonoBehaviour
     {
         if (_isRaised == isRaised) return;
         _isRaised = isRaised;
-        // Best-effort: poke the citizen animator if it has an "isAiming" / "isRaised" parameter.
-        try
-        {
-            if (_animator == null) _animator = GetComponentInChildren<Animator>();
-            if (_animator == null) return;
-            var pars = _animator.parameters;
-            if (pars == null) return;
-            for (int i = 0; i < pars.Length; i++)
-            {
-                var p = pars[i];
-                if (p == null || string.IsNullOrEmpty(p.name)) continue;
-                var n = p.name.ToLowerInvariant();
-                if (n == "israised" || n == "raised" || n == "isaiming" || n == "aim" || n == "aiming")
-                {
-                    _animator.SetBool(p.nameHash, isRaised);
-                    break;
-                }
-            }
-        }
-        catch { /* animator quirks — non-fatal */ }
+        ApplyRaisedToBody();
     }
 
     /// <summary>
@@ -787,6 +969,11 @@ public class RemotePlayer : MonoBehaviour
     [HideFromIl2Cpp]
     public void ApplyAction(byte actionKind)
     {
+        // Not on the twin: a citizen's swing animation fires
+        // CitizenAnimationEvents.MeleeAttackTrigger, which runs the hit through
+        // that citizen's AI — a phantom attack from a frozen body. The real
+        // hit already travels as NpcHitSync / damage events.
+        if (TwinIsBody) return;
         try
         {
             if (_animator == null) _animator = GetComponentInChildren<Animator>();
@@ -825,10 +1012,32 @@ public class RemotePlayer : MonoBehaviour
         catch { /* animator quirks — non-fatal */ }
     }
 
-    /// <summary>Apply remote in-bed state. Best-effort animator pulse.</summary>
+    /// <summary>Last in-bed state received (see ApplyInBed).</summary>
+    private bool _bedKnown, _inBed, _lowBed;
+
+    /// <summary>Apply remote in-bed state. Called on every delta of the
+    /// player's ZDO — acts only when it changes.</summary>
     [HideFromIl2Cpp]
     public void ApplyInBed(bool isInBed, bool isLowBed)
     {
+        if (_bedKnown && _inBed == isInBed && _lowBed == isLowBed) return;
+        _bedKnown = true;
+        _inBed = isInBed;
+        _lowBed = isLowBed;
+        ApplyBedToBody();
+    }
+
+    [HideFromIl2Cpp]
+    private void ApplyBedToBody()
+    {
+        bool isInBed = _inBed, isLowBed = _lowBed;
+        if (TwinIsBody)
+        {
+            // SetInBed is what lays a citizen down; the animator parameter
+            // guess below is for the stand-in rig.
+            try { if (_twin.isInBed != isInBed) _twin.SetInBed(isInBed, isLowBed); } catch { }
+            return;
+        }
         try
         {
             if (_animator == null) _animator = GetComponentInChildren<Animator>();
@@ -855,6 +1064,11 @@ public class RemotePlayer : MonoBehaviour
     [HideFromIl2Cpp]
     public void ApplyAsleep(bool isAsleep)
     {
+        if (TwinIsBody)
+        {
+            try { if (_twin.isAsleep != isAsleep) _twin.isAsleep = isAsleep; } catch { }
+            return;
+        }
         try
         {
             if (_animator == null) _animator = GetComponentInChildren<Animator>();
@@ -881,12 +1095,13 @@ public class RemotePlayer : MonoBehaviour
     [HideFromIl2Cpp]
     public void ApplyFlashlight(bool isOn)
     {
+        _flashlightOn = isOn;
         try
         {
             if (isOn)
             {
                 EnsureFlashlight();
-                if (_flashlight != null) _flashlight.enabled = true;
+                if (_flashlight != null) _flashlight.enabled = !_hiding;
             }
             else
             {
@@ -906,6 +1121,39 @@ public class RemotePlayer : MonoBehaviour
     [HideFromIl2Cpp]
     private Transform GetRightHandTransform()
     {
+        // The twin's hand while it is the body. SoD's outfit controller keeps
+        // an anchor per body part (the one it hangs gloves / held props on).
+        if (TwinIsBody)
+        {
+            try
+            {
+                var a = _twin.outfitController?.GetBodyAnchor(global::CitizenOutfitController.CharacterAnchor.HandRight);
+                if (a != null) return a;
+            }
+            catch { }
+            try
+            {
+                if (!_twinAnimResolved) ResolveTwinAnimator();
+                if (_twinAnimator != null && _twinAnimator.isHuman)
+                {
+                    var t = _twinAnimator.GetBoneTransform(HumanBodyBones.RightHand);
+                    if (t != null) return t;
+                }
+            }
+            catch { }
+            return _twin.transform;
+        }
+
+        // Stand-in: the cloned rig keeps its CitizenOutfitController, whose
+        // anchors Instantiate remapped onto the clone's own bones.
+        try
+        {
+            var ctrl = GetComponentInChildren<global::CitizenOutfitController>();
+            var a = ctrl != null ? ctrl.GetBodyAnchor(global::CitizenOutfitController.CharacterAnchor.HandRight) : null;
+            if (a != null && a.IsChildOf(transform)) return a;
+        }
+        catch { }
+
         try
         {
             if (_animator == null) _animator = GetComponentInChildren<Animator>();
@@ -966,6 +1214,7 @@ public class RemotePlayer : MonoBehaviour
             // Strip any behaviour that would re-run game logic on this clone
             // (Interactable, Rigidbody, Collider) — it's a static visual only.
             StripHeldVisualComponents(_heldVisual);
+            if (_hiding) _heldVisual.SetActive(false);
         }
         catch (System.Exception ex)
         {
@@ -1051,10 +1300,17 @@ public class RemotePlayer : MonoBehaviour
         _animator = GetComponentInChildren<Animator>();
         _animatorParamsScanned = false;
         _animSpeedHash = _animIsRunningHash = _animIsCrouchingHash = -1;
-        // Reattach inventory visuals to the new rig's right-hand bone.
-        _flashlight = null;
-        RebuildHeldVisual();
-        if (_heldInteractableId >= 0) ApplyRaised(_isRaised);
+        if (_standInHidden)
+        {
+            // The twin is the body: the fresh stand-in must not show next to
+            // it, and the held item / torch stay on the twin's hand.
+            RemotePlayerManager.SetStandInVisualVisible(PlayerId, false);
+        }
+        else
+        {
+            // Reattach inventory visuals to the new rig's right-hand bone.
+            OnBodyChanged();
+        }
         // Re-apply any appearance customization received before the visual
         // existed. CitizenVisualCloner now keeps CitizenOutfitController on
         // the clone, so ApplyTo can stamp debugOverride* + LoadCurrentOutfit.
@@ -1099,10 +1355,15 @@ public class RemotePlayer : MonoBehaviour
         _animatorParamsScanned = false;
         _animSpeedHash = _animIsRunningHash = _animIsCrouchingHash = -1;
         // Citizen rig destroyed — drop attached visuals so they don't dangle.
+        // (They are rebuilt on whichever body shows next — OnBodyChanged.)
         if (_heldVisual != null)
         {
             try { Object.Destroy(_heldVisual); } catch { }
             _heldVisual = null;
+        }
+        if (_flashlight != null)
+        {
+            try { Object.Destroy(_flashlight.gameObject); } catch { }
         }
         _flashlight = null;
     }
@@ -1122,6 +1383,14 @@ public class RemotePlayer : MonoBehaviour
         // later (character reset → UnfreezeTwin) would otherwise walk without
         // it. The twin's transform is left where the player last stood.
         try { _twinRootMotion.Restore(); } catch { }
+        try
+        {
+            if (_twinDown) SetTwinRagdoll(false);
+            if (_twin != null && (_hiding || _twinHiddenForCorpse > 0))
+                SoDCoop.Sync.TwinManager.SetBodyVisible(_twin.humanID, true);
+            if (_twin != null && _combatStanceSet) _twin.animationController?.SetInCombat(false);
+        }
+        catch { }
     }
 }
 

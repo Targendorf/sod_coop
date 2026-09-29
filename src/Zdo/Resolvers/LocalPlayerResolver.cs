@@ -138,6 +138,17 @@ public sealed class LocalPlayerResolver : IZdoResolver
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerResolver] dead: {ex.Message}"); }
 
+        // Lying in bed / hiding — applied to whichever body shows this player
+        // (the RemotePlayer knows whether that is the twin or the stand-in).
+        try
+        {
+            if (z.HasKey(ZdoKeys.InBed))
+                rp.ApplyInBed(z.GetBool(ZdoKeys.InBed, false), z.GetBool(ZdoKeys.LowBed, false));
+            if (z.HasKey(ZdoKeys.Activity))
+                rp.ApplyHiding(z.GetByte(ZdoKeys.Activity, 0) == (byte)SoDCoop.Player.PlayerActivity.Hiding);
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[LocalPlayerResolver] bed/hiding: {ex.Message}"); }
+
         // Every peer: pose this player's twin — their body in our world — from
         // their own report. Crouch and activity (lockpicking, typing, on the
         // phone…) are visual, so each machine applies them to its copy of the
@@ -157,7 +168,9 @@ public sealed class LocalPlayerResolver : IZdoResolver
                 && pinfo != null)
                 twinId = pinfo.TwinHumanID;
             if (twinId <= 0) twinId = SoDCoop.Sync.TwinManager.GetTwinHumanIDForSender(playerId);
-            if (twinId > 0)
+            // Never pose our own player with someone else's crouch — see
+            // TwinManager.IsLocalPlayerHuman.
+            if (twinId > 0 && !SoDCoop.Sync.TwinManager.IsLocalPlayerHuman(twinId))
             {
                 var dict = global::CityData.Instance?.citizenDictionary;
                 if (dict != null && dict.TryGetValue(twinId, out var body) && body != null)

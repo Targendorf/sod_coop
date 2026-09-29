@@ -169,6 +169,9 @@ public static class NpcHitSync
             {
                 int twin = kv.Value?.TwinHumanID ?? 0;
                 if (twin <= 0 || twin == mine) continue;
+                // Shared id with our own player: our own damage is not a hit
+                // on that player's body. See TwinManager.IsLocalPlayerHuman.
+                if (TwinManager.IsLocalPlayerHuman(twin)) continue;
                 if (dict.TryGetValue(twin, out var h) && h != null)
                     _candidates.Add(new KeyValuePair<int, global::Human>(twin, h));
             }

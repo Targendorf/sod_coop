@@ -27,6 +27,12 @@ public sealed class CitizenResolver : IZdoResolver
         int humanId = z.GetInt(ZdoKeys.SodId, int.MinValue);
         if (humanId == int.MinValue) return;
 
+        // The host's citizen record under OUR player's id is the host's own
+        // body (same save / same city → same player id). Its health, outfit,
+        // restraints and pose are the host's, not ours — never stamp them on
+        // Player.Instance. See TwinManager.IsLocalPlayerHuman.
+        if (SoDCoop.Sync.TwinManager.IsLocalPlayerHuman(humanId)) return;
+
         // Snapshot-restore guard: the playtest 2026-06-16 regression (every
         // NPC naked + crouched + falling over) was caused by the snapshot
         // carrying outfit=0 / crouched=true / stunned=true values that the
