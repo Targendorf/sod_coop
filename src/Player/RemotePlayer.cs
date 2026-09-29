@@ -372,6 +372,12 @@ public class RemotePlayer : MonoBehaviour
     private int _twinMoveSpeedHash = -1;
     private int _twinWalkSpeedHash = -1;
 
+    /// <summary>Root motion suppressed on the twin while we drive it — see
+    /// <see cref="SoDCoop.Sync.RootMotionGuard"/>. We feed moveSpeed on the twin
+    /// and write its transform ourselves; left on, root motion adds its own step
+    /// after our write every frame.</summary>
+    private readonly SoDCoop.Sync.RootMotionGuard _twinRootMotion = new();
+
     /// <summary>Drive this player's twin citizen to <paramref name="targetPos"/>
     /// and feed its locomotion animation. Returns true when the twin took over
     /// as the body, false when the caller should keep using the stand-in.</summary>
@@ -393,6 +399,13 @@ public class RemotePlayer : MonoBehaviour
         {
             if (_twin == null)
             {
+                // No twin (not resolved yet, or lost — destroyed by a world
+                // reload, or dropped after an exception). The stand-in MUST be
+                // visible meanwhile: the caller falls back to animating it, and
+                // if it were still hidden from an earlier twin the player would
+                // simply vanish.
+                RestoreStandIn();
+
                 // Throttled: the twin id arrives with the handshake, but a
                 // position packet can outrace it, and the citizen itself may
                 // not exist until the world finishes loading.
@@ -403,7 +416,7 @@ public class RemotePlayer : MonoBehaviour
             }
 
             var t = _twin.transform;
-            if (t == null) { _twin = null; return false; }
+            if (t == null) { DropTwin(); return false; }
 
             // TwinManager froze the AI, so nothing else writes this transform.
             t.position = targetPos;
@@ -411,6 +424,7 @@ public class RemotePlayer : MonoBehaviour
 
             if (!_standInHidden)
             {
+                _twinRootMotion.Suppress(_twin);
                 RemotePlayerManager.SetStandInVisualVisible(PlayerId, false);
                 _standInHidden = true;
                 Plugin.Log.LogInfo(
@@ -424,16 +438,28 @@ public class RemotePlayer : MonoBehaviour
         catch (System.Exception ex)
         {
             Plugin.Log.LogWarning($"[RemotePlayer] DriveTwin({PlayerName}): {ex.Message}");
-            _twin = null;
+            DropTwin();
             return false;
         }
     }
 
+    /// <summary>Stop using the twin as the body and bring the stand-in back.</summary>
+    [HideFromIl2Cpp]
+    private void DropTwin()
+    {
+        _twin = null;
+        _twinAnimator = null;
+        _twinAnimResolved = false;
+        RestoreStandIn();
+    }
+
     /// <summary>Put the stand-in body back on screen after the twin stops
-    /// driving (player downed, or the feature switched off mid-session).</summary>
+    /// driving (player downed, twin lost, or the feature switched off
+    /// mid-session), and hand the twin's root motion back.</summary>
     [HideFromIl2Cpp]
     private void RestoreStandIn()
     {
+        _twinRootMotion.Restore();
         if (!_standInHidden) return;
         _standInHidden = false;
         RemotePlayerManager.SetStandInVisualVisible(PlayerId, true);

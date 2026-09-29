@@ -1,104 +1,95 @@
-using SoDCoop.Network;
+using System.Collections.Generic;
 using LiteNetLib;
 using LiteNetLib.Utils;
+using SoDCoop.Network;
 using UnityEngine;
-using UnityEngine.AI;
-using System.Collections.Generic;
 
 namespace SoDCoop.Sync;
 
 /// <summary>
-/// AI Command Streaming NPC sync.
+/// World seed announcement, citizen interaction ownership, and host-side AI
+/// tick-rate promotion for citizens near remote players.
 ///
-/// Because host and client share the same world seed, their NavMesh topologies are
-/// identical. Instead of streaming per-frame positions and lerping, the host streams
-/// NavMeshAgent destinations + behaviour states. The client re-runs the same
-/// NavMeshAgent commands locally, producing smooth natively-animated movement.
+/// <para><b>What this class no longer does, and why.</b> It used to be the NPC
+/// movement sync, as "AI command streaming": the host scanned every citizen in
+/// the city at 10 Hz and streamed NavMeshAgent destinations (ReliableOrdered,
+/// map-wide), plus authoritative positions every 3 s, and the client drove a
+/// local NavMeshAgent towards each destination. SoD does not use Unity's
+/// NavMesh at all — the string <c>NavMeshAgent</c> appears nowhere in the game
+/// assembly; citizens walk SoD's own node graph under <c>NewAIController</c>.
+/// So <c>GetComponent("NavMeshAgent")</c> always returned null, which meant:</para>
+/// <list type="bullet">
+///   <item><description>The command stream was pure waste — two GetComponent
+///   lookups per citizen per tick on the host, serialised and shipped reliably
+///   to clients that dropped every one of them.</description></item>
+///   <item><description>The 3 s corrections fell through to direct
+///   <c>transform.position</c> writes — snaps past 4 m, 30 % nudges past 0.5 m —
+///   while the client's local AI kept walking the citizen its own way, so
+///   pedestrians popped every few seconds.</description></item>
+///   <item><description>Ownership release switched the client's AI off "so the
+///   host resumes authoritative control", but nothing on the host was driving
+///   the client's copy, so every citizen a client brushed past became a
+///   statue.</description></item>
+/// </list>
+/// <para>Citizen movement is now owned solely by <see cref="CitizenPositionSync"/>
+/// (host-authoritative, interpolated, near each peer). The command/correction
+/// packet types are still recognised and ignored so a peer on an older build
+/// can't push them into another handler.</para>
 ///
-/// Host:
-///   - Every COMMAND_SCAN_RATE (10 Hz) check each in-range citizen.
-///   - If destination / speed / behaviour changed → CitizenCommandBatch (ReliableOrdered).
-///   - Every CORRECTION_INTERVAL (3 s) send authoritative positions for moving citizens
-///     so floating-point drift never accumulates → CitizenCorrectionBatch (Sequenced).
-///
-/// Client:
-///   - CitizenCommandBatch → enable NavMeshAgent, SetDestination, SetSpeed.
-///   - CitizenCorrectionBatch → Warp if drift > threshold.
-///   - SoD's own AI scheduler still runs on the client (same seed/time), so it often
-///     picks the same destination independently; commands keep them in sync.
-///
-/// Host-side citizens are NEVER touched — host runs normal authoritative simulation.
+/// <para><b>What remains:</b></para>
+/// <list type="bullet">
+///   <item><description><b>World seed</b> announcement on connect.</description></item>
+///   <item><description><b>Interaction ownership</b> — a citizen within
+///   <see cref="OWNERSHIP_CLAIM_DIST"/> of a client is handed to that client's
+///   local AI (dialog, fear, combat reactions run natively there) and held still
+///   on the host until released. <see cref="CitizenPositionSync"/> steps aside
+///   for owned citizens and takes them back on release.</description></item>
+///   <item><description><b>Tick-rate promotion</b> — SoD LODs NPC AI by distance
+///   to the LOCAL player, so on the host a citizen next to a client but far from
+///   the host would tick rarely, and the positions CitizenPositionSync streams
+///   for it would be sparse and jerky. The host promotes those citizens to the
+///   rate their nearest peer needs.</description></item>
+/// </list>
 /// </summary>
 public class WorldSync
 {
     #region Tuning
 
-    private const float COMMAND_SCAN_RATE    = 0.1f;   // s — host scans for destination changes (10 Hz)
-    private const float CORRECTION_INTERVAL  = 3.0f;   // s — authoritative position correction
-    // 1e6 = effectively no gate. NPCs sync across the entire map regardless of
-    // distance to any player. SoD's tiered tick-rate system handles host-side
-    // CPU cost; what kept the bandwidth bounded was the deadband in destination/
-    // speed deltas (NPCs only emit when their target actually changes), so
-    // dropping the range gate doesn't flood the wire — idle NPCs still don't
-    // send. See PromoteRemoteTickRates for the companion fix that prevents
-    // tick-rate divergence between host and clients in different parts of town.
-    private const float NPC_SYNC_RANGE       = 1_000_000f;
-    private const int   MAX_CMDS_PER_BATCH   = 30;
-    private const int   MAX_CORR_PER_BATCH   = 30;
-    private const float MIN_DEST_DELTA       = 0.3f;   // m — resend if destination moved more than this
-    private const float MIN_SPEED_DELTA      = 0.2f;   // m/s — resend if speed changed more than this
-    private const float CORRECTION_LERP_DIST = 0.5f;   // m — soft nudge above this
-    private const float CORRECTION_SNAP_DIST = 4.0f;   // m — hard snap above this
-    private const float WALK_SPEED_THRESHOLD = 2.5f;   // m/s — above this = Running state
-
-    // ── Ownership transfer (client interaction) ───────────────────────────────
-    private const float OWNERSHIP_SCAN_RATE     = 0.3f;   // s — how often client checks for nearby citizens
-    private const float OWNERSHIP_CLAIM_DIST    = 2.5f;   // m — claim ownership inside this radius
-    private const float OWNERSHIP_RELEASE_DIST  = 4.5f;   // m — release outside this radius (hysteresis)
+    private const float OWNERSHIP_SCAN_RATE    = 0.3f;   // s — client ownership scan cadence
+    private const float OWNERSHIP_CLAIM_DIST   = 2.5f;   // m — claim inside this radius
+    private const float OWNERSHIP_RELEASE_DIST = 4.5f;   // m — release outside this radius (hysteresis)
 
     #endregion
 
     public int SyncedSeed { get; private set; }
 
-    private float _lastCommandScan;
-    private float _lastCorrectionScan;
     private float _lastOwnershipScan;
     private readonly NetDataWriter _writer = new();
     private readonly NetDataWriter _ownershipWriter = new();
 
-    // ── Ownership tracking ────────────────────────────────────────────────────
-    /// <summary>Host-side: which player owns each citizen (missing = host owns).</summary>
+    // ── Ownership ──────────────────────────────────────────────────────────
+
+    /// <summary>Host: citizen id → owning player id (absent = host owns).</summary>
     private readonly Dictionary<int, int> _citizenOwners = new();
 
-    /// <summary>Client-side: which citizens THIS client currently owns (interaction range).</summary>
-    private readonly HashSet<int> _myOwnedCitizens = new();
-
-    /// <summary>Both sides: citizens whose AI is currently paused due to client ownership.</summary>
+    /// <summary>Host: citizens whose host-side AI we paused because a client
+    /// owns them. Tracked separately so we only ever re-enable AI we disabled.</summary>
     private readonly HashSet<int> _pausedAI = new();
 
-    // ── Host-side: per-citizen last-sent state ────────────────────────────────
-    private readonly Dictionary<int, HostSentState> _hostSent = new();
+    /// <summary>Client: citizens THIS client currently owns.</summary>
+    private readonly HashSet<int> _myOwnedCitizens = new();
 
-    // ── Client-side: per-citizen agent/behaviour tracking ────────────────────
-    private readonly Dictionary<int, ClientCitizenState> _clientStates = new();
+    private readonly List<int> _scratchIds = new();
 
-    private struct HostSentState
-    {
-        public Vector3               LastDestination;
-        public float                 LastSpeed;
-        public CitizenBehaviourState LastBehaviour;
-        public bool                  IsDead;
-        public float                 LastCommandSentAt;
-        public float                 LastCorrectionSentAt;
-    }
+    /// <summary>True when this client currently owns <paramref name="citizenId"/>
+    /// for an interaction. <see cref="CitizenPositionSync"/> consults this so it
+    /// never fights the local AI during a conversation or fight.</summary>
+    public bool IsOwnedLocally(int citizenId) => _myOwnedCitizens.Contains(citizenId);
 
-    private struct ClientCitizenState
-    {
-        public bool                  AIControllerDisabled; // NewAIController.enabled = false done
-        public bool                  RootMotionDisabled;   // applyRootMotion = false done
-        public CitizenBehaviourState BehaviourState;
-        public bool                  IsDead;
-    }
+    /// <summary>Host: player id that owns <paramref name="citizenId"/>, or -1 when
+    /// the host owns it.</summary>
+    public int GetOwnerPlayerId(int citizenId)
+        => _citizenOwners.TryGetValue(citizenId, out var owner) ? owner : -1;
 
     // -------------------------------------------------------------------------
     //  Update
@@ -109,41 +100,22 @@ public class WorldSync
         if (!NetworkManager.IsConnected) return;
         if (!WorldReadyGate.IsWorldReady) return;
 
-        float now = Time.unscaledTime;
-
         if (NetworkManager.IsHost)
         {
-            if (now - _lastCommandScan >= COMMAND_SCAN_RATE)
-            {
-                _lastCommandScan = now;
-                HostScanCommands(now);
-            }
-
-            if (now - _lastCorrectionScan >= CORRECTION_INTERVAL)
-            {
-                _lastCorrectionScan = now;
-                HostSendCorrections(now);
-            }
-
-            // Throttled per-frame promotion of NPC tick rates to match the
-            // closest peer's needs. Without this, an NPC far from the host but
-            // close to a client would tick rarely on the host (low rate ⇒
-            // rare destination updates ⇒ stale movement on the client).
             PromoteRemoteTickRates();
+            return;
         }
-        else
+
+        float now = Time.unscaledTime;
+        if (now - _lastOwnershipScan >= OWNERSHIP_SCAN_RATE)
         {
-            // Client: scan nearby citizens to claim/release ownership for interactions.
-            if (now - _lastOwnershipScan >= OWNERSHIP_SCAN_RATE)
-            {
-                _lastOwnershipScan = now;
-                ClientOwnershipScan();
-            }
+            _lastOwnershipScan = now;
+            ClientOwnershipScan();
         }
     }
 
     // -------------------------------------------------------------------------
-    //  Client-side ownership scanner — claim nearby citizens, release distant
+    //  Client: ownership scan
     // -------------------------------------------------------------------------
 
     private void ClientOwnershipScan()
@@ -152,42 +124,43 @@ public class WorldSync
         {
             var localPlayer = global::Player.Instance;
             if (localPlayer == null) return;
-
             Vector3 myPos = localPlayer.transform.position;
-            var dict = CityData.Instance?.citizenDictionary;
-            if (dict == null) return;
 
-            // Step 1: release citizens we own that drifted out of range / disappeared.
-            // Buffer to a list — can't modify HashSet during iteration.
-            List<int> toRelease = null;
-            foreach (var id in _myOwnedCitizens)
+            // Release owned citizens that drifted out of range or disappeared.
+            if (_myOwnedCitizens.Count > 0)
             {
-                var human = NetworkIdResolver.GetHuman(id);
-                if (human == null || human.gameObject == null)
+                _scratchIds.Clear();
+                foreach (var id in _myOwnedCitizens)
                 {
-                    (toRelease ??= new()).Add(id);
-                    continue;
+                    var human = NetworkIdResolver.GetHuman(id);
+                    if (human == null || human.gameObject == null) { _scratchIds.Add(id); continue; }
+                    if (Vector3.Distance(human.transform.position, myPos) > OWNERSHIP_RELEASE_DIST)
+                        _scratchIds.Add(id);
                 }
-                float d = Vector3.Distance(human.transform.position, myPos);
-                if (d > OWNERSHIP_RELEASE_DIST)
-                    (toRelease ??= new()).Add(id);
+                for (int i = 0; i < _scratchIds.Count; i++) ClientReleaseOwnership(_scratchIds[i]);
             }
-            if (toRelease != null)
-                foreach (var id in toRelease) ClientReleaseOwnership(id);
 
-            // Step 2: claim nearby citizens we don't already own.
-            foreach (var kv in dict)
+            // Claim nearby citizens. Walks the shared managed roster instead of
+            // enumerating the live Il2Cpp citizenDictionary every scan.
+            if (!Zdo.Pollers.CitizenRosterCache.TryGetRoster(out var ids, out var citizens)) return;
+            for (int i = 0; i < citizens.Count; i++)
             {
-                int id = kv.Key;
-                if (_myOwnedCitizens.Contains(id)) continue;
+                int id = ids[i];
+                if (id == 0 || _myOwnedCitizens.Contains(id)) continue;
 
-                var human = kv.Value;
+                // Never claim a twin. A twin IS a player's body — the local
+                // player's own (hidden) decoy, or another player's visible body
+                // driven by RemotePlayer. Claiming one re-enabled its AI here, and
+                // the release later re-enabled it on the HOST, where it then
+                // fought RemotePlayer for the same transform.
+                if (TwinManager.IsTwin(id)) continue;
+
+                var human = citizens[i];
                 if (human == null || human.gameObject == null) continue;
                 if (IsLocalPlayerHuman(human)) continue;
                 if (SafeIsDead(human)) continue;
 
-                float d = Vector3.Distance(human.transform.position, myPos);
-                if (d < OWNERSHIP_CLAIM_DIST)
+                if (Vector3.Distance(human.transform.position, myPos) < OWNERSHIP_CLAIM_DIST)
                     ClientClaimOwnership(id, human);
             }
         }
@@ -197,17 +170,18 @@ public class WorldSync
         }
     }
 
-    private void ClientClaimOwnership(int citizenId, Human human)
+    private void ClientClaimOwnership(int citizenId, global::Human human)
     {
         _myOwnedCitizens.Add(citizenId);
 
-        // Notify host so it pauses its own AI for this citizen and stops broadcasting.
+        // Host pauses its own AI for this citizen until we release it.
         SendOwnershipPacket(PacketType.CitizenOwnershipClaim, citizenId);
 
-        // Locally re-enable SoD's AI so dialog / combat / fear etc. work natively.
-        EnableAIController(human);
-        EnableRootMotion(human);
-        _pausedAI.Remove(citizenId);
+        // Hand the citizen to the local AI so dialog / fear / combat run
+        // natively. CitizenPositionSync releases it first, restoring the AI
+        // and root-motion state it recorded when it took the citizen over.
+        CitizenPositionSync.ReleaseForLocalOwnership(citizenId);
+        SetAIEnabled(human, true);
 
         Plugin.Log.LogDebug($"[Ownership] Claimed citizen {citizenId} (interaction range)");
     }
@@ -218,21 +192,13 @@ public class WorldSync
 
         SendOwnershipPacket(PacketType.CitizenOwnershipRelease, citizenId);
 
-        // Disable local AI again — host resumes authoritative control.
-        var human = NetworkIdResolver.GetHuman(citizenId);
-        if (human != null && human.gameObject != null)
-        {
-            DisableAIController(human);
-            DisableRootMotion(human);
-        }
-
-        // Force a re-init of clientStates so the next host command re-applies cleanly.
-        if (_clientStates.TryGetValue(citizenId, out var s))
-        {
-            s.AIControllerDisabled = true;  // we just disabled it
-            s.RootMotionDisabled   = true;
-            _clientStates[citizenId] = s;
-        }
+        // Deliberately do NOT switch the local AI off here. The old code did,
+        // expecting host commands to take over — they never could (see the
+        // class notes), so every released citizen froze into a statue.
+        // CitizenPositionSync picks the citizen back up on its next packet —
+        // the release radius is 4.5 m, well inside its sync radius — and
+        // freezes + drives it then. With CitizenPositionSync switched off, the
+        // local AI simply keeps running, which is the correct fallback.
 
         Plugin.Log.LogDebug($"[Ownership] Released citizen {citizenId} (left interaction range)");
     }
@@ -251,173 +217,106 @@ public class WorldSync
     }
 
     // -------------------------------------------------------------------------
-    //  Host: scan for changed destinations → CitizenCommandBatch
+    //  Host: ownership table
     // -------------------------------------------------------------------------
 
-    private void HostScanCommands(float now)
+    private void OnOwnershipClaim(NetDataReader reader, int senderId)
     {
-        var anchors = GetAnchorPositions();
-        if (anchors.Count == 0) return;
+        var p = new CitizenOwnershipPacket();
+        p.Deserialize(reader);
+        if (!NetworkManager.IsHost) return;
 
-        var cmds = new List<CitizenCommandPacket>(MAX_CMDS_PER_BATCH);
+        // Trust the transport, not the payload: OwnerId is whatever the sender
+        // chose to write.
+        int owner = senderId >= 0 ? senderId : p.OwnerId;
+        if (owner < 0) return;
 
-        try
-        {
-            var dict = CityData.Instance?.citizenDictionary;
-            if (dict == null) return;
+        // Twins are player bodies, never interaction targets — refuse, so a
+        // claim from an older client can't unfreeze one on release.
+        if (TwinManager.IsTwin(p.CitizenId)) return;
 
-            foreach (var kv in dict)
-            {
-                if (cmds.Count >= MAX_CMDS_PER_BATCH) break;
+        // First claimant keeps it. Overwriting would let a second client take
+        // over mid-interaction, and the first client's release would then be
+        // refused while the citizen stayed paused.
+        if (_citizenOwners.TryGetValue(p.CitizenId, out var current) && current != owner) return;
 
-                var human = kv.Value;
-                if (human == null || human.gameObject == null) continue;
-                if (IsLocalPlayerHuman(human)) continue;
+        _citizenOwners[p.CitizenId] = owner;
 
-                int  id     = kv.Key;
+        // Hold the citizen still on the host while the client interacts, so it
+        // doesn't wander off on the authoritative side mid-conversation.
+        var human = NetworkIdResolver.GetHuman(p.CitizenId);
+        if (human != null && human.gameObject != null && _pausedAI.Add(p.CitizenId))
+            SetAIEnabled(human, false);
 
-                // Skip citizens currently owned by a client — they're being driven
-                // by that client's local AI for an interaction (dialog, combat, etc.).
-                if (_citizenOwners.ContainsKey(id)) continue;
-
-                var pos = human.transform.position;
-                if (!IsAnchorReachable(pos, anchors)) continue;
-
-                bool isDead = SafeIsDead(human);
-
-                var   agent = GetAgent(human);
-                // Prefer NewAIController.currentDestinationPositon — this is what SoD's
-                // pathfinder writes directly; NavMeshAgent.destination lags by one frame.
-                var   aiCtrl = GetNewAIController(human);
-                var   dest   = aiCtrl != null ? aiCtrl.currentDestinationPositon
-                                              : (agent != null && agent.enabled ? agent.destination : pos);
-                // movementAmount is 0-1 float; agent.speed is m/s — send both packed as speed
-                float speed  = agent != null ? agent.speed : 0f;
-                var   state  = InferBehaviourState(human, agent, aiCtrl, isDead);
-
-                bool send;
-                if (_hostSent.TryGetValue(id, out var prev))
-                {
-                    bool destMoved    = Vector3.Distance(dest, prev.LastDestination) > MIN_DEST_DELTA;
-                    bool speedChanged = Mathf.Abs(speed - prev.LastSpeed)            > MIN_SPEED_DELTA;
-                    bool stateChanged = state != prev.LastBehaviour || isDead != prev.IsDead;
-                    bool stale        = now - prev.LastCommandSentAt > CORRECTION_INTERVAL;
-                    send = destMoved || speedChanged || stateChanged || stale;
-                }
-                else
-                {
-                    send = true; // first contact
-                }
-
-                if (!send) continue;
-
-                cmds.Add(new CitizenCommandPacket
-                {
-                    CitizenId      = id,
-                    Destination    = dest,
-                    Speed          = speed,
-                    BehaviourState = state,
-                    IsDead         = isDead,
-                });
-
-                _hostSent.TryGetValue(id, out var s);
-                s.LastDestination   = dest;
-                s.LastSpeed         = speed;
-                s.LastBehaviour     = state;
-                s.IsDead            = isDead;
-                s.LastCommandSentAt = now;
-                _hostSent[id]       = s;
-            }
-        }
-        catch (System.Exception ex)
-        {
-            Plugin.Log.LogError($"WorldSync.HostScanCommands: {ex.Message}");
-            return;
-        }
-
-        if (cmds.Count == 0) return;
-
-        _writer.Reset();
-        _writer.Put(cmds.Count);
-        foreach (var c in cmds) c.Serialize(_writer);
-
-        // ReliableOrdered: destination changes must arrive in order, never dropped
-        NetworkManager.SendToAll(PacketType.CitizenCommandBatch, _writer, DeliveryMethod.ReliableOrdered);
+        Plugin.Log.LogDebug($"[Ownership] Client {owner} claimed citizen {p.CitizenId}");
     }
 
-    // -------------------------------------------------------------------------
-    //  Host: periodic authoritative corrections → CitizenCorrectionBatch
-    // -------------------------------------------------------------------------
-
-    private void HostSendCorrections(float now)
+    private void OnOwnershipRelease(NetDataReader reader, int senderId)
     {
-        var anchors = GetAnchorPositions();
-        if (anchors.Count == 0) return;
+        var p = new CitizenOwnershipPacket();
+        p.Deserialize(reader);
+        if (!NetworkManager.IsHost) return;
 
-        var corrs = new List<CitizenCorrectionPacket>(MAX_CORR_PER_BATCH);
+        int owner = senderId >= 0 ? senderId : p.OwnerId;
 
-        try
-        {
-            var dict = CityData.Instance?.citizenDictionary;
-            if (dict == null) return;
+        // Only the owner can release. The old code removed the owner entry
+        // conditionally but resumed the host AI UNconditionally, so any stray
+        // release restarted a citizen another client was still talking to.
+        if (!_citizenOwners.TryGetValue(p.CitizenId, out var current) || current != owner) return;
+        _citizenOwners.Remove(p.CitizenId);
+        ResumeHostAI(p.CitizenId);
 
-            foreach (var kv in dict)
-            {
-                if (corrs.Count >= MAX_CORR_PER_BATCH) break;
-
-                var human = kv.Value;
-                if (human == null || human.gameObject == null) continue;
-                if (IsLocalPlayerHuman(human)) continue;
-                if (SafeIsDead(human)) continue;
-
-                // Skip client-owned citizens — they don't need correction during interaction.
-                if (_citizenOwners.ContainsKey(kv.Key)) continue;
-
-                var pos = human.transform.position;
-                if (!IsAnchorReachable(pos, anchors)) continue;
-
-                // Skip stationary citizens — they don't accumulate drift
-                if (_hostSent.TryGetValue(kv.Key, out var prev))
-                {
-                    if (prev.LastBehaviour == CitizenBehaviourState.Idle    ||
-                        prev.LastBehaviour == CitizenBehaviourState.Sitting  ||
-                        prev.LastBehaviour == CitizenBehaviourState.Sleeping ||
-                        prev.LastBehaviour == CitizenBehaviourState.Talking)
-                        continue;
-                }
-
-                corrs.Add(new CitizenCorrectionPacket
-                {
-                    CitizenId = kv.Key,
-                    Position  = pos,
-                    YawByte   = CitizenCorrectionPacket.CompressYaw(human.transform.rotation),
-                });
-
-                if (_hostSent.TryGetValue(kv.Key, out var s))
-                {
-                    s.LastCorrectionSentAt = now;
-                    _hostSent[kv.Key] = s;
-                }
-            }
-        }
-        catch (System.Exception ex)
-        {
-            Plugin.Log.LogError($"WorldSync.HostSendCorrections: {ex.Message}");
-            return;
-        }
-
-        if (corrs.Count == 0) return;
-
-        _writer.Reset();
-        _writer.Put(corrs.Count);
-        foreach (var c in corrs) c.Serialize(_writer);
-
-        // Sequenced: drop older correction packets, only apply the latest
-        NetworkManager.SendToAll(PacketType.CitizenCorrectionBatch, _writer, DeliveryMethod.Sequenced);
+        Plugin.Log.LogDebug($"[Ownership] Client {owner} released citizen {p.CitizenId}");
     }
 
+    private void ResumeHostAI(int citizenId)
+    {
+        if (!_pausedAI.Remove(citizenId)) return;
+        var human = NetworkIdResolver.GetHuman(citizenId);
+        if (human != null && human.gameObject != null) SetAIEnabled(human, true);
+    }
+
+    /// <summary>Host: a player left. Release every citizen they owned.
+    ///
+    /// <para>Nothing did this before — the ownership state was never cleared
+    /// anywhere — so a client that disconnected while standing next to someone
+    /// left that citizen's host-side AI switched off for the rest of the
+    /// session.</para></summary>
+    public void OnPeerLeft(int playerId)
+    {
+        if (!NetworkManager.IsHost || _citizenOwners.Count == 0) return;
+        _scratchIds.Clear();
+        foreach (var kv in _citizenOwners)
+            if (kv.Value == playerId) _scratchIds.Add(kv.Key);
+        for (int i = 0; i < _scratchIds.Count; i++)
+        {
+            _citizenOwners.Remove(_scratchIds[i]);
+            ResumeHostAI(_scratchIds[i]);
+        }
+        if (_scratchIds.Count > 0)
+            Plugin.Log.LogInfo($"[Ownership] player {playerId} left — released {_scratchIds.Count} citizen(s) back to host AI.");
+    }
+
+    /// <summary>Session over. The host resumes AI for every citizen it paused;
+    /// everything is forgotten so a stale id can't carry into the next world.</summary>
+    public void OnSessionEnded()
+    {
+        if (_pausedAI.Count > 0)
+        {
+            _scratchIds.Clear();
+            foreach (var id in _pausedAI) _scratchIds.Add(id);
+            for (int i = 0; i < _scratchIds.Count; i++) ResumeHostAI(_scratchIds[i]);
+        }
+        _citizenOwners.Clear();
+        _pausedAI.Clear();
+        _myOwnedCitizens.Clear();
+    }
+
+    /// <summary>Kept for API compatibility; see <see cref="OnSessionEnded"/>.</summary>
+    public void ClearClientState() => OnSessionEnded();
+
     // -------------------------------------------------------------------------
-    //  Receive
+    //  Packets
     // -------------------------------------------------------------------------
 
     public void OnPacketReceived(PacketType type, NetDataReader reader, int senderId)
@@ -432,456 +331,21 @@ public class WorldSync
                 Plugin.Log.LogInfo($"World seed synced: {p.Seed}, City: {p.CityName}");
                 break;
             }
-            case PacketType.CitizenCommandBatch:
-                if (!NetworkManager.IsHost) OnCommandBatch(reader);
-                break;
-            case PacketType.CitizenCorrectionBatch:
-                if (!NetworkManager.IsHost) OnCorrectionBatch(reader);
-                break;
-            case PacketType.CitizenDeath:
-                OnCitizenDeath(reader);
-                break;
             case PacketType.CitizenOwnershipClaim:
                 OnOwnershipClaim(reader, senderId);
                 break;
             case PacketType.CitizenOwnershipRelease:
                 OnOwnershipRelease(reader, senderId);
                 break;
+
+            // Retired NavMesh command stream (see class notes). Recognised and
+            // dropped so an older peer's packets can't reach another handler.
+            // CitizenDeath is owned by CitizenDeathSync.
+            case PacketType.CitizenCommandBatch:
+            case PacketType.CitizenCorrectionBatch:
+            case PacketType.CitizenDeath:
+                break;
         }
-    }
-
-    // -------------------------------------------------------------------------
-    //  Ownership packet handlers (host-side authority + client mirror)
-    // -------------------------------------------------------------------------
-
-    private void OnOwnershipClaim(NetDataReader reader, int senderId)
-    {
-        var p = new CitizenOwnershipPacket();
-        p.Deserialize(reader);
-
-        if (!NetworkManager.IsHost) return;  // only host tracks ownership table
-
-        _citizenOwners[p.CitizenId] = p.OwnerId;
-
-        // Pause host-side AI for this citizen so it stays put while the client
-        // interacts with it. Saved to _pausedAI so we know to re-enable on release.
-        var human = NetworkIdResolver.GetHuman(p.CitizenId);
-        if (human != null && human.gameObject != null && _pausedAI.Add(p.CitizenId))
-        {
-            DisableAIController(human);
-        }
-
-        Plugin.Log.LogDebug($"[Ownership] Client {p.OwnerId} claimed citizen {p.CitizenId}");
-    }
-
-    private void OnOwnershipRelease(NetDataReader reader, int senderId)
-    {
-        var p = new CitizenOwnershipPacket();
-        p.Deserialize(reader);
-
-        if (!NetworkManager.IsHost) return;
-
-        // Only release if the sender actually owned it (prevent stray packets clearing state).
-        if (_citizenOwners.TryGetValue(p.CitizenId, out var current) && current == p.OwnerId)
-        {
-            _citizenOwners.Remove(p.CitizenId);
-        }
-
-        // Resume host-side AI.
-        if (_pausedAI.Remove(p.CitizenId))
-        {
-            var human = NetworkIdResolver.GetHuman(p.CitizenId);
-            if (human != null && human.gameObject != null)
-                EnableAIController(human);
-        }
-
-        // Force a re-send of this citizen's state on the next scan tick.
-        _hostSent.Remove(p.CitizenId);
-
-        Plugin.Log.LogDebug($"[Ownership] Client {p.OwnerId} released citizen {p.CitizenId}");
-    }
-
-    // ── Command batch ─────────────────────────────────────────────────────────
-
-    private void OnCommandBatch(NetDataReader reader)
-    {
-        try
-        {
-            int count = reader.GetInt();
-            for (int i = 0; i < count; i++)
-            {
-                var cmd = new CitizenCommandPacket();
-                cmd.Deserialize(reader);
-                ApplyCitizenCommand(cmd);
-            }
-        }
-        catch (System.Exception ex)
-        {
-            Plugin.Log.LogError($"OnCommandBatch: {ex.Message}");
-        }
-    }
-
-    private void ApplyCitizenCommand(CitizenCommandPacket cmd)
-    {
-        // We own this citizen for an interaction — let SoD's AI drive it locally.
-        if (_myOwnedCitizens.Contains(cmd.CitizenId)) return;
-
-        var human = NetworkIdResolver.GetHuman(cmd.CitizenId);
-        if (human == null || human.gameObject == null) return;
-
-        _clientStates.TryGetValue(cmd.CitizenId, out var s);
-        s.BehaviourState = cmd.BehaviourState;
-        s.IsDead         = cmd.IsDead;
-        _clientStates[cmd.CitizenId] = s;
-
-        // Dead or stationary — stop the agent
-        if (cmd.IsDead || cmd.BehaviourState == CitizenBehaviourState.Dead)
-        {
-            StopAgent(human);
-            return;
-        }
-
-        if (cmd.BehaviourState == CitizenBehaviourState.Sitting  ||
-            cmd.BehaviourState == CitizenBehaviourState.Sleeping  ||
-            cmd.BehaviourState == CitizenBehaviourState.Talking)
-        {
-            StopAgent(human);
-            return;
-        }
-
-        // Moving — drive NavMeshAgent to host's destination
-        try
-        {
-            var agent = GetOrEnableAgent(human, cmd.CitizenId);
-            if (agent == null) return;
-
-            agent.speed = cmd.Speed;
-
-            if (Vector3.Distance(agent.destination, cmd.Destination) > MIN_DEST_DELTA)
-                agent.SetDestination(cmd.Destination);
-
-            if (agent.isStopped) agent.isStopped = false;
-
-            // Tell SoD's animation controller the speed changed so the walk/run
-            // blend tree updates immediately, not on the next AI tick.
-            var animCtrl = GetAnimController(human);
-            animCtrl?.UpdateMovementSpeed();
-        }
-        catch (System.Exception ex)
-        {
-            Plugin.Log.LogWarning($"ApplyCitizenCommand({cmd.CitizenId}): {ex.Message}");
-        }
-    }
-
-    // ── Correction batch ──────────────────────────────────────────────────────
-
-    private void OnCorrectionBatch(NetDataReader reader)
-    {
-        try
-        {
-            int count = reader.GetInt();
-            for (int i = 0; i < count; i++)
-            {
-                var corr = new CitizenCorrectionPacket();
-                corr.Deserialize(reader);
-                ApplyCorrection(corr);
-            }
-        }
-        catch (System.Exception ex)
-        {
-            Plugin.Log.LogError($"OnCorrectionBatch: {ex.Message}");
-        }
-    }
-
-    private void ApplyCorrection(CitizenCorrectionPacket corr)
-    {
-        // Skip if we own this citizen — SoD's local AI is driving it.
-        if (_myOwnedCitizens.Contains(corr.CitizenId)) return;
-
-        var human = NetworkIdResolver.GetHuman(corr.CitizenId);
-        if (human == null || human.gameObject == null) return;
-
-        // Don't correct dead or truly stationary citizens
-        if (_clientStates.TryGetValue(corr.CitizenId, out var s))
-        {
-            if (s.IsDead ||
-                s.BehaviourState == CitizenBehaviourState.Sitting  ||
-                s.BehaviourState == CitizenBehaviourState.Sleeping)
-                return;
-        }
-
-        float drift = Vector3.Distance(human.transform.position, corr.Position);
-
-        if (drift > CORRECTION_SNAP_DIST)
-        {
-            // Hard snap — citizen badly out of sync (teleport, room change)
-            Plugin.Log.LogDebug($"Correction SNAP citizen {corr.CitizenId} drift={drift:F1}m");
-            var agent = GetAgent(human);
-            if (agent != null && agent.enabled)
-                agent.Warp(corr.Position);
-            else
-                human.transform.position = corr.Position;
-
-            human.transform.rotation = corr.GetRotation();
-        }
-        else if (drift > CORRECTION_LERP_DIST)
-        {
-            // Soft nudge — push 30% toward host position via NavMesh Warp
-            Vector3 nudged = Vector3.Lerp(human.transform.position, corr.Position, 0.3f);
-            var agent = GetAgent(human);
-            if (agent != null && agent.enabled)
-                agent.Warp(nudged);
-            else
-                human.transform.position = nudged;
-        }
-        // else: within tolerance — do nothing
-    }
-
-    // ── Citizen death ─────────────────────────────────────────────────────────
-
-    private void OnCitizenDeath(NetDataReader reader)
-    {
-        try
-        {
-            int id = reader.GetInt();
-            var human = NetworkIdResolver.GetHuman(id);
-            if (human != null) StopAgent(human);
-
-            if (_clientStates.TryGetValue(id, out var s))
-            {
-                s.IsDead = true;
-                _clientStates[id] = s;
-            }
-        }
-        catch (System.Exception ex)
-        {
-            Plugin.Log.LogError($"OnCitizenDeath: {ex.Message}");
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    //  NavMeshAgent helpers (IL2CPP-safe — string-based GetComponent + TryCast)
-    // -------------------------------------------------------------------------
-
-    /// <summary>Get NavMeshAgent via string lookup to avoid IL2CPP generic-store failures.</summary>
-    private static NavMeshAgent GetAgent(Human human)
-    {
-        try
-        {
-            var comp = human.gameObject.GetComponent("NavMeshAgent");
-            return comp?.TryCast<NavMeshAgent>();
-        }
-        catch { return null; }
-    }
-
-    /// <summary>
-    /// Get SoD's NewAIController — contains currentDestinationPositon and movementAmount,
-    /// which are more direct than reading NavMeshAgent.destination.
-    /// </summary>
-    private static NewAIController GetNewAIController(Human human)
-    {
-        try
-        {
-            var comp = human.gameObject.GetComponent("NewAIController");
-            return comp?.TryCast<NewAIController>();
-        }
-        catch { return null; }
-    }
-
-    /// <summary>
-    /// Get SoD's CitizenAnimationController — exposes UpdateMovementSpeed(),
-    /// ForceUpdateAnimationSate(), SetDead(), SetInBed() etc.
-    /// From CitizenDiag we know it lives on the "Model" direct child of the citizen.
-    /// CitizenAnimationController is an Assembly-CSharp type, so generic GetComponent works.
-    /// </summary>
-    private static CitizenAnimationController GetAnimController(Human human)
-    {
-        try
-        {
-            // Fast path: SoD always puts CitizenAnimationController on the "Model" child.
-            var model = human.transform.Find("Model");
-            if (model != null)
-            {
-                var comp = model.gameObject.GetComponent("CitizenAnimationController");
-                if (comp != null) return comp.TryCast<CitizenAnimationController>();
-            }
-            // Fallback: search the whole hierarchy.
-            return human.GetComponentInChildren<CitizenAnimationController>(true);
-        }
-        catch { return null; }
-    }
-
-    /// <summary>
-    /// Get (or re-enable) a citizen's NavMeshAgent on the client.
-    ///
-    /// On first call (per citizen):
-    ///   1. Disable NewAIController — stops SoD's scheduler from overwriting
-    ///      NavMeshAgent.destination every frame (~60 Hz). Without this, SoD wins 9
-    ///      out of 10 frames and our 10 Hz SetDestination has no lasting effect.
-    ///   2. Disable Animator root motion — prevents animation delta-pos from
-    ///      fighting our NavMeshAgent-driven movement.
-    ///
-    /// NavMeshAgent stays ENABLED so the citizen pathfinds locally using the
-    /// destination we supply from the host — smooth movement, correct animation.
-    /// </summary>
-    private NavMeshAgent GetOrEnableAgent(Human human, int citizenId)
-    {
-        try
-        {
-            var agent = GetAgent(human);
-            if (agent == null) return null;
-
-            if (!agent.enabled) agent.enabled = true;
-
-            _clientStates.TryGetValue(citizenId, out var s);
-            bool changed = false;
-
-            // One-time: kill SoD's AI scheduler so it stops competing with us.
-            if (!s.AIControllerDisabled)
-            {
-                DisableAIController(human);
-                s.AIControllerDisabled = true;
-                changed = true;
-            }
-
-            // One-time: disable root motion so animation doesn't write delta-pos to transform.
-            if (!s.RootMotionDisabled)
-            {
-                DisableRootMotion(human);
-                s.RootMotionDisabled = true;
-                changed = true;
-            }
-
-            if (changed) _clientStates[citizenId] = s;
-
-            return agent;
-        }
-        catch { return null; }
-    }
-
-    /// <summary>
-    /// Disable SoD's NewAIController MonoBehaviour on this citizen.
-    /// Setting enabled=false stops all Update/FixedUpdate callbacks — the citizen's
-    /// schedule, goal evaluation, and NavMeshAgent writes all cease.
-    /// NavMeshAgent stays alive and usable; we drive it via SetDestination.
-    /// </summary>
-    private static void DisableAIController(Human human)
-    {
-        try
-        {
-            var comp = human.gameObject.GetComponent("NewAIController");
-            if (comp == null) return;
-            var ai = comp.TryCast<NewAIController>();
-            if (ai != null && ai.enabled)
-            {
-                ai.enabled = false;
-            }
-        }
-        catch (System.Exception ex)
-        {
-            Plugin.Log.LogWarning($"[WorldSync] DisableAIController({human.humanID}): {ex.Message}");
-        }
-    }
-
-    /// <summary>Inverse of DisableAIController — used when ownership is transferred.</summary>
-    private static void EnableAIController(Human human)
-    {
-        try
-        {
-            var comp = human.gameObject.GetComponent("NewAIController");
-            if (comp == null) return;
-            var ai = comp.TryCast<NewAIController>();
-            if (ai != null && !ai.enabled)
-            {
-                ai.enabled = true;
-            }
-        }
-        catch (System.Exception ex)
-        {
-            Plugin.Log.LogWarning($"[WorldSync] EnableAIController({human.humanID}): {ex.Message}");
-        }
-    }
-
-    /// <summary>Inverse of DisableRootMotion — used when ownership is transferred.</summary>
-    private static void EnableRootMotion(Human human)
-    {
-        try
-        {
-            var animators = human.GetComponentsInChildren<Animator>(true);
-            if (animators == null) return;
-            for (int i = 0; i < animators.Count; i++)
-            {
-                var anim = animators[i];
-                if (anim != null) anim.applyRootMotion = true;
-            }
-        }
-        catch (System.Exception ex)
-        {
-            Plugin.Log.LogWarning($"EnableRootMotion({human.humanID}): {ex.Message}");
-        }
-    }
-
-    private static void StopAgent(Human human)
-    {
-        try
-        {
-            var agent = GetAgent(human);
-            if (agent != null && agent.enabled)
-            {
-                agent.isStopped = true;
-                try { agent.ResetPath(); } catch { }
-            }
-        }
-        catch { }
-
-        // Force the animation controller to update immediately so the idle
-        // blend state kicks in right away (no walking-in-place artefact).
-        try
-        {
-            var animCtrl = GetAnimController(human);
-            animCtrl?.UpdateMovementSpeed();
-        }
-        catch { }
-    }
-
-    private static void DisableRootMotion(Human human)
-    {
-        try
-        {
-            var animators = human.GetComponentsInChildren<Animator>(true);
-            if (animators == null) return;
-            for (int i = 0; i < animators.Count; i++)
-            {
-                var anim = animators[i];
-                if (anim != null) anim.applyRootMotion = false;
-            }
-        }
-        catch (System.Exception ex)
-        {
-            Plugin.Log.LogWarning($"DisableRootMotion({human.humanID}): {ex.Message}");
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    //  Behaviour inference (host side only)
-    // -------------------------------------------------------------------------
-
-    private static CitizenBehaviourState InferBehaviourState(
-        Human human, NavMeshAgent agent, NewAIController aiCtrl, bool isDead)
-    {
-        if (isDead) return CitizenBehaviourState.Dead;
-
-        // movementAmount (0-1) from NewAIController is the authoritative speed signal.
-        // Fall back to NavMeshAgent.velocity if the AI controller isn't available.
-        float moveAmt = aiCtrl?.movementAmount ?? (agent?.velocity.magnitude ?? 0f);
-
-        if (agent == null || !agent.enabled || agent.isStopped || moveAmt < 0.05f)
-            return CitizenBehaviourState.Idle;
-
-        // speed > threshold → Running; otherwise Walking
-        float agentSpeed = agent?.speed ?? 0f;
-        if (agentSpeed > WALK_SPEED_THRESHOLD) return CitizenBehaviourState.Running;
-        return CitizenBehaviourState.Walking;
     }
 
     // -------------------------------------------------------------------------
@@ -904,52 +368,19 @@ public class WorldSync
         Plugin.Log.LogInfo($"World seed synced: {packet.Seed}, City: {packet.CityName}");
     }
 
-    // -------------------------------------------------------------------------
-    //  Helpers
-    // -------------------------------------------------------------------------
-
-    private static List<Vector3> GetAnchorPositions()
-    {
-        var list = new List<Vector3>(4);
-        try
-        {
-            var local = global::Player.Instance;
-            if (local != null) list.Add(local.transform.position);
-        }
-        catch { }
-
-        foreach (var rp in Player.RemotePlayerManager.GetAllPlayers())
-        {
-            if (rp == null || rp.gameObject == null) continue;
-            list.Add(rp.transform.position);
-        }
-        return list;
-    }
-
-    private static bool IsAnchorReachable(Vector3 pos, List<Vector3> anchors)
-    {
-        for (int i = 0; i < anchors.Count; i++)
-            if (Vector3.Distance(pos, anchors[i]) <= NPC_SYNC_RANGE) return true;
-        return false;
-    }
-
     // ─────────────────────────────────────────────────────────────────────────
-    //  Tick-rate promotion for remote players.
+    //  Tick-rate promotion for remote players (host).
     //
-    //  SoD's NewAIController.UpdateTickRate computes desiredTickRate from the
-    //  distance to the LOCAL Player.Instance. In a co-op scenario where the
-    //  host's local player is far from an NPC but a client's player is right
-    //  next to it, the host would keep the NPC at veryLow tick rate — meaning
-    //  destination updates fire rarely and the client sees the NPC stutter or
-    //  freeze.
+    //  SoD's NewAIController.UpdateTickRate derives desiredTickRate from the
+    //  distance to the LOCAL Player.Instance. A citizen right next to a client
+    //  but far from the host's own player would otherwise sit at veryLow on the
+    //  host — and the host is the authority CitizenPositionSync streams from,
+    //  so that citizen would reach the client as sparse, jerky positions.
     //
-    //  Fix: each frame, walk a window of the citizen dictionary and compare
-    //  every NPC's distance to ALL remote players. If any peer is closer than
-    //  the bracket the host's local distance assigned, force-promote
-    //  desiredTickRate. We never demote — SoD's own logic already handles
-    //  demotion via UpdateTickRate. Throttle to NPCS_PER_PROMOTE_FRAME per
-    //  frame to keep CPU bounded; full coverage of ~1500 NPCs at 50/frame
-    //  takes ~30 frames (~0.5 s at 60fps).
+    //  Each frame, walk a window of the citizen roster, compare each citizen's
+    //  distance to every remote player, and promote desiredTickRate when a peer
+    //  needs more than the host's local distance assigned. Never demote — SoD's
+    //  own UpdateTickRate handles that. NPCS_PER_PROMOTE_FRAME bounds the cost.
     // ─────────────────────────────────────────────────────────────────────────
 
     private const int   NPCS_PER_PROMOTE_FRAME = 50;
@@ -958,61 +389,47 @@ public class WorldSync
     private const float TICK_LOW_DIST     = 80f;
     private const float TICK_VLOW_DIST    = 200f;
     private static int  _promoteCursor;
-    private static readonly List<int> _citizenKeyCache = new();
-    private static int _citizenKeyCacheStamp;
+    private static readonly List<Vector3> _remotePositions = new(4);
 
     private static void PromoteRemoteTickRates()
     {
         try
         {
-            // Gather remote-player positions once per frame.
-            var remoteCount = 0;
-            // Stack-allocated mini-buffer would be nicer; List allocation per
-            // call is fine, only one list of ≤4 entries.
-            var remotePositions = new List<Vector3>(4);
-            foreach (var rp in Player.RemotePlayerManager.GetAllPlayers())
+            _remotePositions.Clear();
+            foreach (var rp in SoDCoop.Player.RemotePlayerManager.GetAllPlayers())
             {
                 if (rp == null || rp.gameObject == null) continue;
-                remotePositions.Add(rp.transform.position);
-                remoteCount++;
+                _remotePositions.Add(rp.transform.position);
             }
-            if (remoteCount == 0) return;
+            if (_remotePositions.Count == 0) return;
 
-            var dict = CityData.Instance?.citizenDictionary;
-            if (dict == null || dict.Count == 0) return;
+            if (!Zdo.Pollers.CitizenRosterCache.TryGetRoster(out var ids, out var citizens)) return;
+            int total = citizens.Count;
+            if (total == 0) return;
 
-            // Refresh the key cache periodically so we iterate stable keys
-            // even if the dict gets churned (NPCs spawn/despawn).
-            if (_citizenKeyCacheStamp != dict.Count)
+            int steps = Mathf.Min(NPCS_PER_PROMOTE_FRAME, total);
+            for (int n = 0; n < steps; n++)
             {
-                _citizenKeyCache.Clear();
-                foreach (var kv in dict) _citizenKeyCache.Add(kv.Key);
-                _citizenKeyCacheStamp = dict.Count;
-                _promoteCursor = 0;
-            }
-            if (_citizenKeyCache.Count == 0) return;
+                if (_promoteCursor >= total) _promoteCursor = 0;
+                int idx = _promoteCursor++;
 
-            int processed = 0;
-            while (processed < NPCS_PER_PROMOTE_FRAME)
-            {
-                if (_promoteCursor >= _citizenKeyCache.Count) _promoteCursor = 0;
-                int humanId = _citizenKeyCache[_promoteCursor++];
-                processed++;
-
-                if (!dict.TryGetValue(humanId, out var human) || human == null) continue;
-                if (human.transform == null) continue;
+                var human = citizens[idx];
+                if (human == null) continue;
+                if (TwinManager.IsTwin(ids[idx])) continue;   // frozen player bodies
                 if (SafeIsDead(human)) continue;
                 if (IsLocalPlayerHuman(human)) continue;
 
-                var aic = GetNewAIController(human);
+                NewAIController aic;
+                try { aic = human.ai; } catch { continue; }
                 if (aic == null) continue;
 
-                // Min distance from this NPC to any peer.
-                Vector3 npcPos = human.transform.position;
+                Vector3 npcPos;
+                try { npcPos = human.transform.position; } catch { continue; }
+
                 float minDist = float.MaxValue;
-                for (int i = 0; i < remotePositions.Count; i++)
+                for (int i = 0; i < _remotePositions.Count; i++)
                 {
-                    float d = Vector3.Distance(npcPos, remotePositions[i]);
+                    float d = Vector3.Distance(npcPos, _remotePositions[i]);
                     if (d < minDist) minDist = d;
                 }
 
@@ -1023,16 +440,13 @@ public class WorldSync
                 else if (minDist < TICK_VLOW_DIST)  target = NewAIController.AITickRate.low;
                 else                                target = NewAIController.AITickRate.veryLow;
 
-                // Only promote (never demote — host's own UpdateTickRate
-                // handles that on its tick from local Player distance).
                 if ((int)target > (int)aic.desiredTickRate)
                 {
                     try
                     {
                         aic.desiredTickRate = target;
-                        // forceUpdate=true re-buckets the controller into the
-                        // appropriate CitizenBehaviour list so it actually
-                        // ticks at the new cadence on the host's next frame.
+                        // forceUpdate=true re-buckets the controller so it
+                        // actually ticks at the new cadence next frame.
                         aic.UpdateTickRate(true);
                     }
                     catch { /* SetTickRate quirks — non-fatal */ }
@@ -1045,7 +459,24 @@ public class WorldSync
         }
     }
 
-    private static bool IsLocalPlayerHuman(Human human)
+    // -------------------------------------------------------------------------
+    //  Helpers
+    // -------------------------------------------------------------------------
+
+    private static void SetAIEnabled(global::Human human, bool enabled)
+    {
+        try
+        {
+            var ai = human.ai;
+            if (ai != null && ai.enabled != enabled) ai.enabled = enabled;
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogWarning($"[WorldSync] SetAIEnabled({enabled}): {ex.Message}");
+        }
+    }
+
+    private static bool IsLocalPlayerHuman(global::Human human)
     {
         try
         {
@@ -1055,7 +486,7 @@ public class WorldSync
         catch { return false; }
     }
 
-    private static bool SafeIsDead(Human human)
+    private static bool SafeIsDead(global::Human human)
     {
         try { return human.isDead; } catch { return false; }
     }
@@ -1086,14 +517,5 @@ public class WorldSync
             return ((int)v.x << 16) | ((int)v.y & 0xFFFF);
         }
         catch { return 0; }
-    }
-
-    public void ClearClientState()
-    {
-        _clientStates.Clear();
-        _hostSent.Clear();
-        _citizenOwners.Clear();
-        _myOwnedCitizens.Clear();
-        _pausedAI.Clear();
     }
 }

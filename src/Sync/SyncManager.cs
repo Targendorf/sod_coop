@@ -49,6 +49,7 @@ public static class SyncManager
         NetworkManager.OnConnected += OnConnected;
         NetworkManager.OnDisconnected += OnDisconnected;
         NetworkManager.OnPacketReceived += OnPacketReceived;
+        NetworkManager.OnPlayerLeft += OnPlayerLeft;
 
         // Weather is host-authoritative; needs OnPlayerJoined to push state to late-joiners.
         WeatherSync.Initialize();
@@ -65,6 +66,7 @@ public static class SyncManager
         NetworkManager.OnConnected -= OnConnected;
         NetworkManager.OnDisconnected -= OnDisconnected;
         NetworkManager.OnPacketReceived -= OnPacketReceived;
+        NetworkManager.OnPlayerLeft -= OnPlayerLeft;
         
         PlayerSync = null;
         WorldSync = null;
@@ -120,7 +122,18 @@ public static class SyncManager
         // left with ai.enabled=false after the session ends would stand
         // motionless in the player's own single-player game.
         try { CitizenPositionSync.Reset(); } catch { }
+        // Ownership state was never cleared anywhere: a host kept citizens a
+        // departed client had claimed paused for good, and a client carried
+        // stale claimed ids into its next world.
+        try { WorldSync?.OnSessionEnded(); } catch { }
         Plugin.Log.LogInfo($"SyncManager deactivated: {reason}");
+    }
+
+    /// <summary>Host: a peer left mid-session. Hand back any citizens it had
+    /// claimed for interaction, or their host-side AI stays paused.</summary>
+    private static void OnPlayerLeft(int playerId, string name)
+    {
+        try { WorldSync?.OnPeerLeft(playerId); } catch { }
     }
     
     private static void OnPacketReceived(PacketType type, NetDataReader reader, int senderId)

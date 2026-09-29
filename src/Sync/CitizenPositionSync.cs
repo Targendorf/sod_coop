@@ -139,6 +139,10 @@ public static class CitizenPositionSync
         /// AI was already disabled for a game reason (twin, dead, unloaded)
         /// must not be switched on by us.</summary>
         public bool WeFroze;
+
+        /// <summary>Root motion suppressed while we drive the transform — see
+        /// <see cref="RootMotionGuard"/>. Restored on release.</summary>
+        public readonly RootMotionGuard RootMotion = new();
     }
 
     private static readonly Dictionary<int, NpcState> _npcs = new();
@@ -193,6 +197,9 @@ public static class CitizenPositionSync
                     // A twin IS a player's body — the player-position channel
                     // owns it. Driving it from here would fight RemotePlayer.
                     if (TwinManager.IsTwin(humanId)) continue;
+                    // The peer owns this citizen for an interaction and is
+                    // running it on its own AI; it discards these anyway.
+                    if (SyncManager.WorldSync?.GetOwnerPlayerId(humanId) == peerId) continue;
 
                     Vector3 p = z.HostPosition;
                     _writer.Put(humanId);
@@ -258,6 +265,17 @@ public static class CitizenPositionSync
                 if (humanId == 0) continue;
                 if (TwinManager.IsTwin(humanId)) continue;
 
+                // This client owns the citizen for an interaction (WorldSync
+                // ownership): its local AI is running dialog / fear / combat.
+                // Driving it from here would freeze that AI mid-conversation —
+                // the exact risk flagged when this sync was introduced. It is
+                // picked back up from the first packet after the release.
+                if (SyncManager.WorldSync?.IsOwnedLocally(humanId) == true)
+                {
+                    if (_npcs.ContainsKey(humanId)) Release(humanId);
+                    continue;
+                }
+
                 var pos = new Vector3(x, y, z);
 
                 if (!_npcs.TryGetValue(humanId, out var st))
@@ -301,6 +319,11 @@ public static class CitizenPositionSync
                 ai.enabled = false;
                 st.WeFroze = true;
             }
+
+            // We are about to feed moveSpeed/walkAnimSpeed while writing the
+            // transform ourselves; left on, root motion would add its own
+            // displacement after our write every frame.
+            st.RootMotion.Suppress(c);
             return true;
         }
         catch { return false; }
@@ -420,6 +443,7 @@ public static class CitizenPositionSync
     {
         if (!_npcs.TryGetValue(humanId, out var st)) return;
         _npcs.Remove(humanId);
+        st.RootMotion.Restore();
         try
         {
             if (st.WeFroze && st.Human != null)
@@ -430,6 +454,13 @@ public static class CitizenPositionSync
         }
         catch { }
     }
+
+    /// <summary>Client: this citizen is about to be handed to the local AI for
+    /// an interaction (<see cref="WorldSync"/> ownership claim). Stop driving it
+    /// and give back the AI and root-motion state we took, so dialog, fear and
+    /// combat run natively. The citizen is picked up again from the next packet
+    /// once the claim is released.</summary>
+    public static void ReleaseForLocalOwnership(int humanId) => Release(humanId);
 
     /// <summary>Hand every citizen back to its local AI and forget all state.
     /// Wired into disconnect and world unload — a citizen left frozen after the
